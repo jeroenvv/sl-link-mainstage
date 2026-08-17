@@ -280,9 +280,26 @@ final class SLLinkController: ObservableObject {
     /// so it's safe to call both directly from `init()` and from the
     /// `Timer` closure `init()` schedules (which isn't main-actor-isolated
     /// by its own type).
+
+    /// MainStage's real bundle identifier is version-suffixed:
+    /// `com.apple.mainstage3` for MainStage 3.x, verified against both
+    /// `/Applications/MainStage.app` and the running process on this
+    /// machine. An earlier revision compared against a bare
+    /// `com.apple.mainstage`, which matches nothing and made the app report
+    /// "MainStage not running" while it was plainly running.
+    ///
+    /// Prefix-matching rather than hardcoding `3` so a future MainStage 4
+    /// doesn't silently reintroduce the same bug. If Apple ever ships an
+    /// unrelated `com.apple.mainstageSomethingElse` this would over-match,
+    /// which is the harmless direction to fail in - it only drives a status
+    /// label, never behaviour.
+    nonisolated static func isMainStageBundleID(_ identifier: String?) -> Bool {
+        identifier?.hasPrefix("com.apple.mainstage") ?? false
+    }
+
     nonisolated func refreshMainStageProcessRunning() {
         let apps = NSWorkspace.shared.runningApplications
-        let running = apps.contains { $0.bundleIdentifier == "com.apple.mainstage" }
+        let running = apps.contains { Self.isMainStageBundleID($0.bundleIdentifier) }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if self.mainStageProcessRunning == nil {
