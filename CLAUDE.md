@@ -183,3 +183,27 @@ keyboard) -> user selects the app -> login confirmation/recall -> active -> stan
 the user leaving/returning to SL-Link mode (screen must be fully repainted on restart, since the
 keyboard retains no display state across standby) -> logout is a request/confirm pair, either side
 can initiate.
+
+## Hardware verification status
+
+Verified against a physically attached SL88 MK2 (firmware 1.1.2, model byte `0x01`). Recorded because
+none of it is reproducible without the hardware, and "builds and passes codec tests" says nothing
+about whether the keyboard agrees.
+
+Confirmed working: identification and approval; 3s keepalive holding the app in the APP list; login
+confirmation; the demo screen painting correctly (coordinates, alignment, colours, bitmap); all seven
+encoders including A and the joystick encoder, with speed-sensitive multi-step ticks (±8 observed in
+ordinary use, not just ±1); buttons `0x00`-`0x07` and `0x0B`, SHORT and LONG; white LEDs tracking the
+RGB rings; logout in both directions; force logout followed by re-identify; and standby -> restart
+with a full repaint.
+
+Not yet exercised, so treat as unproven: two app instances running concurrently (the DeviceID
+instance-byte strategy); USB unplug/replug mid-session; the Identification Rejected retry path, which
+needs a deliberate DeviceID collision; and Login Recall (`00 06`), which only fires once the keyboard
+has an icon stored for the (HostID, DeviceID) pair and is therefore unreachable while icon upload
+stays out of scope.
+
+Timing measured on hardware: outbound paced at ~1 msg/ms sustained 1366 messages with no loss or
+corruption; a full-screen repaint of the demo UI costs ~37 messages, roughly 55 ms of MIDI time. That
+budget is why `SLLinkDisplay` memoizes per region - an encoder tick should cost one message, not a
+repaint.
