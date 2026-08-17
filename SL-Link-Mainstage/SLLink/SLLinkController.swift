@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 
 /// `ObservableObject` façade for SwiftUI. Owns the whole SL Link stack
 /// (transport -> session -> display -> demo screen) and replaces the old
@@ -35,6 +36,27 @@ final class SLLinkController: ObservableObject {
         didSet { session.setUseNameInKeepalive(useNameInKeepalive) }
     }
 
+    // MARK: - MainStage bridge
+    //
+    // See docs/mainstage-integration.md's "Connection status" section.
+    // `mainStageBridgeLive` is the authoritative signal (heartbeat/hello/
+    // goodbye from config.lua via MainStageEndpoint's own timeout logic).
+    // `mainStageProcessRunning` is the secondary, weaker signal from
+    // `NSWorkspace` - see `refreshMainStageProcessRunning` below for the
+    // App Sandbox finding.
+
+    @Published private(set) var mainStageEndpointPublished = false
+    @Published private(set) var mainStageBridgeLive = false
+    @Published private(set) var mainStageLastHeartbeatAt: Date?
+    @Published private(set) var mainStageLastHeartbeatSeq: Int?
+    @Published private(set) var mainStagePatchList: MainStagePatchList?
+    @Published private(set) var mainStageLastSelectionSent: String?
+    /// `nil` until the first check runs; see `refreshMainStageProcessRunning`.
+    @Published private(set) var mainStageProcessRunning: Bool?
+
+    private let mainStageEndpoint = MainStageEndpoint()
+    private var mainStageProcessCheckTimer: Timer?
+
     private let transport = SLLinkTransport()
     private let session: SLLinkSession
     // `nonisolated` because they're driven from `handle(_:)`, which runs on
@@ -65,6 +87,18 @@ final class SLLinkController: ObservableObject {
             self?.hostID = pair.id1
             self?.deviceInstanceID = pair.id2
         }
+
+        mainStageEndpoint.onLog = { [weak self] message in self?.appendLog(message) }
+        mainStageEndpoint.onInbound = { [weak self] inbound in self?.handleMainStage(inbound) }
+        mainStageEndpoint.onLiveChanged = { [weak self] live in self?.setMainStageLive(live) }
+        setMainStageEndpointPublished(mainStageEndpoint.start())
+
+        refreshMainStageProcessRunning()
+        let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.refreshMainStageProcessRunning()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        mainStageProcessCheckTimer = timer
     }
 
     /// Explicit teardown - see the bug-7 note above. Call from
@@ -72,6 +106,9 @@ final class SLLinkController: ObservableObject {
     func shutdown() {
         session.shutdown()
         transport.shutdown()
+        mainStageEndpoint.shutdown()
+        mainStageProcessCheckTimer?.invalidate()
+        mainStageProcessCheckTimer = nil
     }
 
     // MARK: - User actions
@@ -105,6 +142,25 @@ final class SLLinkController: ObservableObject {
             self?.hostID = id1
             self?.deviceInstanceID = id2
         }
+    }
+
+    // MARK: - MainStage bridge (dev-console verification only - see the
+    // project plan; the real SL88 patch browser is Phase 3)
+
+    /// Manual escape hatch for the virtual-endpoint verification gate
+    /// (docs/mainstage-integration.md / the project plan): with MainStage
+    /// running and the device script selected, send an arbitrary selection
+    /// and confirm MainStage jumps to the corresponding patch. `nil`
+    /// indices send the `0x7F` "n/a" sentinel.
+    func sendMainStageTestSelection(patchIndex: UInt8?, setIndex: UInt8?) {
+        mainStageEndpoint.sendSelection(patchIndex: patchIndex, setIndex: setIndex)
+        let patchText = patchIndex.map(String.init) ?? "n/a"
+        let setText = setIndex.map(String.init) ?? "n/a"
+        let description = "patchIndex \(patchText), setIndex \(setText)"
+        DispatchQueue.main.async { [weak self] in
+            self?.mainStageLastSelectionSent = description
+        }
+        appendLog("-> MainStage selection: \(description)")
     }
 
     // MARK: - Event handling
@@ -161,6 +217,83 @@ final class SLLinkController: ObservableObject {
             appendLog("Restart: repainting (SL88 retains no screen state across Standby).")
             display.invalidateAll()
             demoScreen.redrawAll()
+        }
+    }
+
+    // MARK: - MainStage bridge event handling
+    //
+    // `handleMainStage`/`setMainStageLive` are invoked by
+    // `MainStageEndpoint`'s callbacks, i.e. on `mainStageEndpoint.serialQueue`
+    // - `nonisolated` for the same reason as `handle(_:)` above.
+
+    nonisolated private func handleMainStage(_ inbound: MainStageInbound) {
+        switch inbound {
+        case .hello(let version, let appName):
+            appendLog("<- MainStage bridge: Hello (protocol v\(version), app \"\(appName)\")")
+        case .goodbye:
+            appendLog("<- MainStage bridge: Goodbye")
+            setMainStagePatchList(nil)
+        case .heartbeat(let sequence):
+            setMainStageHeartbeat(sequence: sequence)
+        case .patchList(let patchList):
+            appendLog("<- MainStage bridge: Patch List Dump (\(patchList.entries.count) entries, concert \"\(patchList.concertName)\")")
+            setMainStagePatchList(patchList)
+        }
+    }
+
+    nonisolated private func setMainStageLive(_ live: Bool) {
+        DispatchQueue.main.async { [weak self] in self?.mainStageBridgeLive = live }
+        appendLog("MainStage bridge \(live ? "live" : "down").")
+    }
+
+    nonisolated private func setMainStageEndpointPublished(_ published: Bool) {
+        DispatchQueue.main.async { [weak self] in self?.mainStageEndpointPublished = published }
+    }
+
+    nonisolated private func setMainStageHeartbeat(sequence: Int) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.mainStageLastHeartbeatAt = Date()
+            self.mainStageLastHeartbeatSeq = sequence
+        }
+    }
+
+    nonisolated private func setMainStagePatchList(_ patchList: MainStagePatchList?) {
+        DispatchQueue.main.async { [weak self] in self?.mainStagePatchList = patchList }
+    }
+
+    /// The plan's "is MainStage running" check
+    /// (docs/mainstage-integration.md's "Connection status" section, step
+    /// 2). **Finding, confirmed by running the actual sandboxed, signed
+    /// Debug build**: `NSWorkspace.shared.runningApplications` works fine
+    /// under App Sandbox (`ENABLE_APP_SANDBOX = YES`, confirmed via
+    /// `codesign -d --entitlements`) with no extra entitlement - a direct
+    /// run of the built `.app` logged `NSWorkspace reports 98 running
+    /// app(s)` (a real, non-empty list, with MainStage correctly reported
+    /// not running since it wasn't launched for that check) - so no
+    /// fallback to a combined state was needed here. Process enumeration
+    /// simply isn't one of the operations App Sandbox restricts (unlike
+    /// file/network/device access). This only distinguishes "MainStage not
+    /// running" from "running" though - it says nothing about whether the
+    /// device script actually bound; that's `mainStageBridgeLive`, driven
+    /// by `MainStageEndpoint`'s own heartbeat-timeout logic. `nonisolated`
+    /// so it's safe to call both directly from `init()` and from the
+    /// `Timer` closure `init()` schedules (which isn't main-actor-isolated
+    /// by its own type).
+    nonisolated func refreshMainStageProcessRunning() {
+        let apps = NSWorkspace.shared.runningApplications
+        let running = apps.contains { $0.bundleIdentifier == "com.apple.mainstage" }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.mainStageProcessRunning == nil {
+                // First check: prove the sandboxed call actually works by
+                // logging the total count too, not just the boolean - an
+                // empty/zero list here would be the tell that App Sandbox
+                // silently restricted this.
+                let message = "MainStage process check: NSWorkspace reports \(apps.count) running app(s); MainStage running = \(running)."
+                self.appendLog(message)
+            }
+            self.mainStageProcessRunning = running
         }
     }
 

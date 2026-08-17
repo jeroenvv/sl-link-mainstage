@@ -11,6 +11,8 @@ struct ContentView: View {
 
     @State private var hostIDText: String = ""
     @State private var deviceIDText: String = ""
+    @State private var testPatchIndexText: String = "0"
+    @State private var testSetIndexText: String = "0"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -64,6 +66,41 @@ struct ContentView: View {
                 .frame(height: 100)
             }
 
+            GroupBox("MainStage Bridge") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Endpoint: \(controller.mainStageEndpointPublished ? "published" : "NOT published")")
+                        Divider().frame(height: 14)
+                        Text("Bridge: \(controller.mainStageBridgeLive ? "LIVE" : "down")")
+                            .foregroundStyle(controller.mainStageBridgeLive ? .green : .secondary)
+                        Divider().frame(height: 14)
+                        Text("MainStage process: \(mainStageProcessText)")
+                        Spacer()
+                        Button("Check Now") { controller.refreshMainStageProcessRunning() }
+                    }
+                    .font(.system(.caption, design: .monospaced))
+
+                    Text("Last heartbeat: \(lastHeartbeatText)")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+
+                    Text("Patch list: \(patchListSummary)")
+                        .font(.system(.caption, design: .monospaced))
+
+                    HStack {
+                        Text("Test selection - PatchIndex")
+                        TextField("PatchIndex", text: $testPatchIndexText).frame(width: 40)
+                        Text("SetIndex")
+                        TextField("SetIndex", text: $testSetIndexText).frame(width: 40)
+                        Button("Send Selection") { sendTestSelection() }
+                        Spacer()
+                        Text("Last sent: \(controller.mainStageLastSelectionSent ?? "none")")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.system(.caption, design: .monospaced))
+                }
+            }
+
             GroupBox("MIDI Log") {
                 ScrollView {
                     LazyVStack(alignment: .leading) {
@@ -107,6 +144,39 @@ struct ContentView: View {
     private func commitIDPair() {
         guard let id1 = UInt8(hostIDText), let id2 = UInt8(deviceIDText) else { return }
         controller.setIDPair(id1: id1, id2: id2)
+    }
+
+    // MARK: - MainStage bridge dev-console helpers
+
+    private var mainStageProcessText: String {
+        switch controller.mainStageProcessRunning {
+        case .some(true): return "running"
+        case .some(false): return "not running"
+        case .none: return "unknown"
+        }
+    }
+
+    private var lastHeartbeatText: String {
+        guard let at = controller.mainStageLastHeartbeatAt else { return "none yet" }
+        let seq = controller.mainStageLastHeartbeatSeq.map { " (seq \($0))" } ?? ""
+        let secondsAgo = Int(Date().timeIntervalSince(at))
+        return "\(secondsAgo)s ago\(seq)"
+    }
+
+    private var patchListSummary: String {
+        guard let list = controller.mainStagePatchList else { return "none (waiting for MainStage)" }
+        let songCount = list.entries.filter { !$0.isPatch }.count
+        let patchCount = list.entries.filter(\.isPatch).count
+        return "\"\(list.concertName)\" - \(songCount) song(s), \(patchCount) patch(es)"
+    }
+
+    /// Manual verification aid for the virtual-endpoint gate (see the
+    /// project plan): with MainStage running and the device script
+    /// selected, this should make MainStage jump to the given patch.
+    private func sendTestSelection() {
+        let patchIndex = UInt8(testPatchIndexText)
+        let setIndex = UInt8(testSetIndexText)
+        controller.sendMainStageTestSelection(patchIndex: patchIndex, setIndex: setIndex)
     }
 }
 
