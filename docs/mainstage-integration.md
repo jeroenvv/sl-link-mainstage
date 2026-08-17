@@ -316,35 +316,79 @@ not our virtual destination `SL MainStage`, not `LINK`/`SL LINK`/`CTRL` (ports t
 owns), not omitting `outport`, not a plain Note On instead of SysEx. Verified against a
 positive-control-checked receiver.
 
-### Next thing to try (in progress)
+### Pivot (2026-08-18): matching moved from the virtual endpoint to the real SL88
 
-**Re-test whether Lua's `io` library works.** The earlier "io is unavailable" note was recorded when
-scripts never executed at all, so it proved nothing. If `io.open` works, the script can write the
-patch list to a file the app watches (e.g. under `~/Library/Application Support/`), bypassing MIDI
-entirely. Crude, but it only needs to carry a patch list a few times a second at most.
+The first attempt at the "next thing to try" above put an `io.open` probe on the *shipped*
+`config.lua` — which matched **generically** against the app's own virtual endpoint (manufacturer `SL
+Link Bridge`). That never had a chance to fire: the "Virtual device registration" section above already
+established that a bare `MIDISourceCreate`/`MIDIDestinationCreate` endpoint has no `MIDIDeviceRef`
+parent, and MainStage never binds `config.lua` to one. Testing on hardware correctly came back with
+nothing in either `/tmp/lua.log` or the probe file — not a new negative finding, just confirmation of
+the already-known dead end, applied to the wrong script by mistake.
 
-`config.lua` now has a minimal probe (`io_probe_write`, called from `controller_initialize` and
-`controller_timer_trigger`): it `pcall`-wraps `io.open('/tmp/sl-mainstage-io-probe.log', 'a')` and
-reports success/failure through `print()` either way, so the result lands in `/tmp/lua.log` under the
-existing debugging recipe even if `io.open` errors instead of returning `nil`. Not yet run against
-hardware — that's the next step. Remove the probe block once this is settled.
+The only match method ever confirmed to actually invoke a script is `usb_vendor_id`/`usb_product_id`
+against the **real SL88's** own USB IDs (`0x9516`/`0x4039`), from the Phase 0 v2 spike. `config.lua`
+now matches that way instead — it lives at `MainStageScript/STUDIOLOGIC/SL.device/config.lua` (moved
+from `SL MainStage.device/`) and `controller_info()` reports the SL88's own identity
+(`manufacturer='STUDIOLOGIC', model='SL'`) plus `usb_vendor_id = 38166, usb_product_id = 16441`
+(decimal, matching the field's convention in Apple's bundled `KeyLab 88.device/config.lua`).
+`Scripts/install-mainstage-script.sh` was updated to match (`STUDIOLOGIC/SL.device`, still installed
+under `MainStage Devices/`).
 
-**Also found and fixed while wiring this up:** `Scripts/install-mainstage-script.sh` and this script's
-own header comment still pointed at `~/Music/Audio Music Apps/MIDI Device Scripts/` — the *first*
-Phase 0 finding, which the Phase 0 v2 correction above already established is Logic Pro's folder, not
-MainStage's. Both now point at `MainStage Devices/`. This means every install since that correction
-was written silently put the script where MainStage never reads it — worth knowing if any hardware
-test between then and now looked like the script wasn't matching.
+**Consequence:** the script now occupies the SL88's own device-script slot instead of a separate
+identity. `MainStageProtocol.encodeSelection`/`MainStageEndpoint.sendSelection` (the app→MainStage
+patch-selection direction, sent from the app's *virtual* endpoint) were already flagged "unconfirmed"
+before this pivot; they're now less likely to work than before, since patchselector's Bank
+Select/Program Change handling is tied to whichever device MainStage matched the script to, which is
+no longer the virtual endpoint at all. Out of scope for the current (inbound, MainStage→app) work —
+noted here so nobody is surprised when testing selection-send later.
 
-### Then, in order of promise
+**Transport also switched, in the same change:** given Phase 0 v2 exhaustively found no `outport`
+value ever delivers, the lifecycle hooks (`controller_initialize`/`controller_finalize`/
+`controller_timer_trigger`/`controller_select_patch`) no longer attempt a MIDI send at all — they call
+a new `write_frame(path, event)` helper that `pcall`-wraps `io.open(path, 'wb')` and writes the exact
+same `F0...F7`-shaped byte sequence straight to one of two files (`/tmp/sl-mainstage-bridge-status.bin`
+for Hello/Heartbeat/Goodbye, `/tmp/sl-mainstage-bridge-patchlist.bin` for the patch list — each always
+fully overwritten, not appended, since only the latest state matters). Every write reports
+success/failure through `print()`, so this doubles as the `io`-library re-test the earlier probe was
+meant to be — no separate probe script needed now that the *matching* script itself is the one
+confirmed to run.
+
+**Verified without hardware, as far as that goes:** `luac -p` syntax-checks clean; a local Lua 5.5
+harness (`brew install lua`) drove every callback (`controller_info`, `controller_initialize`,
+`controller_timer_trigger`, `controller_select_patch` including its unchanged-dump dedup,
+`controller_finalize`, `controller_midi_in`'s Program-Change swallow) and confirmed both files get
+written with the right bytes; a throwaway Swift harness then fed those exact file bytes through the
+real `MainStageProtocol.decode` and got back correctly-typed `.hello`/`.goodbye`/`.patchList` values —
+so the Lua-write ↔ Swift-decode round trip is byte-for-byte confirmed. **What's not verified is
+anything requiring MainStage or the SL88 itself**: whether `usb_vendor_id` matching still fires now
+that the identity fields also changed, whether `io.open` truly succeeds inside MainStage's Lua sandbox
+(only ever tested outside it), and — a newly-identified concern, see below — whether the app can even
+read the file once written.
+
+### Open question before the app side can be wired up: can a sandboxed app read `/tmp`?
+
+`SL-Link-Mainstage` runs with `ENABLE_APP_SANDBOX = YES` and no filesystem entitlement beyond the
+default (see CLAUDE.md, and the "no MIDI-related entitlement present or added" note in the "Virtual
+device registration" section above). App Sandbox restricts file reads to the app's own container plus
+a short allow-list of special-cased locations; arbitrary absolute paths like `/tmp/sl-mainstage-
+bridge-status.bin` are very likely outside that list, meaning the app may not be able to read the file
+MainStage's Lua process just wrote, regardless of whether `io.open` itself works. The same problem
+would apply to `~/Library/Application Support/...`: the *sandboxed* app's view of that path is
+redirected into its own container, which is not the same real filesystem location an *unsandboxed*
+process like MainStage would write to. Untested — needs either confirming the default sandbox somehow
+permits this, or adding a read entitlement (most likely `com.apple.security.temporary-exception.files.
+absolute-path.read-only` scoped to the two bridge files) before the Swift-side file reader is worth
+writing. Flagged rather than resolved unilaterally, since adding a new entitlement is a real project
+decision, not a speculative one to make alone.
+
+### Then, in order of promise (once the sandbox question is settled)
 
 1. Whether MainStage requires the device to be accepted in a Control Surfaces / Layout setup step
-   before it will flush script-returned MIDI.
-2. Whether **generic** manufacturer/model matching behaves differently from USB-ID matching for
-   outbound delivery — the known-working reference scripts (Launchkey MK3; Apple's `KeyLab 88.device`
-   has `usb_vendor_id` commented out) rely on generic matching.
-3. Whether only `controller_midi_out` (Smart Control feedback, needs a Layout-mode mapping) is ever
-   actually flushed, as opposed to the lifecycle hooks used so far.
+   before it will flush script-returned MIDI — now moot for this project's own needs since the file
+   transport sidesteps outbound MIDI entirely, but left here in case MIDI delivery is ever revisited.
+2. Whether only `controller_midi_out` (Smart Control feedback, needs a Layout-mode mapping) is ever
+   actually flushed via MIDI, as opposed to the lifecycle hooks used so far — same caveat as above.
 
 ### Debugging recipe (don't rediscover this)
 

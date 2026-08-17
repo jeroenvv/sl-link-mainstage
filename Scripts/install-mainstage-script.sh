@@ -1,5 +1,11 @@
 #!/bin/bash
-# Installs the "SL MainStage" MainStage MIDI Device Script.
+# Installs the SL Link MainStage MIDI Device Script.
+#
+# Matched by usb_vendor_id/usb_product_id against the real SL88 MK2, not
+# generically against a virtual endpoint - see the MATCHING note at the top
+# of config.lua for why. The manufacturer/model directory names below are
+# therefore the SL88's own identity (STUDIOLOGIC/SL), not a separate
+# bridge-only identity.
 #
 # The app is sandboxed (ENABLE_APP_SANDBOX = YES, see CLAUDE.md) and can
 # never write outside its container, so it cannot place this file itself -
@@ -24,11 +30,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-DEVICE_NAME="SL MainStage.device"
-SOURCE_DIR="$REPO_ROOT/MainStageScript/$DEVICE_NAME"
+DEVICE_NAME="SL.device"
 
-# Must match controller_info()'s `manufacturer` field in config.lua.
-MANUFACTURER_DIR="SL Link Bridge"
+# Must match controller_info()'s `manufacturer`/`model` fields in config.lua.
+MANUFACTURER_DIR="STUDIOLOGIC"
+SOURCE_DIR="$REPO_ROOT/MainStageScript/$MANUFACTURER_DIR/$DEVICE_NAME"
 
 DEST_ROOT="$HOME/Music/Audio Music Apps/MainStage Devices"
 DEST_DIR="$DEST_ROOT/$MANUFACTURER_DIR/$DEVICE_NAME"

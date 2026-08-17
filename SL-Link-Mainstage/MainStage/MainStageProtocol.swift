@@ -1,14 +1,25 @@
 import Foundation
 
-// MARK: - SysEx dialect ("SM bridge")
+// MARK: - SysEx-shaped frame dialect ("SM bridge")
 //
-// Pure encode/decode for the private SysEx dialect shared with
-// `MainStageScript/SL MainStage.device/config.lua`. KEEP THIS COMMENT BLOCK
+// Pure encode/decode for the private frame dialect shared with
+// `MainStageScript/STUDIOLOGIC/SL.device/config.lua` (moved there from
+// `SL MainStage.device/` - see docs/mainstage-integration.md's "Pivot"
+// section: matching moved from a virtual endpoint, which MainStage never
+// binds a script to, to the real SL88 by USB ID). KEEP THIS COMMENT BLOCK
 // IN SYNC WITH THE MATCHING ONE AT THE TOP OF THAT FILE - the two are the
 // only source of truth for the wire format, and they must agree byte for
 // byte. `import Foundation` only: no CoreMIDI, no SwiftUI, so this file
 // compiles standalone into `Scripts/run-codec-tests.sh` alongside the SL
 // Link codec, per CLAUDE.md's "Codec tests" convention.
+//
+// Despite the name, this no longer travels as real MIDI SysEx: Phase 0 v2
+// found outbound MIDI from a MainStage device script is never delivered by
+// any `outport`, so the Lua side now writes these exact bytes to a file
+// instead of returning them as `{midi=...}`. The byte layout (still
+// `F0...F7`, still 7-bit-clean) is unchanged - only the transport is
+// different - so this decoder doesn't need to change, whichever side reads
+// the bytes off a file or (if MIDI delivery is ever unblocked) off CoreMIDI.
 //
 // Every byte between F0 and F7 is 7-bit (MSB clear); every string is
 // ASCII, 0x00-terminated; any value that can exceed 127 is split MSB-then-
