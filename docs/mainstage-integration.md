@@ -299,3 +299,52 @@ and it forecloses naive Architecture B (script → SL88 LINK directly) exactly a
 **Given this, "Architecture A" cannot be marked as working.** Recommend treating the device-script
 route as still blocked pending one of the above, and keeping the Program Change + `.concert`-parsing
 fallback (noted above) as the live default rather than a fallback-of-last-resort.
+
+## Where this stands — resume here
+
+**Script execution: SOLVED.** With both v1 bugs fixed the script matches and runs, and MainStage
+hands it real patch data:
+
+```
+LUA: Script matched for USB ID 0x9516,0x4039
+LUA: [probe] controller_initialize appName=MainStage
+LUA: [probe] controller_select_patch patch=C07 Strings
+```
+
+**Remaining blocker: outbound MIDI from the script never arrives.** No `outport` spelling delivered —
+not our virtual destination `SL MainStage`, not `LINK`/`SL LINK`/`CTRL` (ports the matched device
+owns), not omitting `outport`, not a plain Note On instead of SysEx. Verified against a
+positive-control-checked receiver.
+
+### Next thing to try (untested, cheap)
+
+**Re-test whether Lua's `io` library works.** The earlier "io is unavailable" note was recorded when
+scripts never executed at all, so it proved nothing. If `io.open` works, the script can write the
+patch list to a file the app watches (e.g. under `~/Library/Application Support/`), bypassing MIDI
+entirely. Crude, but it only needs to carry a patch list a few times a second at most.
+
+### Then, in order of promise
+
+1. Whether MainStage requires the device to be accepted in a Control Surfaces / Layout setup step
+   before it will flush script-returned MIDI.
+2. Whether **generic** manufacturer/model matching behaves differently from USB-ID matching for
+   outbound delivery — the known-working reference scripts (Launchkey MK3; Apple's `KeyLab 88.device`
+   has `usb_vendor_id` commented out) rely on generic matching.
+3. Whether only `controller_midi_out` (Smart Control feedback, needs a Layout-mode mapping) is ever
+   actually flushed, as opposed to the lifecycle hooks used so far.
+
+### Debugging recipe (don't rediscover this)
+
+- `defaults write com.apple.mainstage3 LUA_DEBUG -bool true`, and set it back to `false` afterwards.
+- `LUA:` output goes to **stdout only**: `/Applications/MainStage.app/Contents/MacOS/MainStage > /tmp/lua.log 2>&1 &`.
+  `log show`/`log stream` show nothing.
+- Script matching runs on **CoreMIDI device-add events**, not every launch. Unplug/replug the SL88 to
+  force a rescan.
+- Any MIDI sniffer must use `MIDIInputPortCreateWithBlock`. The C-function-pointer variant of
+  `MIDIInputPortCreate` silently receives nothing and has already produced one false negative here.
+- Reference working script: <https://github.com/mkuron/launchkey-mk3-mainstage>
+
+### Fallback if the script route stays blocked
+
+Program Change + `.concert` parsing. Concert structure is parseable: patch/song names are directory
+names under `Concert.patch/`, ordering comes from each level's `nodes` array. Loses live sync.
