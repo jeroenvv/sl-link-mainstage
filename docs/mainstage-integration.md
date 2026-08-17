@@ -316,12 +316,25 @@ not our virtual destination `SL MainStage`, not `LINK`/`SL LINK`/`CTRL` (ports t
 owns), not omitting `outport`, not a plain Note On instead of SysEx. Verified against a
 positive-control-checked receiver.
 
-### Next thing to try (untested, cheap)
+### Next thing to try (in progress)
 
 **Re-test whether Lua's `io` library works.** The earlier "io is unavailable" note was recorded when
 scripts never executed at all, so it proved nothing. If `io.open` works, the script can write the
 patch list to a file the app watches (e.g. under `~/Library/Application Support/`), bypassing MIDI
 entirely. Crude, but it only needs to carry a patch list a few times a second at most.
+
+`config.lua` now has a minimal probe (`io_probe_write`, called from `controller_initialize` and
+`controller_timer_trigger`): it `pcall`-wraps `io.open('/tmp/sl-mainstage-io-probe.log', 'a')` and
+reports success/failure through `print()` either way, so the result lands in `/tmp/lua.log` under the
+existing debugging recipe even if `io.open` errors instead of returning `nil`. Not yet run against
+hardware — that's the next step. Remove the probe block once this is settled.
+
+**Also found and fixed while wiring this up:** `Scripts/install-mainstage-script.sh` and this script's
+own header comment still pointed at `~/Music/Audio Music Apps/MIDI Device Scripts/` — the *first*
+Phase 0 finding, which the Phase 0 v2 correction above already established is Logic Pro's folder, not
+MainStage's. Both now point at `MainStage Devices/`. This means every install since that correction
+was written silently put the script where MainStage never reads it — worth knowing if any hardware
+test between then and now looked like the script wasn't matching.
 
 ### Then, in order of promise
 

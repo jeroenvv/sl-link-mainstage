@@ -7,11 +7,13 @@
 # wrapping it) whenever the script changes, and again after any MainStage
 # update that might reset or re-scan its script folders.
 #
-# Destination proven scanned by MainStage 3.7.1 in the Phase 0 spike (see
-# docs/mainstage-integration.md): MainStage reads
-#   ~/Music/Audio Music Apps/MIDI Device Scripts/<Manufacturer>/<Model>.device/
-# with no admin rights required and no modification of MainStage.app itself,
-# so the install survives app updates.
+# Destination confirmed by the Phase 0 v2 spike (see docs/mainstage-integration.md):
+# MainStage actually loads from
+#   ~/Music/Audio Music Apps/MainStage Devices/<Manufacturer>/<Model>.device/
+# NOT "MIDI Device Scripts", which is Logic Pro's folder of the same shape -
+# an earlier version of this comment got that wrong and cost several rounds
+# of the script silently never matching. No admin rights required and no
+# modification of MainStage.app itself, so the install survives app updates.
 #
 # Idempotent: safe to re-run any time (e.g. after editing config.lua, or
 # after a MainStage update) - it just re-copies the current source over
@@ -28,7 +30,7 @@ SOURCE_DIR="$REPO_ROOT/MainStageScript/$DEVICE_NAME"
 # Must match controller_info()'s `manufacturer` field in config.lua.
 MANUFACTURER_DIR="SL Link Bridge"
 
-DEST_ROOT="$HOME/Music/Audio Music Apps/MIDI Device Scripts"
+DEST_ROOT="$HOME/Music/Audio Music Apps/MainStage Devices"
 DEST_DIR="$DEST_ROOT/$MANUFACTURER_DIR/$DEVICE_NAME"
 
 if [ ! -f "$SOURCE_DIR/config.lua" ]; then

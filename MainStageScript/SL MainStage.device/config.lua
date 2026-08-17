@@ -13,7 +13,9 @@
 --
 -- Installed outside the app bundle (the app is sandboxed and cannot write
 -- here itself) via Scripts/install-mainstage-script.sh, into:
---   ~/Music/Audio Music Apps/MIDI Device Scripts/<manufacturer>/<model>.device/
+--   ~/Music/Audio Music Apps/MainStage Devices/<manufacturer>/<model>.device/
+-- ("MIDI Device Scripts" is Logic Pro's folder of the same shape - see
+-- docs/mainstage-integration.md's Phase 0 v2 correction.)
 --
 -- =========================================================================
 -- SysEx dialect ("SM bridge") - KEEP THIS BLOCK IN SYNC WITH
@@ -120,6 +122,32 @@ HEARTBEAT_MS = 2000
 heartbeatSeq = 0
 savedPatchListEvent = {}
 
+-- MARK: - io probe (temporary - see docs/mainstage-integration.md "Next
+-- thing to try"). The earlier "io is unavailable" finding was recorded
+-- before any script was confirmed to run at all, so it proved nothing.
+-- This re-tests io.open now that matching/execution are known-good. Every
+-- call path is wrapped in pcall and reports through print() (confirmed
+-- working via LUA_DEBUG) so the result is visible in /tmp/lua.log even if
+-- io.open itself errors instead of returning nil. Remove this block once
+-- the question is settled either way.
+IO_PROBE_PATH = '/tmp/sl-mainstage-io-probe.log'
+
+function io_probe_write(tag)
+	local ok, err = pcall(function()
+		local file = io.open(IO_PROBE_PATH, 'a')
+		if file == nil then
+			print('[io-probe] io.open returned nil for tag=' .. tag)
+			return
+		end
+		file:write('[' .. tag .. '] write ok\n')
+		file:close()
+		print('[io-probe] wrote tag=' .. tag)
+	end)
+	if not ok then
+		print('[io-probe] pcall error for tag=' .. tag .. ': ' .. tostring(err))
+	end
+end
+
 -- MARK: - Helpers
 
 -- 0x00-terminates an ASCII string into a growable event table.
@@ -162,6 +190,8 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	heartbeatSeq = 0
 	savedPatchListEvent = {}
 
+	io_probe_write('controller_initialize')
+
 	event = bridge_header(FUNC_HELLO)
 	table.insert(event, PROTOCOL_VERSION)
 	append_string(event, applicationName)
@@ -181,6 +211,8 @@ end
 -- this same callback.
 function controller_timer_trigger()
 	settriggertimer(HEARTBEAT_MS)
+
+	io_probe_write('controller_timer_trigger')
 
 	heartbeatSeq = (heartbeatSeq + 1) % 16384
 	seqMSB, seqLSB = msb_lsb(heartbeatSeq)
