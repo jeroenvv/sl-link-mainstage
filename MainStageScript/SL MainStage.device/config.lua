@@ -83,14 +83,16 @@
 -- Patch selection (app -> MainStage, the other direction) is deliberately
 -- NOT SysEx: `controller_info()` below declares `patchselector = true`, so
 -- MainStage's own core - not this script - expects the device to select a
--- patch with plain Bank Select MSB/LSB followed by a Program Change, per
--- the project plan: Bank Select MSB = PatchIndex, Bank Select LSB =
--- SetIndex, then Program Change (on MIDI channel 1, i.e. status bytes 0xB0/
--- 0xC0, matching the VAX77 reference). NOTE: the VAX77 script's own
--- comment and its `controller_select_patch` code both do the opposite
--- (Bank Select MSB = SetIndex via CC0, LSB = PatchIndex via CC32) - see
--- MainStageProtocol.swift's `encodeSelection` doc comment for the full
--- discrepancy. This script never needs to send that triple itself (that is
+-- patch with plain Bank Select MSB/LSB followed by a Program Change:
+-- Bank Select MSB (CC0) = SetIndex, Bank Select LSB (CC32) = PatchIndex,
+-- then a Program Change, all on MIDI channel 16 (status bytes 0xBF/0xCF).
+-- That ordering and channel come from the VAX77 reference script's header,
+-- which states what MainStage itself listens for: "MainStage is listening
+-- to MIDI Bank Select MSB/LSB on channel 16, with MSB being an index to the
+-- set that should be selected and LSB being the patch inside this set." Do
+-- not take the "bank select MSB/LSB" labels further down that script as the
+-- contract - those describe its own device-bound SysEx dump, not what
+-- MainStage receives. This script never sends that triple itself (that is
 -- the app's job); it is documented here only so both ends agree on what
 -- the app will emit and what this script's `controller_midi_in` must
 -- therefore swallow.

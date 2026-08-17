@@ -563,27 +563,27 @@ check(
 
 // MARK: Patch selection encode (app -> MainStage)
 //
-// Bank Select MSB = PatchIndex, Bank Select LSB = SetIndex, then Program
-// Change - see MainStageProtocol.encodeSelection's doc comment for the
-// unresolved discrepancy against the VAX77 reference script's own
-// (inverted) MSB/LSB usage, flagged there for hardware verification.
+// Bank Select MSB (CC0) = SetIndex, Bank Select LSB (CC32) = PatchIndex,
+// then Program Change, on channel 16 (status nibble 0x0F). Ordering and
+// channel both come from the VAX77 reference script's header, which states
+// what MainStage listens for. See MainStageProtocol.encodeSelection.
 
 checkBytes(
-    "MainStage encodeSelection",
+    "MainStage encodeSelection: MSB=set, LSB=patch, channel 16",
     MainStageProtocol.encodeSelection(patchIndex: 3, setIndex: 1),
-    [0xB0, 0x00, 3, 0xB0, 0x20, 1, 0xC0, 0x7F]
+    [0xBF, 0x00, 1, 0xBF, 0x20, 3, 0xCF, 0x7F]
 )
 
 checkBytes(
     "MainStage encodeSelection with nil indices sends the 0x7F sentinel",
     MainStageProtocol.encodeSelection(patchIndex: nil, setIndex: nil),
-    [0xB0, 0x00, 0x7F, 0xB0, 0x20, 0x7F, 0xC0, 0x7F]
+    [0xBF, 0x00, 0x7F, 0xBF, 0x20, 0x7F, 0xCF, 0x7F]
 )
 
 checkBytes(
-    "MainStage encodeSelection on a non-zero channel",
+    "MainStage encodeSelection honours an explicit channel override",
     MainStageProtocol.encodeSelection(patchIndex: 5, setIndex: 2, channel: 3),
-    [0xB3, 0x00, 5, 0xB3, 0x20, 2, 0xC3, 0x7F]
+    [0xB3, 0x00, 2, 0xB3, 0x20, 5, 0xC3, 0x7F]
 )
 
 // MARK: - Summary

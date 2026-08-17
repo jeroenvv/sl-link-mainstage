@@ -257,36 +257,38 @@ nonisolated enum MainStageProtocol {
     // MARK: - Encode (app -> MainStage: patch selection)
 
     /// Encodes a patch selection as plain (non-SysEx) MIDI: Bank Select MSB
-    /// = PatchIndex, Bank Select LSB = SetIndex, then Program Change - per
-    /// the project plan, and matching `controller_info()`'s
-    /// `patchselector = true` in `config.lua`. Channel 1 (status nibble 0),
-    /// matching the Infinite Response VAX77 reference script's own
-    /// `controller_select_patch` MIDI (`0xB0`/`0xC0`).
+    /// (CC0) = **SetIndex**, Bank Select LSB (CC32) = **PatchIndex**, then a
+    /// Program Change - on **channel 16** - matching `controller_info()`'s
+    /// `patchselector = true` in `config.lua`.
     ///
-    /// **Unresolved discrepancy, flagged for hardware verification**: the
-    /// VAX77 script's own top-of-file comment ("MainStage is listening to
-    /// MIDI Bank Select MSB/LSB ... with MSB being an index to the set ...
-    /// and LSB being the patch inside this set") and its
-    /// `controller_select_patch` code (`0xB0,0x00,currentSetIndex` then
-    /// `0xB0,0x20,currentPatchIndex` - CC0 is Bank Select MSB, CC32 is Bank
-    /// Select LSB) both actually encode **MSB = SetIndex, LSB = PatchIndex
-    /// - the opposite of what this function implements**. This function
-    /// instead follows the project plan's explicit instruction (MSB =
-    /// PatchIndex, LSB = SetIndex), stated directly and more than once, on
-    /// the theory that the plan's author read MainStage's actual (closed-
-    /// source) patchselector core rather than paraphrasing VAX77's SysEx-
-    /// dump comment. The two cannot both be right against real MainStage,
-    /// and unlike the SL Link layer's own three documented deviations
-    /// (CLAUDE.md), **this one has not been confirmed against real
-    /// hardware/MainStage** - swap `patchIndex`/`setIndex` below if Phase
-    /// 3/4 hardware testing shows a selection lands in the wrong set.
-    static func encodeSelection(patchIndex: UInt8?, setIndex: UInt8?, channel: UInt8 = 0) -> [UInt8] {
+    /// The ordering and the channel both come from the Infinite Response
+    /// VAX77 reference script, whose header states what MainStage itself
+    /// listens for:
+    ///
+    /// > MainStage is listening to MIDI Bank Select MSB/LSB on channel 16,
+    /// > with MSB being an index to the set that should be selected and LSB
+    /// > being the patch inside this set.
+    ///
+    /// Its code agrees (`0xB0,0x00,currentSetIndex` and
+    /// `0xB0,0x20,currentPatchIndex`).
+    ///
+    /// An earlier revision had MSB and LSB swapped and defaulted to channel
+    /// 1, taken from the "bank select MSB/LSB" labels further down that
+    /// script. Those labels describe the VAX77's *own* device-bound SysEx
+    /// dump - what it tells its hardware to send later - not what MainStage
+    /// receives, and the channel was missed entirely. The header is the
+    /// authoritative statement of the host-facing contract.
+    ///
+    /// Still unconfirmed against real MainStage: the whole `patchselector`
+    /// path depends on MainStage generically matching a *virtual* endpoint,
+    /// which no shipped script does. Verify before trusting.
+    static func encodeSelection(patchIndex: UInt8?, setIndex: UInt8?, channel: UInt8 = 15) -> [UInt8] {
         let ch = channel & 0x0F
         let controlChange: UInt8 = 0xB0 | ch
         let programChange: UInt8 = 0xC0 | ch
         return [
-            controlChange, 0x00, indexByte(patchIndex), // Bank Select MSB = PatchIndex
-            controlChange, 0x20, indexByte(setIndex),   // Bank Select LSB = SetIndex
+            controlChange, 0x00, indexByte(setIndex),   // Bank Select MSB (CC0)  = SetIndex
+            controlChange, 0x20, indexByte(patchIndex), // Bank Select LSB (CC32) = PatchIndex
             programChange, MainStageHeader.indexNone,   // PC value is irrelevant to patchselector; VAX77 uses 0x7F
         ]
     }
