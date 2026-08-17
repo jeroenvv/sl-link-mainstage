@@ -252,12 +252,26 @@ final class SLLinkController: ObservableObject {
         case .goodbye:
             appendLog("<- MainStage bridge: Goodbye")
             setMainStagePatchList(nil)
+            session.perform { [weak self] in self?.demoScreen.showMainStageStatus(nil) }
         case .heartbeat(let sequence):
             setMainStageHeartbeat(sequence: sequence)
         case .patchList(let patchList):
             appendLog("<- MainStage bridge: Patch List Dump (\(patchList.entries.count) entries, concert \"\(patchList.concertName)\")")
             setMainStagePatchList(patchList)
+            let label = Self.currentPatchLabel(patchList) ?? patchList.concertName
+            session.perform { [weak self] in self?.demoScreen.showMainStageStatus("MainStage: \(label)") }
         }
+    }
+
+    /// The currently-selected entry's label, if `currentPatchIndex` names
+    /// one that actually exists in `entries` - falls back to the concert
+    /// name in the caller above when it doesn't (e.g. no patch selected
+    /// yet, or a set/song rather than a patch is current).
+    nonisolated private static func currentPatchLabel(_ list: MainStagePatchList) -> String? {
+        guard let patchIndex = list.currentPatchIndex else { return nil }
+        return list.entries.first {
+            $0.isPatch && $0.patchIndex == patchIndex && $0.setIndex == list.currentSetIndex
+        }?.label
     }
 
     nonisolated private func setMainStageLive(_ live: Bool) {

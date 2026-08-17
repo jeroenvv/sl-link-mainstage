@@ -1,7 +1,8 @@
 import Foundation
 import CoreMIDI
 
-/// CoreMIDI virtual endpoint pair for the MainStage bridge.
+/// CoreMIDI virtual endpoint pair, plus the file-based bridge poller, for
+/// the MainStage bridge.
 ///
 /// Mirrors `SLLinkTransport`'s patterns deliberately (the RT-safe ring
 /// buffer, the `MIDIReadProc` trampoline that only copies bytes, serial-
@@ -9,34 +10,63 @@ import CoreMIDI
 /// talks CoreMIDI's *virtual* endpoint API instead of connecting to a real
 /// device, since this side of the bridge doesn't exist as hardware: we
 /// publish a **source** (data we generate, which MainStage reads from us -
-/// this is where patch *selections* go) and a **destination** (data
-/// MainStage sends, which we read - this is where the SysEx dump/hello/
-/// heartbeat/goodbye from `config.lua` arrive), both tagged with
-/// `kMIDIPropertyManufacturer`/`kMIDIPropertyModel` to match
-/// `controller_info()` in `MainStageScript/SL MainStage.device/config.lua`.
+/// this is where patch *selections* go, though see
+/// `MainStageScript/STUDIOLOGIC/SL.device/config.lua`'s MATCHING note for
+/// why that direction is doubtful now) and a **destination** (data
+/// MainStage would send us over MIDI, which this destination exists to
+/// read - kept even though nothing currently arrives this way, per
+/// docs/mainstage-integration.md: if MIDI delivery is ever unblocked in a
+/// future MainStage version, this path starts working with no further
+/// code changes).
+///
+/// The path that actually carries data today is `pollBridgeFiles`, called
+/// on `serialQueue`'s own timer: `config.lua` writes Hello/Heartbeat/
+/// Goodbye and Patch List Dump frames straight to two files (see the
+/// TRANSPORT note in that same config.lua) since Phase 0 v2 established no
+/// MIDI `outport` is ever delivered. Both the file-poll and CoreMIDI-
+/// destination paths decode with the same `MainStageProtocol.decode` and
+/// feed the same `deliver(_:)`, so `onInbound`/liveness tracking don't care
+/// which transport actually produced a given frame.
 ///
 /// Threading contract is identical to `SLLinkTransport` (see CLAUDE.md):
 /// `mainStageBridgeReadProc` is the only code that runs on CoreMIDI's
 /// real-time thread, and it does nothing but copy bytes into
 /// `SLLinkRingBuffer` (reused as-is - it's a generic byte ring buffer, not
 /// SL-Link-specific despite the name). Everything else - reassembly,
-/// decoding, liveness bookkeeping - happens on `serialQueue`. Deliberately
-/// not `@MainActor`, for the same reason as `SLLinkTransport`: the
-/// project-wide `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` default would
-/// otherwise make this cross-isolation from the callback's point of view.
+/// decoding, liveness bookkeeping, file polling - happens on `serialQueue`.
+/// Deliberately not `@MainActor`, for the same reason as `SLLinkTransport`:
+/// the project-wide `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` default
+/// would otherwise make this cross-isolation from the callback's point of
+/// view.
 ///
 /// `@unchecked Sendable`: all mutable state is confined to `serialQueue`,
 /// which the compiler can't verify but which this file maintains by hand -
 /// same rationale as `SLLinkTransport`.
 nonisolated final class MainStageEndpoint: @unchecked Sendable {
 
-    /// Must match `controller_info()`'s `manufacturer`/`model` fields in
-    /// `config.lua` exactly, and must NOT be the physical SL88's own
-    /// identity (`STUDIOLOGIC`/`SL`) - see CLAUDE.md and
-    /// docs/mainstage-integration.md.
+    /// This virtual endpoint's own identity - unrelated to
+    /// `config.lua`'s `controller_info()` now that matching moved to
+    /// `usb_vendor_id`/`usb_product_id` against the real SL88
+    /// (`STUDIOLOGIC`/`SL`; see that file's MATCHING note and
+    /// docs/mainstage-integration.md's "Pivot" section). Kept distinct on
+    /// purpose so this endpoint is never confused for the real keyboard in
+    /// the macOS MIDI setup, even though nothing currently matches on it.
     static let manufacturer = "SL Link Bridge"
     static let model = "SL MainStage"
     static let endpointName = "SL MainStage"
+
+    /// Must match `STATUS_PATH`/`PATCHLIST_PATH` in config.lua exactly.
+    /// Reads happen via these `/tmp/...` paths (the OS resolves the
+    /// `/private/tmp` symlink transparently at open time); only the
+    /// *entitlement* declaring read access needed the resolved form - see
+    /// `SL-Link-Mainstage.entitlements`'s comment for why.
+    static let statusFilePath = "/tmp/sl-mainstage-bridge-status.bin"
+    static let patchlistFilePath = "/tmp/sl-mainstage-bridge-patchlist.bin"
+    /// How often to check the bridge files for new content. Well under the
+    /// script's own 2s heartbeat cadence so a patch change feels immediate,
+    /// but not so tight it burns CPU polling a file that usually hasn't
+    /// changed.
+    static let filePollInterval: TimeInterval = 0.3
 
     /// How often `config.lua`'s `controller_timer_trigger` is expected to
     /// beat (`HEARTBEAT_MS` there). Purely documentation here; the timeout
@@ -67,10 +97,18 @@ nonisolated final class MainStageEndpoint: @unchecked Sendable {
     private let ringBuffer = SLLinkRingBuffer()
     private var tick: DispatchSourceTimer?
     private var livenessTimer: DispatchSourceTimer?
+    private var filePollTimer: DispatchSourceTimer?
 
     // Reassembly state - serialQueue only.
     private var frame: [UInt8] = []
     private var inFrame = false
+
+    // File-poll transport state - serialQueue only. Last-seen raw bytes per
+    // file, so an unchanged file (the common case - config.lua itself
+    // already skips redundant patch-list writes, and the status file only
+    // changes once per heartbeat) doesn't get re-decoded/re-delivered.
+    private var lastStatusFileContents: Data?
+    private var lastPatchlistFileContents: Data?
 
     // Outbound pacing state - serialQueue only.
     private var outbox: [[UInt8]] = []
@@ -133,6 +171,7 @@ nonisolated final class MainStageEndpoint: @unchecked Sendable {
             isPublished = true
             startTick()
             startLivenessTimer()
+            startFilePolling()
             onLog?("MainStage bridge endpoint published (\"\(Self.endpointName)\", manufacturer \"\(Self.manufacturer)\").")
 
             // Device registration spike - see MainStageDeviceRegistration
@@ -158,6 +197,8 @@ nonisolated final class MainStageEndpoint: @unchecked Sendable {
             tick = nil
             livenessTimer?.cancel()
             livenessTimer = nil
+            filePollTimer?.cancel()
+            filePollTimer = nil
 
             if isDeviceRegistered {
                 MainStageDeviceRegistration.remove(registeredDevice) { [weak self] message in self?.onLog?(message) }
@@ -175,6 +216,8 @@ nonisolated final class MainStageEndpoint: @unchecked Sendable {
             isPublished = false
             isLive = false
             lastLiveAt = nil
+            lastStatusFileContents = nil
+            lastPatchlistFileContents = nil
         }
     }
 
@@ -298,7 +341,13 @@ nonisolated final class MainStageEndpoint: @unchecked Sendable {
             onLog?("MainStage bridge: unrecognized/malformed frame (\(bytes.count) bytes)")
             return
         }
+        deliver(message)
+    }
 
+    /// Common landing point for a decoded frame regardless of which
+    /// transport produced it (CoreMIDI destination or file poll below) -
+    /// liveness tracking and `onInbound` don't care which one it was.
+    private func deliver(_ message: MainStageInbound) {
         switch message {
         case .hello, .heartbeat, .patchList:
             markLive()
@@ -307,6 +356,41 @@ nonisolated final class MainStageEndpoint: @unchecked Sendable {
         }
 
         onInbound?(message)
+    }
+
+    // MARK: - File-poll transport
+    //
+    // The path that actually carries data today - see this file's
+    // type-level doc comment and the TRANSPORT note in config.lua. Runs on
+    // `serialQueue` via its own timer, same discipline as `startTick`/
+    // `startLivenessTimer` below.
+
+    private func startFilePolling() {
+        let timer = DispatchSource.makeTimerSource(queue: serialQueue)
+        timer.schedule(deadline: .now(), repeating: Self.filePollInterval)
+        timer.setEventHandler { [weak self] in self?.pollBridgeFiles() }
+        timer.resume()
+        filePollTimer = timer
+    }
+
+    private func pollBridgeFiles() {
+        pollBridgeFile(path: Self.statusFilePath, lastContents: &lastStatusFileContents)
+        pollBridgeFile(path: Self.patchlistFilePath, lastContents: &lastPatchlistFileContents)
+    }
+
+    /// Reads `path`, and if its bytes differ from `lastContents` (including
+    /// the first time the file is seen), decodes and delivers it. Missing
+    /// files (script hasn't run yet, or nothing's been written since app
+    /// launch) are silently skipped, not logged - that's the expected state
+    /// until MainStage actually invokes the script.
+    private func pollBridgeFile(path: String, lastContents: inout Data?) {
+        guard let data = FileManager.default.contents(atPath: path), data != lastContents else { return }
+        lastContents = data
+        guard let message = MainStageProtocol.decode([UInt8](data)) else {
+            onLog?("MainStage bridge: unrecognized/malformed bridge file at \(path) (\(data.count) bytes)")
+            return
+        }
+        deliver(message)
     }
 
     // MARK: - Liveness

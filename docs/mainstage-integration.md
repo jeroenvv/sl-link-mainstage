@@ -382,13 +382,58 @@ absolute-path.read-only` scoped to the two bridge files) before the Swift-side f
 writing. Flagged rather than resolved unilaterally, since adding a new entitlement is a real project
 decision, not a speculative one to make alone.
 
-### Then, in order of promise (once the sandbox question is settled)
+### Resolved on real hardware (2026-08-18): `io` is not available either — both transports are dead
 
-1. Whether MainStage requires the device to be accepted in a Control Surfaces / Layout setup step
-   before it will flush script-returned MIDI — now moot for this project's own needs since the file
-   transport sidesteps outbound MIDI entirely, but left here in case MIDI delivery is ever revisited.
-2. Whether only `controller_midi_out` (Smart Control feedback, needs a Layout-mode mapping) is ever
-   actually flushed via MIDI, as opposed to the lifecycle hooks used so far — same caveat as above.
+The sandbox-read question above got resolved (scoped `temporary-exception` entitlement, working - see
+the entitlements file's own comment for the `/private/tmp` vs `/tmp` gotcha), so the Swift-side file
+poller (`MainStageEndpoint.pollBridgeFiles`) got built and verified: a manually-written pair of bridge
+files was correctly read, decoded, delivered through `onInbound`, and (with a real SL88 in `.active`
+session state) actually repainted the title bar on the physical keyboard's screen
+(`SLLinkDemoScreen.showMainStageStatus`, confirmed visually by the user) - so the **app-side half of
+the file transport works end to end**.
+
+Then the same script was installed for real (`Scripts/install-mainstage-script.sh`) and MainStage
+relaunched with `LUA_DEBUG` on, stdout to `/tmp/lua.log`, against a real SL88 and a real loaded
+concert. Two things came back:
+
+```
+LUA: Script matched for USB ID 0x9516,0x4039
+[bridge] pcall error writing /tmp/sl-mainstage-bridge-status.bin: [string "?"]:183: attempt to index global 'io' (a nil value)
+```
+
+1. **USB-ID matching against the real SL88 is confirmed solid** - fires immediately on launch (no
+   unplug/replug needed this time; the device was already connected), twice per launch as before.
+2. **`io` is not merely restricted - the global doesn't exist in MainStage's Lua sandbox at all.**
+   `attempt to index global 'io' (a nil value)` is a stricter failure than `io.open` returning `nil`;
+   the earlier pre-Phase-0-v2 "io is unavailable" finding, which this session's earlier work set out to
+   overturn on the theory that it was recorded before any script was confirmed to run, turns out to
+   have been *right* after all - just for a different reason than "unproven." Every lifecycle hook kept
+   firing normally afterward (`controller_initialize`/`controller_timer_trigger`/`controller_select_patch`
+   all still ran - both the status and patchlist write attempts recurred on their normal cadence) because
+   every call site is `pcall`-wrapped; without that, this would have been a hard Lua error on every single
+   invocation instead of a clean, visible log line. MainStage itself never crashed or hiccuped.
+
+**Both candidate transports for Lua -> app data are now confirmed dead on real hardware**: MIDI
+`outport` (Phase 0 v2, exhaustive) and `io.open` (this section). Nothing else in the shipped Lua API
+(see the Script API table near the top of this file) offers a third way to get bytes out of a device
+script. The file-write code in `config.lua`/`MainStageEndpoint.swift`'s poller is harmless (fails
+silently via `pcall`, costs nothing) but is now dead weight - kept in place pending a decision on
+whether to strip it, rather than removed reflexively, since the app-side half (file read -> decode ->
+screen paint) is itself a real, working, reusable piece if a third transport ever surfaces.
+
+**This forecloses the device-script route for the MainStage -> app direction entirely**, not just one
+implementation of it. The only thing device scripts still plausibly offer this project is the other
+direction (app -> MainStage patch selection via `patchselector`'s Bank Select/Program Change), which
+was already flagged unconfirmed and now doubly so post-pivot (see the "Pivot" section above) - and
+even that has no dependency on `outport`/`io` since it's the device (this script) declaring
+`patchselector = true` and MainStage's own core, not the script, doing the receiving.
+
+**Next decision: pursue the documented fallback.** Program Change + `.concert` parsing - noted
+throughout this file as the fallback-of-last-resort - is now the only live option for the
+MainStage -> app direction. Concert structure is parseable: patch/song names are directory names under
+`Concert.patch/`, ordering comes from each level's `nodes` array. Loses live sync (the app would need
+to re-parse on some trigger, not get pushed updates) and needs Program Change numbers to be derivable
+or MainStage's "Reset Program Numbers" to be usable, neither confirmed. Not started.
 
 ### Debugging recipe (don't rediscover this)
 
