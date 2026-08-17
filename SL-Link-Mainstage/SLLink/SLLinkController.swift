@@ -47,6 +47,13 @@ final class SLLinkController: ObservableObject {
 
     @Published private(set) var mainStageEndpointPublished = false
     @Published private(set) var mainStageBridgeLive = false
+    /// Outcome of the `MainStageDeviceRegistration` spike - see that file
+    /// and `docs/mainstage-integration.md`'s "Virtual device registration"
+    /// section. Expected to stay `false` with a `paramErr` summary on
+    /// current macOS; the bare endpoint above (`mainStageEndpointPublished`)
+    /// is unaffected either way.
+    @Published private(set) var mainStageDeviceRegistered = false
+    @Published private(set) var mainStageDeviceRegistrationSummary = "not attempted"
     @Published private(set) var mainStageLastHeartbeatAt: Date?
     @Published private(set) var mainStageLastHeartbeatSeq: Int?
     @Published private(set) var mainStagePatchList: MainStagePatchList?
@@ -91,6 +98,9 @@ final class SLLinkController: ObservableObject {
         mainStageEndpoint.onLog = { [weak self] message in self?.appendLog(message) }
         mainStageEndpoint.onInbound = { [weak self] inbound in self?.handleMainStage(inbound) }
         mainStageEndpoint.onLiveChanged = { [weak self] live in self?.setMainStageLive(live) }
+        mainStageEndpoint.onDeviceRegistrationChanged = { [weak self] registered, summary in
+            self?.setMainStageDeviceRegistration(registered: registered, summary: summary)
+        }
         setMainStageEndpointPublished(mainStageEndpoint.start())
 
         refreshMainStageProcessRunning()
@@ -152,6 +162,15 @@ final class SLLinkController: ObservableObject {
     /// running and the device script selected, send an arbitrary selection
     /// and confirm MainStage jumps to the corresponding patch. `nil`
     /// indices send the `0x7F` "n/a" sentinel.
+    /// Dev-console "Remove Device" button (project plan constraint 2): lets
+    /// the user clean up the MIDI setup by hand regardless of what state
+    /// `MainStageEndpoint` thinks it's in. Safe to press even when
+    /// `mainStageDeviceRegistered` is already `false` - see
+    /// `MainStageEndpoint.removeDeviceManually()`.
+    func removeMainStageDevice() {
+        mainStageEndpoint.removeDeviceManually()
+    }
+
     func sendMainStageTestSelection(patchIndex: UInt8?, setIndex: UInt8?) {
         mainStageEndpoint.sendSelection(patchIndex: patchIndex, setIndex: setIndex)
         let patchText = patchIndex.map(String.init) ?? "n/a"
@@ -248,6 +267,13 @@ final class SLLinkController: ObservableObject {
 
     nonisolated private func setMainStageEndpointPublished(_ published: Bool) {
         DispatchQueue.main.async { [weak self] in self?.mainStageEndpointPublished = published }
+    }
+
+    nonisolated private func setMainStageDeviceRegistration(registered: Bool, summary: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.mainStageDeviceRegistered = registered
+            self?.mainStageDeviceRegistrationSummary = summary
+        }
     }
 
     nonisolated private func setMainStageHeartbeat(sequence: Int) {

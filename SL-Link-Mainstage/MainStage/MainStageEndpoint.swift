@@ -53,6 +53,10 @@ nonisolated final class MainStageEndpoint: @unchecked Sendable {
     var onInbound: ((MainStageInbound) -> Void)?
     /// Fired whenever the bridge transitions live <-> down.
     var onLiveChanged: ((Bool) -> Void)?
+    /// Fired once per `start()`/manual-removal call with the outcome of the
+    /// `MainStageDeviceRegistration` spike - see that file for what it does
+    /// and why it's expected to fail on current macOS.
+    var onDeviceRegistrationChanged: ((_ registered: Bool, _ summary: String) -> Void)?
 
     let serialQueue = DispatchQueue(label: "com.sllink.mainstage.serial")
 
@@ -75,6 +79,13 @@ nonisolated final class MainStageEndpoint: @unchecked Sendable {
     private var lastLiveAt: Date?
     private(set) var isLive = false
     private(set) var isPublished = false
+
+    // Device registration spike (see MainStageDeviceRegistration.swift) -
+    // serialQueue only. `registeredDevice` is only ever non-zero between a
+    // successful `MainStageDeviceRegistration.attempt` and the matching
+    // `remove` call.
+    private var registeredDevice = MIDIDeviceRef()
+    private(set) var isDeviceRegistered = false
 
     init() {}
 
@@ -123,6 +134,20 @@ nonisolated final class MainStageEndpoint: @unchecked Sendable {
             startTick()
             startLivenessTimer()
             onLog?("MainStage bridge endpoint published (\"\(Self.endpointName)\", manufacturer \"\(Self.manufacturer)\").")
+
+            // Device registration spike - see MainStageDeviceRegistration
+            // for what this does and why it's expected to fail on current
+            // macOS. Clean up anything a crashed/force-quit previous run
+            // left behind before attempting a fresh registration (project
+            // plan constraint 2), regardless of whether this attempt
+            // succeeds - the bare endpoints published above are already the
+            // working path either way.
+            MainStageDeviceRegistration.removeStaleDevices { [weak self] message in self?.onLog?(message) }
+            let registration = MainStageDeviceRegistration.attempt { [weak self] message in self?.onLog?(message) }
+            registeredDevice = registration.device
+            isDeviceRegistered = registration.succeeded
+            onDeviceRegistrationChanged?(registration.succeeded, registration.summary)
+
             return true
         }
     }
@@ -134,6 +159,12 @@ nonisolated final class MainStageEndpoint: @unchecked Sendable {
             livenessTimer?.cancel()
             livenessTimer = nil
 
+            if isDeviceRegistered {
+                MainStageDeviceRegistration.remove(registeredDevice) { [weak self] message in self?.onLog?(message) }
+            }
+            registeredDevice = MIDIDeviceRef()
+            isDeviceRegistered = false
+
             if source != 0 { MIDIEndpointDispose(source) }
             if destination != 0 { MIDIEndpointDispose(destination) }
             if client != 0 { MIDIClientDispose(client) }
@@ -144,6 +175,24 @@ nonisolated final class MainStageEndpoint: @unchecked Sendable {
             isPublished = false
             isLive = false
             lastLiveAt = nil
+        }
+    }
+
+    /// Manual escape hatch for the dev console (project plan constraint 2):
+    /// removes both the currently-tracked registered device (if any) and
+    /// any stale one left by a previous run, so the user can always clean
+    /// up regardless of internal state. Safe to call at any time, including
+    /// when nothing is registered.
+    func removeDeviceManually() {
+        serialQueue.sync {
+            if isDeviceRegistered {
+                MainStageDeviceRegistration.remove(registeredDevice) { [weak self] message in self?.onLog?(message) }
+                registeredDevice = MIDIDeviceRef()
+                isDeviceRegistered = false
+            }
+            let removedCount = MainStageDeviceRegistration.removeStaleDevices { [weak self] message in self?.onLog?(message) }
+            onLog?("MainStage device registration: manual cleanup removed \(removedCount) stale device(s) in addition to the tracked one.")
+            onDeviceRegistrationChanged?(false, "removed")
         }
     }
 

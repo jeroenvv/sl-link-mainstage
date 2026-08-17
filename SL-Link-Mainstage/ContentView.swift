@@ -75,10 +75,18 @@ struct ContentView: View {
                             .foregroundStyle(controller.mainStageBridgeLive ? .green : .secondary)
                         Divider().frame(height: 14)
                         Text("MainStage process: \(mainStageProcessText)")
+                        Divider().frame(height: 14)
+                        Text("Device: \(controller.mainStageDeviceRegistered ? "registered" : "NOT registered")")
+                            .foregroundStyle(controller.mainStageDeviceRegistered ? .green : .secondary)
                         Spacer()
                         Button("Check Now") { controller.refreshMainStageProcessRunning() }
+                        Button("Remove Device") { controller.removeMainStageDevice() }
                     }
                     .font(.system(.caption, design: .monospaced))
+
+                    Text("Device registration: \(controller.mainStageDeviceRegistrationSummary) (spike - see docs/mainstage-integration.md; bare endpoint above is the working path regardless)")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
 
                     Text("Last heartbeat: \(lastHeartbeatText)")
                         .font(.system(.caption, design: .monospaced))

@@ -106,6 +106,63 @@ Whether MainStage will generically match a **virtual** MIDI endpoint (as opposed
 device). The shipped scripts all target real hardware. This is cheap to test once the app publishes
 its virtual endpoints, and is the remaining gate on the whole approach.
 
+## Virtual device registration — spike result: does not work (2026-08-17)
+
+MainStage sees our bare `MIDISourceCreate`/`MIDIDestinationCreate` endpoints but never binds
+`config.lua` to them. Comparing our endpoints against the real SL88 in CoreMIDI shows the difference:
+the SL88's ports each have a parent `MIDIDeviceRef` (name `SL`) and `MIDIEntityRef`; our virtual
+endpoints have neither, because `MIDISourceCreate`/`MIDIDestinationCreate` never create one. Since
+MainStage's own log strings talk about matching on `devicename` as well as `manufacturer`/`modelname`,
+the working theory was that a bare endpoint has nothing to supply `devicename` from, and that
+publishing a proper `MIDIDeviceRef` (`MIDIDeviceCreate` → `MIDIDeviceAddEntity` → `MIDISetupAddDevice`)
+would fix that.
+
+**It doesn't get far enough to test that theory.** `MIDIDeviceCreate(owner: nil, ...)` — the only
+entry point a non-driver process has into this API at all — returns `paramErr` (`-50`) immediately,
+before `MIDIDeviceAddEntity` or `MIDISetupAddDevice` are ever reached. Confirmed twice, identically:
+
+1. A bare, unsigned, unsandboxed command-line probe (`swiftc` + run directly, no Xcode project, no
+   entitlements) got `-50` from the very first call.
+2. The actual signed, sandboxed Debug build of this app (`ENABLE_APP_SANDBOX = YES`, confirmed via
+   `codesign -d --entitlements`, no MIDI-related entitlement present or added) got the identical `-50`,
+   logged live in the dev console's "MainStage Bridge" section and its MIDI Log pane.
+
+Both runs fail at the same call with the same code, so **this is not an App Sandbox restriction** — no
+entitlement would fix it, and none was added (per the task's constraint not to add one speculatively).
+It is CoreMIDI itself refusing `MIDIDeviceCreate` for a process that isn't a registered MIDI driver,
+on this machine's macOS version (26.5.1). Apple's own `MIDIDriver.h` comment on `MIDIDeviceCreate`
+("Non-drivers may call this function ... to create external devices") appears to no longer hold in
+practice, or never held for the *embedded* (I/O-capable) entity shape this task needed rather than the
+external-device (metadata-only, no owned endpoints) shape. Either way, the distinction is moot here:
+both shapes go through the identical `MIDIDeviceCreate` call, which fails first.
+
+This also means `MIDISetupAddDevice` was never reached to test its own documented restriction, but
+it's worth recording anyway since it explains *why* the API is shaped this way: `MIDISetup.h` says
+outright, "Only MIDI drivers may make this call; it is in this header file only for consistency with
+`MIDISetupRemoveDevice`." A real fix would mean shipping an actual CoreMIDI driver bundle (a
+`MIDIDriverInterface`-conforming plug-in installed under `~/Library/Audio/MIDI Drivers/` or
+`/Library/Audio/MIDI Drivers/`, loaded by `coremidiservice` itself) — a materially different, far
+more invasive architecture than an ordinary sandboxed app calling `MIDIClientCreate`, and out of scope
+for this milestone.
+
+**Outcome:** `SL-Link-Mainstage/MainStage/MainStageDeviceRegistration.swift` implements the full
+requested `MIDIDeviceCreate` → `MIDIDeviceAddEntity` → `MIDISetupAddDevice` chain anyway (rather than
+stopping at the probe), logging every `OSStatus`, so that if Apple ever loosens this restriction it
+starts working with no further code changes, and so the dev console always shows the real, current
+status. It also implements the requested stale-device cleanup (scans `MIDIGetNumberOfDevices()` for a
+device matching our manufacturer/model/name at every startup, before attempting a fresh registration)
+and a manual "Remove Device" dev-console button, both of which are cheap, correct, and harmless to ship
+even though registration itself never succeeds on this machine — they cost nothing today and start
+paying off the moment (if ever) the underlying restriction lifts.
+
+`MainStageEndpoint`'s bare `MIDISourceCreate`/`MIDIDestinationCreate` endpoints remain the sole
+publishing mechanism that actually works, unchanged by any of this. Whatever is blocking MainStage from
+binding `config.lua` to them, it is not the missing device/entity parent — or if it is, this project has
+no way to supply one without becoming a CoreMIDI driver. The remaining open question is the same
+"still unverified" one above: whether MainStage's generic matcher will bind to a virtual endpoint at
+all, bare or otherwise. That can only be answered by the user, at the keyboard, with MainStage actually
+running and the device script installed.
+
 ## The SL88's own MIDI identity
 
 For reference when writing `controller_info()` — the SL88 MK2 presents three port pairs, all
