@@ -173,3 +173,30 @@ reporting manufacturer `STUDIOLOGIC`, model `SL`, device `SL`:
 | `CTRL` | `SL CTRL` | normal keyboard MIDI to the host |
 | `DAW` | `SL DAW` | DAW control |
 | `LINK` | `SL LINK` | the SL Link protocol this app speaks |
+
+## Status 2026-08-17 — device-script route BLOCKED
+
+Bridge never goes live. Two dead ends found, one open question.
+
+**Dead end 1 — no parent device.** `MIDIDeviceCreate` returns `paramErr` (-50) for any non-driver
+process. Confirmed in both the sandboxed app and a bare unsigned CLI probe, so it is not a sandbox
+issue. `MIDISetup.h`: "Only MIDI drivers may make this call." Our virtual endpoints therefore have no
+`device`/`entity`, unlike the real SL88's ports.
+
+**Dead end 2 — no third-party script has ever demonstrably run.** A probe script installed under the
+*physical* SL88's own identity (`STUDIOLOGIC`/`SL`) emitted nothing on CTRL, DAW or LINK across five
+genuine patch changes, where `controller_select_patch` is contractually guaranteed to fire.
+
+**Correction to the Phase 0 finding above.** The directory-atime evidence proves MainStage *listed*
+`~/Music/Audio Music Apps/MIDI Device Scripts/`, NOT that it loads scripts from there. That section
+overstates its case. Per-file atimes do not update on this system (Apple's own bundled VAX77
+`config.lua` shows a 2023 atime despite certainly being parsed), so file-level access cannot be used
+as evidence either.
+
+**Open question:** is our script shape wrong, or are third-party scripts in the user folder never
+loaded at all? The discriminating test is installing a probe *inside* MainStage.app next to Apple's
+own scripts, where they definitely load. Needs sudo and can invalidate the app's code signature.
+
+**Fallback if the route is truly closed:** Program Change + `.concert` parsing. Concert structure is
+parseable — patch/song names are directory names under `Concert.patch/`, order comes from each
+level's `nodes` array. Loses live sync when the patch is changed inside MainStage.
