@@ -530,6 +530,53 @@ safe, outbound-attempt-free state again afterward and MainStage relaunched clean
 `'DAW'`/`'LINK'`/`'SL'` remain untested with this same patient methodology (round 3 never got past
 `'CTRL'` before the timer stopped). If revisited, test one at a time, patiently, the same way.
 
+### Rounds 5-7 — DAW, LINK, and SL (model name): identical result, sweep complete
+
+Continued the same one-candidate-at-a-time, patient methodology (normal `HEARTBEAT_MS` cadence, wait
+for Jeroen to confirm MainStage fully loaded before checking results - not a guessed timeout) through
+the three remaining candidates: `outport='DAW'`, `outport='LINK'`, and `outport='SL'` (the device's own
+`model` value, the KeyLab-88-style convention for a device that doesn't name a specific sub-port).
+
+**All three reproduce round 4's `'CTRL'` result exactly**: `controller_timer_trigger` fires exactly
+once (`attempt seq=1`), nothing arrives on any of the four sniffed ports, and the timer then stops
+firing entirely - confirmed each time by waiting a further ~45s past Jeroen's own "ready now"
+confirmation, with MainStage staying alive and responsive throughout (`ps` showing normal, changing CPU
+usage each time, never hung).
+
+**The sweep is now exhaustive and conclusive.** Every plausible `outport` value has been tried, patiently,
+against the real SL88 with generic matching:
+
+| `outport` | Round | Result |
+|:---|:---|:---|
+| `'SL MainStage'` (app's own virtual destination) | Round 2, this doc | nothing; timer kept running normally afterward |
+| omitted (VAX77's own pattern) | Round 2, this doc | nothing; timer kept running normally afterward |
+| `'CTRL'` | Round 4 | nothing; timer stopped after one attempt |
+| `'DAW'` | Round 5 | nothing; timer stopped after one attempt |
+| `'LINK'` | Round 6 | nothing; timer stopped after one attempt |
+| `'SL'` (own model name) | Round 7 | nothing; timer stopped after one attempt |
+
+(Plus, from Phase 0 v2, the same negative result for all of the above under `usb_vendor_id` matching
+instead of generic.) Nothing left to try that has a plausible basis in how any of the 98 bundled
+reference scripts use `outport` - this project has now covered every pattern they use, and several they
+don't.
+
+**Working theory for the two different failure signatures**, not yet confirmed: the four *real* port
+names (`CTRL`/`DAW`/`LINK`/`SL`, i.e. anything MainStage might recognize as actually belonging to the
+matched SL88) trigger something that deregisters the script's timer, while names MainStage doesn't
+recognize as belonging to any device (`'SL MainStage'`, an unrelated virtual endpoint) or omitting
+`outport` entirely just get silently dropped with no side effect. If true, that would mean MainStage
+*is* attempting to route to a real, recognized port in the CTRL/DAW/LINK/SL cases specifically, and
+something in that routing path throws/faults in a way that also kills the periodic callback - as
+opposed to never resolving a destination at all in the other two cases. Untested and possibly
+untestable without instrumenting MainStage itself (e.g. a debugger, or `dtrace`/`fs_usage`-style
+observation of what happens between the Lua return and the timer's next scheduled fire) - offered as
+the most concrete remaining thread if this is ever revisited, not as something to chase further right
+now.
+
+**Conclusion holds: the device-script route for MainStage -> app data is exhausted.** Matching method,
+`outport` value, and the `io` library have all been ruled out as fixable blockers. The fallback
+(Program Change + `.concert` parsing, noted throughout this file) is the only remaining live option.
+
 ### Debugging recipe (don't rediscover this)
 
 - `defaults write com.apple.mainstage3 LUA_DEBUG -bool true`, and set it back to `false` afterwards.
