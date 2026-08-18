@@ -421,15 +421,15 @@ silently via `pcall`, costs nothing) but is now dead weight - kept in place pend
 whether to strip it, rather than removed reflexively, since the app-side half (file read -> decode ->
 screen paint) is itself a real, working, reusable piece if a third transport ever surfaces.
 
-**This forecloses the device-script route for the MainStage -> app direction entirely**, not just one
-implementation of it. The only thing device scripts still plausibly offer this project is the other
-direction (app -> MainStage patch selection via `patchselector`'s Bank Select/Program Change), which
-was already flagged unconfirmed and now doubly so post-pivot (see the "Pivot" section above) - and
-even that has no dependency on `outport`/`io` since it's the device (this script) declaring
-`patchselector = true` and MainStage's own core, not the script, doing the receiving.
+**Neither transport has worked yet for the MainStage -> app direction**, not just one implementation of
+one of them. The only thing device scripts still plausibly offer this project is the other direction
+(app -> MainStage patch selection via `patchselector`'s Bank Select/Program Change), which was already
+flagged unconfirmed and now doubly so post-pivot (see the "Pivot" section above) - and even that has no
+dependency on `outport`/`io` since it's the device (this script) declaring `patchselector = true` and
+MainStage's own core, not the script, doing the receiving.
 
-**Next decision: pursue the documented fallback.** Program Change + `.concert` parsing - noted
-throughout this file as the fallback-of-last-resort - is now the only live option for the
+**Next decision: pursue the documented fallback while this stays open.** Program Change + `.concert`
+parsing - noted throughout this file as the fallback-of-last-resort - is the only other live option for the
 MainStage -> app direction. Concert structure is parseable: patch/song names are directory names under
 `Concert.patch/`, ordering comes from each level's `nodes` array. Loses live sync (the app would need
 to re-parse on some trigger, not get pushed updates) and needs Program Change numbers to be derivable
@@ -497,14 +497,15 @@ to force a rescan - no physical unplug/replug needed when the device was already
    `config.lua` was reverted to the safe, outbound-attempt-free state (file writes only, `io` already
    known dead) and MainStage relaunched clean to confirm normal operation resumed.
 
-**Conclusion: matching method does not explain the blocker.** Generic matching against the real SL88 -
-the configuration used by every working reference example - still delivers nothing for any `outport`
+**Matching method alone doesn't explain the blocker.** Generic matching against the real SL88 - the
+configuration used by every working reference example - still delivers nothing for any `outport`
 spelling tried, exactly like `usb_vendor_id` matching did in Phase 0 v2. Combined with the `io` finding
-above, this closes off the last major unexplored variable for the MainStage -> app direction via
-device scripts. The `'CTRL'` timer-deregistration behavior is worth keeping in mind if this is ever
-revisited - it suggests MainStage's Lua bridge treats *some* invalid `outport` values as more than a
-no-op, and a full sweep (ideally against a disposable MainStage/concert, not a session with real user
-content open) would be needed to characterize which ones and why before trusting any of them.
+above, this rules out the last major variable tried so far for the MainStage -> app direction via
+device scripts - not a sign nothing will work, just that the right combination hasn't been found yet.
+The `'CTRL'` timer-deregistration behavior is worth keeping in mind if this is ever revisited - it
+suggests MainStage's Lua bridge treats *some* invalid `outport` values as more than a no-op, and a full
+sweep (ideally against a disposable MainStage/concert, not a session with real user content open) would
+be needed to characterize which ones and why before trusting any of them.
 
 ### Round 4 — retested `CTRL` patiently, ruling out the "test ran too fast" objection
 
@@ -573,9 +574,10 @@ observation of what happens between the Lua return and the timer's next schedule
 the most concrete remaining thread if this is ever revisited, not as something to chase further right
 now.
 
-**Conclusion holds: the device-script route for MainStage -> app data is exhausted.** Matching method,
-`outport` value, and the `io` library have all been ruled out as fixable blockers. The fallback
-(Program Change + `.concert` parsing, noted throughout this file) is the only remaining live option.
+**No working approach found yet for the device-script route on the MainStage -> app direction.**
+Matching method, `outport` value, and the `io` library have all been ruled out as fixable with the
+ideas tried so far. The fallback (Program Change + `.concert` parsing, noted throughout this file) is
+the other live option in the meantime.
 
 ## MIDI outbound, round 3 — checked against a real working reference package (2026-08-18)
 
@@ -602,7 +604,7 @@ current MainStage, for *some* device. Structural details worth noting:
 - This script does **not** set `patchselector` at all - unlike this project's `config.lua`. Weaker lead
   (VAX77 does set `patchselector = true` and is presumed to work), but cheap to rule out.
 
-### Retested: rounds 8-12, same dead end
+### Retested: rounds 8-12, same result
 
 Continued the same patient, one-variable-at-a-time methodology, each confirmed against Jeroen's own
 "ready now" and each further checked ~45s past that before concluding:
@@ -620,17 +622,19 @@ display names, item-level port announcement, `patchselector` - was tested, indiv
 against real hardware. None changed the outcome. `config.lua` reverted to its safe, outbound-attempt-
 free committed state after each round; MainStage relaunched clean and confirmed healthy throughout.
 
-**This is now about as exhaustive as the Lua side alone can get.** Every lever available from within
-`config.lua` - matching method, every plausible `outport` spelling, item-level port declaration,
-`patchselector` - has been tried, individually and patiently, against real hardware, mirroring a
-confirmed-working reference in every dimension identifiable from its source. The remaining difference
-between this project's SL88 script and the Launchkey MK3 reference is presumably something below the
-Lua layer - most plausibly in how the two devices' USB-MIDI interface descriptors present themselves
-(Novation's DAW port pair may be a firmware-level construct MainStage's native code specifically
-recognizes as DAW-capable, independent of what CoreMIDI happens to name the port) - which isn't
-something a device script can influence or that this project can practically instrument further without
-reverse-engineering MainStage's own binary. **Conclusion unchanged**: the device-script route for
-MainStage -> app data is exhausted; `.concert` parsing is the only remaining live option.
+**Every lever available from within `config.lua` has been tried, without finding a working combination
+yet.** Matching method, every plausible `outport` spelling, item-level port declaration,
+`patchselector` - all tested individually and patiently against real hardware, mirroring a
+confirmed-working reference in every dimension identifiable from its source. A plausible next thread,
+not yet tried: the remaining difference between this project's SL88 script and the Launchkey MK3
+reference may be something below the Lua layer - possibly in how the two devices' USB-MIDI interface
+descriptors present themselves (Novation's DAW port pair may be a firmware-level construct MainStage's
+native code specifically recognizes as DAW-capable, independent of what CoreMIDI happens to name the
+port). Following that would mean instrumenting MainStage itself (a debugger, or `dtrace`/`fs_usage`-
+style observation) rather than editing the script further - a materially different kind of effort, not
+attempted here, not a closed door. **Still true**: the device-script route hasn't produced a working
+approach for the MainStage -> app direction yet; `.concert` parsing is the other live option in the
+meantime.
 
 **One process note worth keeping**: earlier rounds in this session judged results against a fixed
 wait after a MainStage relaunch. Jeroen corrected this - `Joseph key2.concert`'s real orchestral
