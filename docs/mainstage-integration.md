@@ -506,6 +506,30 @@ revisited - it suggests MainStage's Lua bridge treats *some* invalid `outport` v
 no-op, and a full sweep (ideally against a disposable MainStage/concert, not a session with real user
 content open) would be needed to characterize which ones and why before trusting any of them.
 
+### Round 4 — retested `CTRL` patiently, ruling out the "test ran too fast" objection
+
+Round 3's single `'CTRL'` attempt happened only ~15s after a MainStage relaunch, while a real
+orchestral concert (`Joseph key2.concert`, Vienna Instruments) was still loading - a fair objection
+(Jeroen's) is that MainStage might simply have been too busy to service the script's timer, not that
+`'CTRL'` itself broke anything, and that `CTRL` (the SL88's default "Controller" MIDI mode - `DAW` is
+transport-button-only, `LINK` is this project's own unrelated protocol) was the semantically correct
+target to focus on rather than a blind sweep. Retested accordingly: `controller_timer_trigger` sending
+*only* to `outport='CTRL'`, at its normal 2s cadence (not round 3's sped-up 1s sweep, so it wouldn't
+compete with instrument loading), watched continuously via `Scripts/sniff-all-sl-ports.swift` for the
+full loading period rather than a fixed short window - confirmed patiently, checking MainStage's own
+state directly rather than guessing from timing, before drawing any conclusion.
+
+**Same result.** Even ~100+ seconds in, with MainStage confirmed fully loaded and CPU usage settled
+(down from ~40% to ~21%), the log still showed exactly one `CTRL retest: attempt seq=1` - never
+seq=2 or beyond, though the 2s cadence should have produced roughly 50 by that point - and nothing
+arrived on any of the four sniffed ports. So round 3's finding wasn't a loading-noise artifact: the
+patient retest reproduces it exactly. `outport='CTRL'` still doesn't deliver, and still appears to stop
+MainStage from calling the script's timer again after that first attempt. `config.lua` reverted to the
+safe, outbound-attempt-free state again afterward and MainStage relaunched clean.
+
+`'DAW'`/`'LINK'`/`'SL'` remain untested with this same patient methodology (round 3 never got past
+`'CTRL'` before the timer stopped). If revisited, test one at a time, patiently, the same way.
+
 ### Debugging recipe (don't rediscover this)
 
 - `defaults write com.apple.mainstage3 LUA_DEBUG -bool true`, and set it back to `false` afterwards.
