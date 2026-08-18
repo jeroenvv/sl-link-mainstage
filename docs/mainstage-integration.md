@@ -636,6 +636,83 @@ attempted here, not a closed door. **Still true**: the device-script route hasn'
 approach for the MainStage -> app direction yet; `.concert` parsing is the other live option in the
 meantime.
 
+## Correction (2026-08-19): rounds 4-10 were UNOBSERVED, not negative
+
+Re-examining the method after Jeroen asked what we'd missed versus the reference package, two of the
+conclusions above don't hold up. Both are corrections to *evidence quality*, not new failures:
+
+**1. The sniffer was watching the wrong direction.** `Scripts/sniff-all-sl-ports.swift` enumerates
+`MIDIGetSource` only - CoreMIDI **sources** (device -> host). But `outport` names a **destination**
+(host -> into device). The SL88 exposes `SL CTRL`/`SL DAW`/`SL LINK` as *both*, so when MainStage sent
+to `'SL LINK'`, the bytes went into the keyboard where nothing was listening. The reference package
+makes this obvious in hindsight: `DAW_IN = 'LKMK3 DAW In'` - "In" is the device's input, i.e. a
+destination. **Rounds 4-10's "nothing arrived" results prove nothing** and have been re-run properly
+below. (The sniffer now documents this limitation in its own header, and was additionally rewritten to
+use one input port per source rather than passing a Swift `String` through `srcConnRefCon` and
+`load(as:)`-ing it in a real-time callback, which was never sound.)
+
+**2. "`outport='CTRL'` stops the script's timer" was unfounded.** Every round that showed a single
+`seq=1` returned `{midi=...}` from `controller_timer_trigger`; every "baseline" returned `nil`. And
+`write_frame` logs no sequence number, so a baseline's repeated status writes are equally explained by
+several script *instances* each running `controller_initialize` once (MainStage loads the script once
+per matched USB-MIDI interface). No baseline ever demonstrated the timer ticking repeatedly, so there
+was never a contrast to attribute to `outport`. Disregard that claim and the theory built on it.
+
+### Re-run properly: an observable round-trip, with a positive control
+
+The fix is to send something the keyboard *answers*, so the reply comes back on a source where the
+sniffer can legitimately see it. `controller_initialize` now sends a real **SL Link Identification
+Request** (`F0 00 20 1A 16 03 6D 7F 00 "LuaProbe" 00 F7`, byte-for-byte verified against
+`SLLinkEncoder.identificationRequest`, with an instance byte distinct from the app's own) to
+`outport='SL LINK'`.
+
+**Positive control, run twice** (`Scripts/probe-sllink.swift` sending the identical message shape from
+an ordinary process): the SL88 answered in ~2 ms both times, and the sniffer independently captured it -
+`F0 00 20 1A 16 03 2A 7F 01 01 01 02 01 F7` (IDENTIFICATION APPROVED, fw 1.1.2, SL88). Confirmed both
+with the app running and with the app closed, so the observation chain is sound in either state.
+
+**Result: still nothing from Lua.** The probe fired (twice, once per script instance, logged), and no
+reply ever appeared. Tested under progressively cleaner conditions:
+
+| Condition | Reply? |
+|:---|:---|
+| Generic matching, fictional `items`, app running | no |
+| Real `items` (see below) declaring `inport`/`outport` on `SL LINK`, app running | no |
+| Same, with the SL Link app **quit** so nothing else held the LINK port | no |
+
+That last row matters: Jeroen pointed out the app was still bound to SL Link and could be influencing
+things. With it closed - and the keyboard re-confirmed responsive in that exact state - the answer is
+unchanged. **This is the first properly controlled outbound negative in the whole investigation.**
+
+### Also corrected: the `items` were fiction, and CTRL is not the SL88's controller port
+
+The `items` table declared invented CC numbers (`0xBF 0x50`-`0x5C`) that the SL88 never transmits, with
+no `inport`/`outport` at all - unlike the reference, which declares real controls on real ports and so
+gives MainStage an actual bidirectional surface to bind. Rewrote them from a live capture (one input
+port per source, playing the keyboard and moving both sticks):
+
+| Control | Bytes | Port |
+|:---|:---|:---|
+| Notes | `0x90`/`0x80` | `SL LINK` |
+| Pitch bend | `0xE0` | `SL LINK` |
+| Modulation | `0xB0 0x01` | `SL LINK` |
+| Second stick | `0xB0 0x10` | `SL LINK` |
+| Sustain | `0xB0 0x40` | `SL LINK` |
+
+**All 138 captured events arrived on `SL LINK`; zero on `SL CTRL`.** That contradicts this document's
+own assumption (and the "CTRL = controller mode" reasoning behind round 4). Caveat: this capture was
+taken while the app held an active SL Link session, which is plausibly *why* the keyboard routes its
+playing MIDI there - whether it reverts to CTRL with no session open is **not** tested.
+
+Declaring those real items changed nothing about outbound delivery, so the "MainStage only opens the
+outbound path once a real surface is bound" theory is not supported either - though note the surface
+still may never have gone truly live, since nothing verified MainStage was actually *receiving* those
+declared controls.
+
+**Where that leaves it**: a script-returned `{midi=...}` has still never been observed to leave
+MainStage, but the evidence base is now much smaller and much sounder than the round-by-round table
+above suggests. Still no working approach found - not a demonstration that none exists.
+
 **One process note worth keeping**: earlier rounds in this session judged results against a fixed
 wait after a MainStage relaunch. Jeroen corrected this - `Joseph key2.concert`'s real orchestral
 instruments (Vienna Instruments MIDI) take a long, variable time to finish loading, so a fixed timeout

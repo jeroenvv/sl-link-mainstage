@@ -1,13 +1,28 @@
 import CoreMIDI
 import Foundation
 
-// PASSIVE multi-port sniffer for the MainStage bridge outbound re-test
-// (see docs/mainstage-integration.md). Unlike sniff.swift (which only
-// connects to the SL LINK source and parses SL Link SysEx), this connects
-// to every source whose display name starts with "SL " (CTRL, DAW, LINK)
-// and just logs raw bytes per port, since we don't know in advance which
-// port (if any) MainStage routes a bare, outport-less `{midi=...}` return
-// to for a generically-matched multi-port device.
+// PASSIVE multi-port sniffer for the MainStage bridge investigation
+// (see docs/mainstage-integration.md). Connects to every CoreMIDI **source**
+// whose display name starts with "SL " and logs raw bytes per port.
+//
+// IMPORTANT - what this can and cannot see:
+//   * SOURCES only (data flowing device -> host). That is all this watches.
+//   * It therefore CANNOT observe a send to a *destination*. A device script's
+//     `outport` names a destination, so MainStage sending to 'SL LINK' goes
+//     INTO the keyboard and is invisible here. Several 2026-08-18 test rounds
+//     drew "nothing arrived" conclusions from this sniffer that were actually
+//     unobserved rather than negative - don't repeat that.
+//     To test a send to a destination, provoke a REPLY that comes back on a
+//     source (e.g. an SL Link Identification Request -> IDENTIFICATION
+//     APPROVED), and validate with a positive control first
+//     (Scripts/probe-sllink.swift sends exactly such a request).
+//
+// Uses one dedicated MIDIInputPort per source, each with its own capturing
+// block, so port attribution is structural. An earlier version passed the port
+// name through `srcConnRefCon` as an `UnsafeMutablePointer<String>` and read it
+// back with `load(as: String.self)` - loading a managed Swift type out of raw
+// memory in a real-time callback, which is not sound. Results happened to look
+// consistent, but don't reintroduce it.
 
 func hex(_ b: [UInt8]) -> String { b.map { String(format: "%02X", $0) }.joined(separator: " ") }
 func stamp() -> String { let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f.string(from: Date()) }
@@ -18,58 +33,43 @@ func str(_ o: MIDIObjectRef, _ p: CFString) -> String {
     return out.takeRetainedValue() as String
 }
 
-var sources: [(name: String, endpoint: MIDIEndpointRef)] = []
-for i in 0..<MIDIGetNumberOfSources() {
-    let e = MIDIGetSource(i)
-    let name = str(e, kMIDIPropertyDisplayName)
-    if name.range(of: "SL ", options: .caseInsensitive) != nil {
-        sources.append((name, e))
-    }
-}
-guard !sources.isEmpty else { log("no SL * sources found"); exit(1) }
-
 var client = MIDIClientRef()
 MIDIClientCreate("SLAllPortsSniffer" as CFString, nil, nil, &client)
 
-var accByPort: [String: [UInt8]] = [:]
-var inPort = MIDIPortRef()
-MIDIInputPortCreateWithBlock(client, "sniff-all" as CFString, &inPort) { pktList, srcConnRefCon in
-    let portName = srcConnRefCon?.load(as: String.self) ?? "?"
-    var p = pktList.pointee.packet
-    for _ in 0..<pktList.pointee.numPackets {
-        let len = Int(p.length)
-        let bytes: [UInt8] = withUnsafeBytes(of: p.data) { Array($0.prefix(len)) }
-        var acc = accByPort[portName] ?? []
-        var voice: [UInt8] = []
-        for byte in bytes {
-            if byte == 0xF0 { acc = [byte] }
-            else if !acc.isEmpty {
-                acc.append(byte)
-                if byte == 0xF7 {
-                    log("SYSEX on \(portName): \(hex(acc))")
-                    acc = []
-                }
-            } else {
-                voice.append(byte)
-            }
+var ports: [MIDIPortRef] = []
+var connected = 0
+
+for i in 0..<MIDIGetNumberOfSources() {
+    let endpoint = MIDIGetSource(i)
+    let name = str(endpoint, kMIDIPropertyDisplayName)
+    guard name.hasPrefix("SL ") else { continue }
+
+    var port = MIDIPortRef()
+    // `name` is captured by the block - no refcon indirection, so two ports can
+    // never be confused for one another.
+    let status = MIDIInputPortCreateWithBlock(client, "sniff-\(i)" as CFString, &port) { pktList, _ in
+        var packet = pktList.pointee.packet
+        for _ in 0..<pktList.pointee.numPackets {
+            let length = Int(packet.length)
+            let bytes: [UInt8] = withUnsafeBytes(of: packet.data) { Array($0.prefix(length)) }
+            if !bytes.isEmpty { log("\(name): \(hex(bytes))") }
+            packet = MIDIPacketNext(&packet).pointee
         }
-        accByPort[portName] = acc
-        if !voice.isEmpty { log("VOICE on \(portName): \(hex(voice))") }
-        p = MIDIPacketNext(&p).pointee
     }
+    guard status == noErr else {
+        log("FAILED to create input port for \"\(name)\": \(status)")
+        continue
+    }
+    let connectStatus = MIDIPortConnectSource(port, endpoint, nil)
+    log(connectStatus == noErr
+        ? "connected to \"\(name)\""
+        : "FAILED to connect to \"\(name)\": \(connectStatus)")
+    ports.append(port)
+    connected += 1
 }
 
-// Each source gets its own boxed name so the read block can tell them apart.
-var boxes: [UnsafeMutablePointer<String>] = []
-for (name, endpoint) in sources {
-    let box = UnsafeMutablePointer<String>.allocate(capacity: 1)
-    box.initialize(to: name)
-    boxes.append(box)
-    let status = MIDIPortConnectSource(inPort, endpoint, box)
-    log(status == noErr ? "connected to \"\(name)\"" : "FAILED to connect to \"\(name)\": \(status)")
-}
-
-log("Listening on \(sources.count) SL * port(s). Waiting for MainStage to relaunch/select a patch...")
+guard connected > 0 else { log("no SL * sources found"); exit(1) }
+log("Listening on \(connected) SL * source(s). Reminder: sources only - see the header comment.")
 
 let duration = CommandLine.arguments.count > 1 ? Double(CommandLine.arguments[1]) ?? 60 : 60
 RunLoop.main.run(until: Date().addingTimeInterval(duration))
