@@ -341,27 +341,29 @@ end
 -- Manufacturer/model here are the real SL88 MK2's own identity (see
 -- docs/mainstage-integration.md's "The SL88's own MIDI identity" section),
 -- not a separate virtual-endpoint identity - see the MATCHING note at the
--- top of this file for why. usb_vendor_id/usb_product_id are the values
--- captured live in the Phase 0 v2 spike (`LUA: Script matched for USB ID
--- 0x9516,0x4039`), decimal per this field's convention in Apple's own
--- bundled scripts (e.g. Arturia/KeyLab 88.device/config.lua).
+-- top of this file for why.
 --
--- `items` are declared for Layout-mode mappability per the project plan,
--- but the CC numbers below are placeholders invented for this project's
--- own (never-shipped) virtual-endpoint design - they do NOT correspond to
--- anything the real SL88 actually transmits, and now that this script is
--- matched to the real hardware that distinction matters more than it used
--- to. Left in as-is (harmless: nothing currently depends on them mapping
--- to real output) rather than removed, since redesigning them against the
--- SL88's real MIDI output is unstarted work, not a regression from this
--- change.
+-- MATCH METHOD (2026-08-18 update): generic (manufacturer/model), not
+-- usb_vendor_id/usb_product_id. Comparing this project's outbound attempts
+-- against all 98 of Apple's own bundled reference scripts found a clean
+-- correlation with no counterexamples: every script that sends unsolicited
+-- MIDI from a lifecycle hook (VAX77, KeyLab 88, Launch Control, MPK249,
+-- etc.) matches generically; of the only 3 scripts in the whole bundle with
+-- an active usb_vendor_id, none send unsolicited MIDI at all - the SL88
+-- (unlike the earlier abandoned virtual-endpoint design) has a real
+-- MIDIDeviceRef/MIDIEntityRef, so generic matching against it is a
+-- genuinely new, untested configuration, not a repeat of the dead virtual-
+-- endpoint attempt. usb_vendor_id/usb_product_id (`0x9516`/`0x4039`,
+-- decimal below, confirmed live in the Phase 0 v2 spike) kept as a comment
+-- for reference, mirroring how Apple's own KeyLab 88.device/config.lua
+-- keeps its usb ids commented out.
 function controller_info()
 	return {
 		model = 'SL',
 		manufacturer = 'STUDIOLOGIC',
 
-		usb_vendor_id = 38166,  -- 0x9516
-		usb_product_id = 16441, -- 0x4039
+		-- usb_vendor_id = 38166,  -- 0x9516
+		-- usb_product_id = 16441, -- 0x4039
 
 		-- Patch selection is by Bank Select + Program Change, not raw PC
 		-- numbers - see the frame dialect comment block above.

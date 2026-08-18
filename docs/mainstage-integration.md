@@ -435,15 +435,93 @@ MainStage -> app direction. Concert structure is parseable: patch/song names are
 to re-parse on some trigger, not get pushed updates) and needs Program Change numbers to be derivable
 or MainStage's "Reset Program Numbers" to be usable, neither confirmed. Not started.
 
+## MIDI outbound, round 2 — matching-method comparison against all 98 bundled scripts (2026-08-18)
+
+Revisited after the `io` dead end above, prompted by a direct question: does the *matching method*
+itself affect whether outbound MIDI is ever flushed, independent of `outport`'s value? All of Phase 0
+v2's `outport` testing happened under `usb_vendor_id` matching (the only method then known to make the
+script run at all, back when the alternative was a dead virtual endpoint). That was never disentangled
+from the possibility that `usb_vendor_id` matching itself disables outbound delivery, regardless of
+`outport`.
+
+**Comparison method:** grepped all 98 scripts Apple ships under `MIDI Device Scripts/` for `outport`
+usage and for an active (non-commented) `usb_vendor_id` line. Result, with zero counterexamples in
+either direction:
+
+- Every script that sends unsolicited MIDI from a lifecycle hook (`controller_initialize`/
+  `controller_select_patch`/`controller_timer_trigger`) - VAX77, KeyLab 88, Launch Control, MPK249, and
+  27 others - matches **generically** (manufacturer/model only).
+- Exactly 3 scripts in the whole bundle have an active `usb_vendor_id` (the M-Audio Axiom/Oxygen
+  scripts). **None of the 3 ever call a lifecycle hook or send unsolicited MIDI** - their one `{midi=
+  ...}` return is a synchronous reply inside `controller_midi_in`, echoing a just-received inbound
+  event, not a spontaneous send.
+
+Also clarified what `outport` actually names in every working example: never an arbitrary third-party
+destination. VAX77 (single port) omits `outport` entirely and lets MainStage route to its own device's
+port; KeyLab 88 sets `outport='KeyLab 88'`, its own `model` value; MPK249 (multi-port hardware) uses
+`outport='Port A'`, a named sub-port of its own hardware. Always the matched device's own port, by name
+or by omission - never someone else's.
+
+**This matters here because the real SL88, unlike the abandoned virtual endpoint, already has a proper
+`MIDIDeviceRef`/`MIDIEntityRef`** (see "Virtual device registration" above) - so generic matching
+against it is a genuinely new, untested configuration, not a repeat of that dead end.
+
+### Retested on real hardware: still nothing, and one new destabilizing finding
+
+`config.lua` switched to generic matching (`usb_vendor_id`/`usb_product_id` commented out, mirroring
+Apple's own `KeyLab 88.device` convention) and retested through three rounds, each installed via
+`Scripts/install-mainstage-script.sh` and verified with a MainStage quit/relaunch (confirmed sufficient
+to force a rescan - no physical unplug/replug needed when the device was already connected):
+
+1. **`outport='SL MainStage'`** (the app's own virtual destination, already fully wired to decode this
+   exact Hello frame via `MainStageEndpoint`'s dormant CoreMIDI destination) - nothing arrived; the
+   app's dev console showed no Hello.
+2. **Omitted entirely** (the exact VAX77 pattern: bare `{midi={event}}`, no `outport` key) - watched
+   with a new multi-port sniffer, `Scripts/sniff-all-sl-ports.swift` (extends `sniff.swift`'s
+   `MIDIInputPortCreateWithBlock` pattern to all four `SL *`-named sources at once, since which port a
+   bare return would land on wasn't known in advance) - nothing arrived on any of `SL CTRL`/`SL DAW`/
+   `SL LINK`/`SL MainStage`.
+3. **A sweep of `outport='CTRL'`/`'DAW'`/`'LINK'`/`'SL'`** (the SL88's own real port names, plus its own
+   `model` value), one candidate per `controller_timer_trigger` tick (temporarily sped up to 1s) so one
+   relaunch could cover all four instead of four separate ones. Only the first candidate (`'CTRL'`) was
+   ever tried: `controller_timer_trigger` fired once, logged `outport sweep: trying "CTRL"`, and then
+   **never fired again** - not on the same run, not after 15+ more seconds - while MainStage itself
+   stayed fully alive and responsive (confirmed via `ps`, still consuming CPU normally). No error
+   surfaced in `/tmp/lua.log` beyond the (harmless, `pcall`-caught) `io` failure already known. This is
+   qualitatively different from rounds 1-2, which failed silently but left the script's timer running
+   normally afterward - `outport='CTRL'` appears to have gotten MainStage to quietly deregister the
+   script's periodic callback going forward, without any corresponding surfaced error. Untested whether
+   `'DAW'`/`'LINK'`/`'SL'` behave the same way, since continuing the sweep past the point where the
+   timer had already stopped would have taught nothing new, and repeated relaunching to isolate it
+   further risked destabilizing the user's live MainStage session further for diminishing information.
+   `config.lua` was reverted to the safe, outbound-attempt-free state (file writes only, `io` already
+   known dead) and MainStage relaunched clean to confirm normal operation resumed.
+
+**Conclusion: matching method does not explain the blocker.** Generic matching against the real SL88 -
+the configuration used by every working reference example - still delivers nothing for any `outport`
+spelling tried, exactly like `usb_vendor_id` matching did in Phase 0 v2. Combined with the `io` finding
+above, this closes off the last major unexplored variable for the MainStage -> app direction via
+device scripts. The `'CTRL'` timer-deregistration behavior is worth keeping in mind if this is ever
+revisited - it suggests MainStage's Lua bridge treats *some* invalid `outport` values as more than a
+no-op, and a full sweep (ideally against a disposable MainStage/concert, not a session with real user
+content open) would be needed to characterize which ones and why before trusting any of them.
+
 ### Debugging recipe (don't rediscover this)
 
 - `defaults write com.apple.mainstage3 LUA_DEBUG -bool true`, and set it back to `false` afterwards.
 - `LUA:` output goes to **stdout only**: `/Applications/MainStage.app/Contents/MacOS/MainStage > /tmp/lua.log 2>&1 &`.
   `log show`/`log stream` show nothing.
-- Script matching runs on **CoreMIDI device-add events**, not every launch. Unplug/replug the SL88 to
-  force a rescan.
+- Script matching runs on **CoreMIDI device-add events**. A full MainStage quit + relaunch forces a
+  rescan on its own (confirmed 2026-08-18, repeatedly) - unplug/replug is only needed if MainStage stays
+  running throughout.
 - Any MIDI sniffer must use `MIDIInputPortCreateWithBlock`. The C-function-pointer variant of
   `MIDIInputPortCreate` silently receives nothing and has already produced one false negative here.
+- To watch multiple ports at once without knowing in advance which one matters, use
+  `Scripts/sniff-all-sl-ports.swift` rather than writing a new single-port sniffer each time.
+- Quitting a live MainStage session to test a script edit is disruptive if real user content (an open
+  concert) is involved - confirm before doing it, same as any other action affecting a shared/running
+  process. `osascript -e 'tell application "MainStage" to quit'` works reliably; a plain `open -a
+  MainStage` afterward relaunches it (add stdout redirection first if `LUA_DEBUG` output is needed).
 - Reference working script: <https://github.com/mkuron/launchkey-mk3-mainstage>
 
 ### Fallback if the script route stays blocked
