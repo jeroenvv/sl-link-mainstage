@@ -1,494 +1,521 @@
--- SL MainStage bridge - MainStage MIDI Device Script
+-- SL MainStage - MainStage MIDI Device Script for the Studiologic SL88 MK2
 --
--- Pairs with the "SL Link MainStage" macOS app. This script is the
--- MainStage-side half of that bridge: it receives the full patch list on
--- every patch change and forwards it to the app as a private SysEx-shaped
--- frame, and it tells the app when MainStage/the script is alive (hello /
--- heartbeat / goodbye) so the app can show real connection status instead
--- of a stale list. See docs/mainstage-integration.md and CLAUDE.md for how
--- this was established and MainStageProtocol.swift for the Swift-side
--- decoder that must agree with every byte offset below.
---
--- MATCHING: generic (manufacturer/model against the real SL88 MK2's own
--- identity - see controller_info() below), NOT usb_vendor_id/usb_product_id.
--- An earlier revision matched generically against a *virtual* endpoint the
--- app published (manufacturer "SL Link Bridge") to avoid claiming the real
--- keyboard's own device-script identity - that was established dead
--- (docs/mainstage-integration.md's "Virtual device registration" section: a
--- bare MIDISourceCreate/MIDIDestinationCreate endpoint has no
--- MIDIDeviceRef/MIDIEntityRef parent, and MainStage never binds config.lua
--- to one). A later revision switched to usb_vendor_id/usb_product_id
--- matching against the physical SL88 instead - confirmed to get the script
--- invoked, but comparing against all 98 of Apple's bundled reference
--- scripts found that every one of them sending unsolicited MIDI matches
--- generically, and none of the 3 usb_vendor_id-matched ones do (see
--- docs/mainstage-integration.md's "MIDI outbound, round 2"). Generic
--- matching against the real SL88 (unlike the earlier virtual endpoint) also
--- has a real MIDIDeviceRef/MIDIEntityRef, so this is the current, settled
--- choice. Consequence: this script occupies the SL88's own device-script
--- slot, and `MainStageProtocol.encodeSelection`/`MainStageEndpoint.
--- sendSelection` (app -> MainStage patch selection, sent from the app's
--- *virtual* endpoint) are unconfirmed either way; out of scope for the
--- inbound (MainStage -> app) direction this file implements.
---
--- TRANSPORT: **outbound MIDI from this script WORKS** (established
--- 2026-08-19 on real hardware). The blocker for every earlier attempt was
--- simply the `outport` *name*:
---
---     outport must be the SHORT kMIDIPropertyName ('LINK'),
---     NOT the display name ('SL LINK').
---
--- MainStage itself tells you this: the `portName` argument it passes to
--- `controller_midi_in` is 'LINK'. Every prior round used 'SL LINK' (or the
--- app's virtual destination, or omitted it) and silently delivered nothing.
--- Proof: sending an SL Link Identification Request with outport='LINK' drew
--- a real reply from the SL88 on the LINK source -
---   F0 00 20 1A 16 03 6D 7F 01 01 01 02 01 F7  (IDENTIFICATION APPROVED,
---                                               firmware 1.1.2, model SL88)
--- captured by Scripts/sniff-all-sl-ports.swift with the helper app closed,
--- against a positive control that had already proven the observation chain.
---
--- Inbound also works: `controller_midi_in` receives the SL88's traffic,
--- including SysEx, so this script can both send and receive SL Link.
---
--- `io` remains unavailable in MainStage's Lua sandbox (`attempt to index
--- global 'io' (a nil value)`), so the file transport below is dead. The
--- `write_frame`/`io.open` calls are harmless (`pcall`-wrapped) and kept only
--- until the MIDI path fully replaces them. See docs/mainstage-integration.md.
---
--- NOTE for a multi-instance-safe design: MainStage loads this script once
--- per matched USB-MIDI interface (two instances observed). Both used the
--- same hardcoded DeviceID below, so the second got
---   F0 00 20 1A 16 03 6D 7F 02 00 ... F7  (IDENTIFICATION REJECTED,
---                                          reason 0x00 = DeviceID taken)
--- A real implementation needs a per-instance DeviceID, or must tolerate the
--- rejection and retry with a different instance byte.
---
--- Installed outside the app bundle (the app is sandboxed and cannot write
--- here itself) via Scripts/install-mainstage-script.sh, into:
---   ~/Music/Audio Music Apps/MainStage Devices/<manufacturer>/<model>.device/
--- ("MIDI Device Scripts" is Logic Pro's folder of the same shape - see
--- docs/mainstage-integration.md's Phase 0 v2 correction.)
+-- Speaks the SL Link protocol **directly from Lua**, with no helper
+-- application involved: the script identifies itself to the keyboard, holds
+-- the session alive, and draws the current MainStage patch on the SL88's
+-- screen. See docs/mainstage-integration.md for how this was established and
+-- SL-Link-Mainstage/SLLink/ for the Swift implementation every byte here is
+-- checked against.
 --
 -- =========================================================================
--- SysEx-shaped frame dialect ("SM bridge") - KEEP THIS BLOCK IN SYNC WITH
--- MainStageProtocol.swift's matching header comment. Every byte between F0
--- and F7 is 7-bit (MSB clear - a holdover from this dialect's MIDI origins,
--- kept so both sides share one mental model); every string is ASCII,
--- 0x00-terminated; any value that can exceed 127 is split MSB-then-LSB
--- (msb = v >> 7, lsb = v & 0x7F), the same convention SL Link itself uses
--- (see SLLinkEncoder.msbLsb).
+-- THE ONE THING THAT MATTERS MOST (2026-08-19)
 --
---   F0 7D 53 4D <function> [payload...] F7
+--     outport must be the SHORT kMIDIPropertyName:  'LINK'
+--     NOT the CoreMIDI display name:                'SL LINK'
 --
---   7D       = MIDI "non-commercial / reserved for private use"
---              manufacturer ID (never assigned to a real manufacturer -
---              keeps this private dialect from colliding with anyone
---              else's SysEx, without registering our own ID). Vestigial
---              now that this isn't sent as real MIDI, but kept so the
---              frame shape doesn't need to change if MIDI delivery is ever
---              revisited.
---   53 4D    = ASCII "SM" ("SL MainStage") - a private bridge tag that
---              disambiguates this dialect from any other private-use
---              SysEx-shaped data that also happens to share ID 0x7D.
---   function = one of the message IDs below. All of the following flow
---              Lua (MainStage) -> app; the app answers on the same pair of
---              endpoints with plain Bank Select + Program Change (below),
---              not this dialect.
---
---   0x01  Bridge Hello        controller_initialize
---     F0 7D 53 4D 01 <protocolVersion> <appName> 00 F7
---       protocolVersion : 1 byte, this dialect's version (currently 1;
---                          always < 128, so not split).
---       appName         : MainStage's `applicationName` argument,
---                          0x00-terminated.
---
---   0x02  Bridge Goodbye      controller_finalize
---     F0 7D 53 4D 02 F7
---       No payload.
---
---   0x03  Heartbeat           controller_timer_trigger (periodic)
---     F0 7D 53 4D 03 <seqMSB> <seqLSB> F7
---       seq : 14-bit counter, incremented and wrapped every beat. Lets the
---             app notice gaps as well as absence; not itself required for
---             the liveness check (which is just "did *a* heartbeat arrive
---             recently"), but cheap and useful in the dev console.
---
---   0x10  Patch List Dump     controller_select_patch
---     F0 7D 53 4D 10 <concertName> 00 <entryCountMSB> <entryCountLSB>
---         entry* <currentSetIndex> <currentPatchIndex> F7
---       concertName  : 0x00-terminated.
---       entryCount   : 14-bit (a large concert can plausibly exceed 127
---                      combined sets+patches).
---       entry        : <entryType> <patchIndex> <setIndex> <label> 00
---         entryType  : 0x01 = set/song (IsPatch == false),
---                      0x02 = patch     (IsPatch == true).
---         patchIndex : 0-127, or 0x7F meaning "n/a" - mirrors the
---                      Infinite Response VAX77 script this structure is
---                      modelled on. Never split MSB/LSB: this is the same
---                      value used verbatim as a Bank Select byte (below),
---                      which is inherently a 7-bit MIDI field, so 128
---                      sets/patches is MainStage's own ceiling, not one
---                      this dialect adds.
---         setIndex   : same shape as patchIndex.
---         label      : 0x00-terminated.
---       currentSetIndex, currentPatchIndex : same 0-127-or-0x7F shape as
---         above; the currently active entry, so the app can highlight it
---         without a round trip, and can tell the difference between "the
---         list changed" and "MainStage's own UI changed the active patch"
---         (see docs/mainstage-integration.md's verification step 6).
---
--- Patch selection (app -> MainStage, the other direction) is deliberately
--- NOT part of this dialect: `controller_info()` below declares
--- `patchselector = true`, so MainStage's own core - not this script -
--- expects the device to select a patch with plain Bank Select MSB/LSB
--- followed by a Program Change: Bank Select MSB (CC0) = SetIndex, Bank
--- Select LSB (CC32) = PatchIndex, then a Program Change, all on MIDI
--- channel 16 (status bytes 0xBF/0xCF). That ordering and channel come from
--- the VAX77 reference script's header, which states what MainStage itself
--- listens for: "MainStage is listening to MIDI Bank Select MSB/LSB on
--- channel 16, with MSB being an index to the set that should be selected
--- and LSB being the patch inside this set." Do not take the "bank select
--- MSB/LSB" labels further down that script as the contract - those
--- describe its own device-bound SysEx dump, not what MainStage receives.
--- This script never sends that triple itself (that would be the app's
--- job, and see the MATCHING note above on why it's now doubtful the app
--- even can); it is documented here only so both ends agree on what
--- `controller_midi_in` below must swallow.
+-- Getting this wrong makes MainStage silently drop every outbound message,
+-- with no error anywhere. It cost this project a dozen test rounds and a
+-- premature "this is impossible" conclusion. MainStage tells you the right
+-- name itself: the `portName` argument handed to controller_midi_in is
+-- 'LINK'. Confirmed on hardware - with outport='LINK' the SL88 answers an
+-- Identification Request with IDENTIFICATION APPROVED:
+--   F0 00 20 1A 16 03 6D 7F 01 01 01 02 01 F7   (firmware 1.1.2, model SL88)
 -- =========================================================================
-
-MFR_ID = 0x7D
-TAG1 = 0x53 -- 'S'
-TAG2 = 0x4D -- 'M'
-
-FUNC_HELLO = 0x01
-FUNC_GOODBYE = 0x02
-FUNC_HEARTBEAT = 0x03
-FUNC_PATCHLIST = 0x10
-
-PROTOCOL_VERSION = 0x01
-ENTRY_SET = 0x01
-ENTRY_PATCH = 0x02
-INDEX_NONE = 0x7F
-
--- Heartbeat cadence. The app treats the bridge as down if none arrives
--- within a small multiple of this - see MainStageEndpoint's heartbeat
--- timeout, and SLLinkSession's 3s/5s keepalive for the shape this copies.
-HEARTBEAT_MS = 2000
-
-heartbeatSeq = 0
-savedPatchListEvent = {}
-
--- MARK: - File-based transport
 --
--- Outbound MIDI is confirmed undeliverable in this MainStage version (see
--- the TRANSPORT note at the top of this file), so every frame is written
--- straight to a file instead of returned as `{midi=...}`. Two files, each
--- always fully overwritten (`'wb'`, not appended) rather than kept as a
--- log, since only the latest state matters and an unbounded log would grow
--- forever over a long session:
---   STATUS_PATH    : latest Hello/Heartbeat/Goodbye frame.
---   PATCHLIST_PATH : latest Patch List Dump frame.
--- Kept as two separate files (rather than one) so a heartbeat write can
--- never race with/clobber a patch-list write.
+-- MATCHING: generic, on the SL88's own manufacturer/model ('STUDIOLOGIC'/
+-- 'SL'), not usb_vendor_id/usb_product_id - see controller_info() at the
+-- bottom and docs/mainstage-integration.md's "MIDI outbound, round 2".
 --
--- Every write is `pcall`-wrapped and reports success/failure through
--- `print()` regardless of outcome, so the result is visible in
--- `/tmp/lua.log` under the debugging recipe (docs/mainstage-integration.md)
--- even if `io.open`/`io.write` errors instead of failing quietly. This
--- also doubles as the io-library re-test docs/mainstage-integration.md's
--- "Next thing to try" called for - no separate probe needed once this
--- script is confirmed to actually run (which the matching fix above is
--- what makes true).
-STATUS_PATH = '/tmp/sl-mainstage-bridge-status.bin'
-PATCHLIST_PATH = '/tmp/sl-mainstage-bridge-patchlist.bin'
+-- MULTIPLE INSTANCES: MainStage loads this script once per matched USB-MIDI
+-- interface (two instances observed on this SL88). They cannot share a
+-- DeviceID - the second one gets IDENTIFICATION REJECTED with reason 0x00
+-- ("DeviceID taken"). Rather than trying to invent per-instance entropy in a
+-- sandboxed Lua with no `os`/`io`, this script simply walks its instance byte
+-- forward on every rejection until the keyboard accepts one. Self-healing and
+-- deterministic - see handle_identification_rejected().
+--
+-- SENDING IS RETURN-VALUE ONLY: a device script can only emit MIDI by
+-- returning it from a callback. There is no "send now" function. Everything
+-- outbound is therefore queued into `pendingOut` and flushed by whichever
+-- callback fires next (see queue_message/flush_pending). Consequence: the
+-- keepalive cadence is bounded by how often controller_timer_trigger fires.
+--
+-- SL Link message shape (docs/, and SLLinkEncoder.swift):
+--   F0 00 20 1A 16 <id1> <id2> <itemType> <function> [payload...] F7
+--   00 20 1A = Fatar/Studiologic manufacturer ID, 16 = SL Link protocol ID.
 
-function write_frame(path, event)
-	local ok, err = pcall(function()
-		local file = io.open(path, 'wb')
-		if file == nil then
-			print('[bridge] io.open returned nil for path=' .. path)
-			return
-		end
-		for i = 1, #event do
-			file:write(string.char(event[i]))
-		end
-		file:close()
-		print('[bridge] wrote ' .. #event .. ' byte(s) to ' .. path)
-	end)
-	if not ok then
-		print('[bridge] pcall error writing ' .. path .. ': ' .. tostring(err))
+-- MARK: - Protocol constants (mirror SLLinkProtocol.swift exactly)
+
+SL_PORT = 'LINK' -- see the banner above; NOT 'SL LINK'
+
+SL_HEADER = { 0xF0, 0x00, 0x20, 0x1A, 0x16 }
+SL_END = 0xF7
+
+SL_HOST_ID = 0x03 -- SLLinkHeader.defaultHostID
+SL_INSTANCE_START = 0x6D -- first instance byte tried; bumped on rejection
+
+-- Item types
+IT_SYSTEM = 0x00
+IT_DISPLAY = 0x04
+IT_IDENTIFICATION = 0x7F
+
+-- Identification functions
+ID_REQUEST = 0x00
+ID_APPROVED = 0x01
+ID_REJECTED = 0x02
+ID_QUERY = 0x03
+
+-- System functions
+SYS_DEVICE_NOTIFICATION = 0x00 -- keepalive
+SYS_LOGIN_CONFIRMATION = 0x01
+SYS_LOGOUT_REQUEST = 0x02
+SYS_LOGOUT_CONFIRMATION = 0x03
+SYS_STANDBY = 0x04
+SYS_RESTART = 0x05
+SYS_LOGIN_RECALL = 0x06
+
+-- Display functions
+DISP_WRITE_TEXT = 0x00
+DISP_CLEAR_SCREEN = 0x01
+
+-- Text align / size
+ALIGN_LEFT, ALIGN_CENTER = 0x00, 0x01
+SIZE_SMALL, SIZE_MEDIUM, SIZE_BIG = 0x00, 0x01, 0x02
+
+-- The keyboard drops a host that goes quiet for ~5s; the app uses 3s.
+KEEPALIVE_MS = 3000
+
+APP_NAME = 'MainStage'
+
+-- MARK: - Session state
+
+STATE_IDLE = 'idle'
+STATE_IDENTIFYING = 'identifying'
+STATE_LISTED = 'listed' -- approved, waiting for the user to pick us on the SL88
+STATE_ACTIVE = 'active'
+STATE_STANDBY = 'standby'
+
+state = STATE_IDLE
+instanceID = SL_INSTANCE_START
+pendingOut = {}
+
+-- Latest patch info from MainStage, painted once the session goes active.
+currentPatch = ''
+currentSet = ''
+currentConcert = ''
+screenDirty = false
+
+-- MARK: - Outbound plumbing
+--
+-- A script can only send by returning MIDI from a callback, so build up a
+-- flat byte array here and let the next callback flush it. Flat (rather than
+-- nested-per-message) is the Launchkey MK3 reference's form, and multiple
+-- complete F0..F7 messages may simply be concatenated.
+
+function queue_message(msg)
+	for i = 1, #msg do
+		table.insert(pendingOut, msg[i])
 	end
 end
 
--- MARK: - Helpers
+-- Inserts a delay marker (negative number = milliseconds) so CoreMIDI does
+-- not interleave a burst of display writes - the VAX77 reference does the
+-- same around its own SysEx dump.
+function queue_delay(ms)
+	table.insert(pendingOut, -ms)
+end
 
--- 0x00-terminates an ASCII string into a growable event table.
-function append_string(event, text)
+function flush_pending()
+	if #pendingOut == 0 then return nil end
+	local out = pendingOut
+	pendingOut = {}
+	return { midi = out, outport = SL_PORT }
+end
+
+-- MARK: - Message builders
+
+function sl_header()
+	local m = {}
+	for i = 1, #SL_HEADER do m[i] = SL_HEADER[i] end
+	m[#m + 1] = SL_HOST_ID
+	m[#m + 1] = instanceID
+	return m
+end
+
+-- ASCII-clamps to the SLMK2 font range and 0x00-terminates, matching
+-- SLLinkEncoder.asciiTerminated.
+function append_text(msg, text, maxLength)
 	if text ~= nil then
-		for i = 1, #text do
-			table.insert(event, string.byte(text, i))
+		local limit = math.min(#text, maxLength or 32)
+		for i = 1, limit do
+			local b = string.byte(text, i)
+			if b < 0x20 or b > 0x80 then b = 0x20 end
+			table.insert(msg, b)
 		end
 	end
-	table.insert(event, 0x00)
+	table.insert(msg, 0x00)
 end
 
--- Splits a value that can exceed 127 into (msb, lsb) - mirrors
--- SLLinkEncoder.msbLsb / the comment block above.
-function msb_lsb(value)
-	if value < 0 then value = 0 end
-	return math.floor(value / 128) % 128, value % 128
+-- Splits a value >127 into (msb, lsb) - mirrors SLLinkEncoder.msbLsb.
+function append_msb_lsb(msg, value)
+	if value == nil or value < 0 then value = 0 end
+	table.insert(msg, math.floor(value / 128) % 128)
+	table.insert(msg, value % 128)
 end
 
--- Clamps a MainStage set/patch index to the 0-127-or-INDEX_NONE shape used
--- on the wire (see the Patch List Dump section above).
-function clamp_index(value)
-	if value == nil or value < 0 then
-		return INDEX_NONE
-	end
-	if value > 127 then
-		return 127
-	end
-	return value
+-- 8-bit RGB -> the 7-bit-per-channel form every SL Link colour field uses
+-- (SLLinkEncoder.rgb7 drops the least significant bit).
+function append_rgb(msg, r, g, b)
+	table.insert(msg, math.floor(r / 2))
+	table.insert(msg, math.floor(g / 2))
+	table.insert(msg, math.floor(b / 2))
 end
 
-function bridge_header(func)
-	return { 0xF0, MFR_ID, TAG1, TAG2, func }
+function msg_identification_request()
+	local m = sl_header()
+	table.insert(m, IT_IDENTIFICATION)
+	table.insert(m, ID_REQUEST)
+	append_text(m, APP_NAME, 32)
+	table.insert(m, SL_END)
+	return m
 end
 
--- MARK: - Lifecycle (Bridge Hello / Goodbye / Heartbeat)
+-- Sent purely to elicit a reply and thereby keep the session clock running -
+-- see controller_timer_trigger.
+function msg_identification_query()
+	local m = sl_header()
+	table.insert(m, IT_IDENTIFICATION)
+	table.insert(m, ID_QUERY)
+	table.insert(m, SL_END)
+	return m
+end
 
--- MARK: - SL Link session, spoken by the script itself (Lua-only mode)
+function msg_system(func)
+	local m = sl_header()
+	table.insert(m, IT_SYSTEM)
+	table.insert(m, func)
+	table.insert(m, SL_END)
+	return m
+end
+
+function msg_clear_screen(r, g, b)
+	local m = sl_header()
+	table.insert(m, IT_DISPLAY)
+	table.insert(m, DISP_CLEAR_SCREEN)
+	append_rgb(m, r, g, b)
+	table.insert(m, SL_END)
+	return m
+end
+
+function msg_write_text(text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, bb)
+	local m = sl_header()
+	table.insert(m, IT_DISPLAY)
+	table.insert(m, DISP_WRITE_TEXT)
+	append_msb_lsb(m, x)
+	append_msb_lsb(m, y)
+	append_msb_lsb(m, maxWidth)
+	table.insert(m, align)
+	table.insert(m, size)
+	append_rgb(m, fr, fg, fb)
+	append_rgb(m, br, bg, bb)
+	append_text(m, text, 96)
+	table.insert(m, SL_END)
+	return m
+end
+
+-- MARK: - Screen
+
+-- Repaints the whole screen. The SL88 keeps no display state across Standby,
+-- so this is also what a Restart triggers.
+-- CURRENT STATE (2026-08-19): a single Write Text, sent on its own, renders
+-- correctly on the SL88. **Confirmed working on hardware.**
 --
--- See the big block comment on controller_midi_in below for what this is
--- testing and why. Byte shape verified against SLLinkEncoder:
---   F0 00 20 1A 16 <id1> <id2> 7F 00 <ASCII name> 00 F7
--- The instance byte is arbitrary but must be stable across the session.
-SLLINK_PROBE_ID1 = 0x03 -- HOST_ID, the same constant the app uses
-SLLINK_PROBE_ID2 = 0x6D -- our own instance byte
--- MainStage reports portName='LINK' (short kMIDIPropertyName) in
--- controller_midi_in - so that, not 'SL LINK', is the name MainStage
--- itself uses for this port. Aligning outport to match (2026-08-19).
-SLLINK_PROBE_OUTPORT = 'LINK'
+-- An earlier version of this function queued Clear Screen + three Write Texts
+-- + negative delay markers into one flat array, and the result was a black
+-- screen: the Clear Screen clearly landed, nothing after it did. Bisecting to
+-- this single message made text appear, so the fault is in one of the two
+-- things that were removed:
+--   (a) the negative delay markers (-20/-10) - prime suspect. In a flat array
+--       they may be corrupting everything that follows them, which would
+--       explain "first message applied, rest dropped" exactly. The Launchkey
+--       MK3 reference uses -2 between messages, so the mechanism itself is
+--       real; the encoding of our values may not be.
+--   (b) multiple complete F0..F7 messages concatenated in one flat array. The
+--       Launchkey reference does exactly this and works, so this is the less
+--       likely of the two - but it has not been isolated yet.
+--
+-- NEXT STEP: re-add one element at a time (first a second Write Text with no
+-- delays; then Clear Screen; then delays) to find which one breaks it, rather
+-- than restoring the whole original paint at once.
+function paint_screen()
+	queue_message(msg_write_text(currentPatch, 8, 80, 304,
+		ALIGN_CENTER, SIZE_BIG, 255, 255, 255, 0, 0, 0))
 
-function sl_link_identification_request()
-	local msg = { 0xF0, 0x00, 0x20, 0x1A, 0x16, SLLINK_PROBE_ID1, SLLINK_PROBE_ID2, 0x7F, 0x00 }
-	append_string(msg, 'LuaProbe') -- ASCII + 0x00 terminator
-	table.insert(msg, 0xF7)
-	return msg
+	screenDirty = false
+	print('[sllink] painted: "' .. currentPatch .. '"')
 end
 
-function controller_initialize(applicationName, deviceNewlyDetected)
-	settriggertimer(HEARTBEAT_MS) -- prime the periodic heartbeat
-	heartbeatSeq = 0
-	savedPatchListEvent = {}
-	capturedEvents = 0
-	identificationSent = false
+-- MARK: - Session
 
-	event = bridge_header(FUNC_HELLO)
-	table.insert(event, PROTOCOL_VERSION)
-	append_string(event, applicationName)
-	table.insert(event, 0xF7)
-	write_frame(STATUS_PATH, event)
-
-	-- Unsolicited attempt, kept alongside the reply-path attempt in
-	-- controller_midi_in purely as a control: same bytes, same outport, but
-	-- now in the **flat** `midi` form rather than the nested form every
-	-- previous lifecycle probe used. If the reply path works and this one
-	-- doesn't, that isolates unsolicited-vs-reactive as the real difference.
-	local probe = sl_link_identification_request()
-	print('[capture] controller_initialize -> Identification Request (' ..
-	      #probe .. ' bytes, flat form) outport=' .. SLLINK_PROBE_OUTPORT)
-	return { midi = probe, outport = SLLINK_PROBE_OUTPORT }
+function start_identification()
+	state = STATE_IDENTIFYING
+	queue_message(msg_identification_request())
+	print('[sllink] -> Identification Request as (' ..
+	      string.format('%02X %02X', SL_HOST_ID, instanceID) .. ') on outport=' .. SL_PORT)
 end
 
-function controller_finalize()
-	event = bridge_header(FUNC_GOODBYE)
-	table.insert(event, 0xF7)
-	write_frame(STATUS_PATH, event)
-	return nil
+function handle_identification_approved()
+	state = STATE_LISTED
+	print('[sllink] <- IDENTIFICATION APPROVED as ' ..
+	      string.format('%02X %02X', SL_HOST_ID, instanceID) ..
+	      ' - now in the SL88 APP list; select it there to activate')
 end
 
--- Periodic heartbeat. Re-arms itself every call so it keeps firing for as
--- long as the device stays selected, unlike the VAX77's one-shot use of
--- this same callback.
-function controller_timer_trigger()
-	settriggertimer(HEARTBEAT_MS)
-
-	heartbeatSeq = (heartbeatSeq + 1) % 16384
-	seqMSB, seqLSB = msb_lsb(heartbeatSeq)
-
-	event = bridge_header(FUNC_HEARTBEAT)
-	table.insert(event, seqMSB)
-	table.insert(event, seqLSB)
-	table.insert(event, 0xF7)
-	write_frame(STATUS_PATH, event)
-
-	return nil
+-- Reason 0x00 = DeviceID taken/reserved. Walk the instance byte forward and
+-- try again; this is what lets a second script instance coexist with the
+-- first without any source of per-instance entropy.
+function handle_identification_rejected(reason)
+	print('[sllink] <- IDENTIFICATION REJECTED (reason ' ..
+	      string.format('%02X', reason or 0) .. ') for instance ' ..
+	      string.format('%02X', instanceID))
+	instanceID = instanceID + 1
+	if instanceID > 0x7E then instanceID = 0x10 end
+	start_identification()
 end
 
--- MARK: - Patch list (Patch List Dump)
+function handle_login()
+	state = STATE_ACTIVE
+	print('[sllink] <- LOGIN - session active')
+	paint_screen()
+end
 
--- MainStage pushes the whole patch list on every patch change. Encode it
--- into the frame dialect above, skipping the write if nothing changed (the
--- VAX77's own optimization for its own display SysEx - a redundant write
--- of the same bytes isn't free either).
-function controller_select_patch(programchangeNumber, patchname, setname, concertname, patchlist, currentSetIndex, currentPatchIndex)
-	event = bridge_header(FUNC_PATCHLIST)
-	append_string(event, concertname)
+function handle_standby()
+	state = STATE_STANDBY
+	print('[sllink] <- STANDBY')
+end
 
-	countMSB, countLSB = msb_lsb(#patchlist)
-	table.insert(event, countMSB)
-	table.insert(event, countLSB)
+function handle_restart()
+	state = STATE_ACTIVE
+	print('[sllink] <- RESTART - repainting (SL88 retains no screen state)')
+	paint_screen()
+end
 
-	for i = 1, #patchlist do
-		if patchlist[i].IsPatch then
-			table.insert(event, ENTRY_PATCH)
-		else
-			table.insert(event, ENTRY_SET)
-		end
-		table.insert(event, clamp_index(patchlist[i].PatchIndex))
-		table.insert(event, clamp_index(patchlist[i].SetIndex))
-		append_string(event, patchlist[i].Label)
-	end
+function handle_logout_request()
+	print('[sllink] <- LOGOUT REQUEST - confirming')
+	queue_message(msg_system(SYS_LOGOUT_CONFIRMATION))
+	state = STATE_IDLE
+end
 
-	table.insert(event, clamp_index(currentSetIndex))
-	table.insert(event, clamp_index(currentPatchIndex))
-	table.insert(event, 0xF7)
+function send_keepalive()
+	queue_message(msg_system(SYS_DEVICE_NOTIFICATION))
+end
 
-	unchanged = (#savedPatchListEvent == #event)
-	if unchanged then
-		for i = 1, #savedPatchListEvent do
-			if savedPatchListEvent[i] ~= event[i] then
-				unchanged = false
-				break
+-- MARK: - Inbound decoding
+--
+-- controller_midi_in receives the SL88's traffic, SysEx included (the VAX77
+-- reference matches F0 in its own controller_midi_in the same way).
+
+function is_our_sl_frame(e)
+	return e[0] == 0xF0
+	   and e[1] == 0x00 and e[2] == 0x20 and e[3] == 0x1A and e[4] == 0x16
+	   and e[5] == SL_HOST_ID and e[6] == instanceID
+end
+
+function handle_sl_frame(e)
+	local itemType = e[7]
+	local func = e[8]
+
+	if itemType == IT_IDENTIFICATION then
+		if func == ID_APPROVED then
+			handle_identification_approved()
+		elseif func == ID_REJECTED then
+			handle_identification_rejected(e[9])
+		elseif func == ID_QUERY then
+			-- Reply to our own keepalive query. Nothing to do with it beyond
+			-- having received it: arriving here is what re-armed the timer.
+			if e[9] == 0x00 and state ~= STATE_IDENTIFYING then
+				-- Keyboard says we are NOT identified - session was dropped, so
+				-- climb back in rather than keep talking into the void.
+				print('[sllink] <- query says not identified; re-identifying')
+				state = STATE_IDLE
+				start_identification()
 			end
 		end
+	elseif itemType == IT_SYSTEM then
+		if func == SYS_LOGIN_CONFIRMATION or func == SYS_LOGIN_RECALL then
+			handle_login()
+		elseif func == SYS_STANDBY then
+			handle_standby()
+		elseif func == SYS_RESTART then
+			handle_restart()
+		elseif func == SYS_LOGOUT_REQUEST then
+			handle_logout_request()
+		end
+	end
+end
+
+-- MARK: - MainStage callbacks
+
+function controller_initialize(applicationName, deviceNewlyDetected)
+	settriggertimer(KEEPALIVE_MS)
+	state = STATE_IDLE
+	instanceID = SL_INSTANCE_START
+	pendingOut = {}
+	currentPatch, currentSet, currentConcert = '', '', ''
+
+	if applicationName ~= nil and applicationName ~= '' then
+		APP_NAME = applicationName
 	end
 
-	if not unchanged then
-		savedPatchListEvent = event
-		write_frame(PATCHLIST_PATH, event)
-	end
+	print('[sllink] controller_initialize (app="' .. tostring(applicationName) .. '")')
+	start_identification()
+	return flush_pending()
+end
 
+-- NOTE: deliberately does NOT send a Logout Request.
+--
+-- MainStage tears this script down and re-initialises it repeatedly (observed:
+-- init -> finalize -> init -> ... within seconds, partly because the script is
+-- loaded once per matched USB-MIDI interface). An earlier version sent a
+-- Logout Request here, which meant every one of those spurious teardowns
+-- actively removed us from the SL88's APP list - guaranteeing the "showed up
+-- briefly, then disappeared" symptom. Staying quiet lets the entry survive a
+-- churn; if the script really is going away for good, the keyboard's own ~5s
+-- keepalive timeout removes us anyway.
+function controller_finalize()
+	print('[sllink] controller_finalize (no logout sent - see note)')
+	pendingOut = {}
+	state = STATE_IDLE
 	return nil
 end
 
--- MARK: - Inbound filtering
-
--- Swallow inbound Program Change, exactly like the VAX77: patch selection
--- already happened via patchselector's Bank Select + Program Change
--- handling in MainStage's own core before this callback runs, so letting
--- the Program Change fall through as a generic mapped event would be a
--- second, spurious trigger. Harmless to keep even given the MATCHING note
--- at the top of this file casting doubt on whether the app-side half of
--- patchselector actually works now - this side only ever discards, never
+-- Periodic. Re-arms itself so it keeps firing for as long as the device stays
+-- selected. This is the only clock the session has, so the keepalive cadence
 -- depends on it.
--- ==========================================================================
--- LUA-ONLY MODE (2026-08-19) - no helper app involved.
---
--- Goal: have the script itself speak SL Link to the SL88 - identify, then
--- capture what comes back - with the "SL Link MainStage" app not running at
--- all, so nothing else holds the LINK port or drives the session.
---
--- Two things are being established here at once:
---
--- 1. WHAT LUA ACTUALLY RECEIVES. Every `controller_midi_in` call is logged
---    with its `portName` and raw bytes. This finally answers an open
---    question: whether MainStage delivers the declared controls to the
---    script at all, and on which port it thinks they arrive. It also shows
---    whether SysEx reaches the script - the VAX77 reference matches
---    `midiEvent[0] == 0xF0` in its own `controller_midi_in`, so SysEx is
---    expected to be delivered, which is what would let Lua read SL Link
---    replies.
---
--- 2. WHETHER A *REPLY* GETS SENT. Every failed outbound test so far sent
---    from a lifecycle hook (`controller_initialize`/`_timer_trigger`/
---    `_select_patch`) - i.e. unsolicited. Returning MIDI from
---    `controller_midi_in` is a different, untested path: a reply to an
---    inbound event. Apple's own M-Audio Oxygen 49 script uses exactly this
---    (`return {midi={0xB0,0x50+midiEvent[1],0x7F}}`), and it is one of the
---    few bundled scripts that sends anything at all. If MainStage flushes
---    the reactive path but not the unsolicited one, this is where it shows.
---
--- Also differs in message *shape*: `midi` is a **flat** byte array here
--- (Launchkey MK3 style, the confirmed-working modern reference), where the
--- earlier lifecycle probes used VAX77-style nesting (`midi = { event }`).
--- Both forms appear in shipped scripts; the flat one has never been tried
--- from this project.
---
--- Success looks like: an IDENTIFICATION APPROVED (`... 7F 01 ...`) arriving
--- back through `controller_midi_in` and/or on the LINK source in
--- Scripts/sniff-all-sl-ports.swift.
--- ==========================================================================
+timerTicks = 0
 
-capturedEvents = 0
-identificationSent = false
+function controller_timer_trigger()
+	settriggertimer(KEEPALIVE_MS)
+	timerTicks = timerTicks + 1
+	print('[sllink] timer tick #' .. timerTicks .. ' state=' .. state)
 
--- Renders a midiEvent (0-indexed, unknown length) as hex for the log.
-function dump_event(midiEvent)
+	-- Keepalive UNCONDITIONALLY once we have sent an Identification Request.
+	--
+	-- Originally this only fired in LISTED/ACTIVE, i.e. only after seeing an
+	-- IDENTIFICATION APPROVED come back. On hardware the approval is never
+	-- delivered to this script (MainStage does not appear to pass the SL88's
+	-- SysEx to controller_midi_in - only channel-voice traffic), so the state
+	-- machine sat in IDENTIFYING, no keepalive was ever sent, and the entry
+	-- aged out of the SL88's APP list after ~5s - "MainStage showed up
+	-- briefly, then disappeared".
+	--
+	-- So the session is driven open-loop: keep announcing ourselves whether or
+	-- not we can observe the replies. Harmless if the keyboard has already
+	-- logged us in, and it is what keeps us in the list if it hasn't.
+	if state == STATE_IDLE then
+		start_identification()
+	else
+		send_keepalive()
+	end
+
+	if screenDirty then
+		paint_screen()
+	end
+
+	-- Also send an Identification Query. Its only purpose is to make the
+	-- keyboard send something back: `settriggertimer` is a ONE-SHOT that
+	-- cannot be re-armed from inside this callback (established on hardware,
+	-- see the SESSION CLOCK note above controller_midi_in), so the only thing
+	-- that keeps the clock running is inbound MIDI arriving at
+	-- controller_midi_in. The query's reply is that inbound event, which
+	-- re-arms the timer and schedules the next tick - a self-sustaining
+	-- request/response heartbeat that does not depend on anyone playing.
+	queue_message(msg_identification_query())
+
+	return flush_pending()
+end
+
+function dump_event(e)
 	local parts = {}
 	local i = 0
-	while i < 64 do
-		local b = midiEvent[i]
+	while i < 48 do
+		local b = e[i]
 		if b == nil then break end
 		parts[#parts + 1] = string.format('%02X', b)
 		i = i + 1
 	end
-	if #parts == 0 then return '(empty)' end
 	return table.concat(parts, ' ')
 end
 
+-- SESSION CLOCK (established on hardware 2026-08-19)
+--
+-- `settriggertimer` is a ONE-SHOT, and crucially it does NOT re-arm when
+-- called from inside controller_timer_trigger - that callback fired exactly
+-- once per script instance no matter what. It DOES re-arm when called from
+-- here. (VAX77, the one reference using a repeating timer, arms it from
+-- controller_midi_in for exactly this reason.)
+--
+-- So the heartbeat is: timer tick -> send keepalive + Identification Query ->
+-- keyboard replies -> that reply lands here -> re-arm -> next tick. Without
+-- the query there is nothing to reply, the chain stops after one tick, and the
+-- SL88 drops us from its APP list after ~5s - which is exactly the
+-- "showed up briefly, then disappeared" symptom.
 function controller_midi_in(midiEvent, portName)
-	capturedEvents = capturedEvents + 1
-	-- Log everything, but cap the volume: playing the keyboard generates a
-	-- lot of traffic and the interesting frames (SysEx replies) are rare.
-	local isSysex = (midiEvent[0] == 0xF0)
-	if isSysex or capturedEvents <= 40 then
-		print('[capture] #' .. capturedEvents ..
-		      ' port=' .. tostring(portName) ..
-		      (isSysex and ' SYSEX ' or ' ') ..
-		      dump_event(midiEvent))
+	settriggertimer(KEEPALIVE_MS)
+
+	-- Log EVERY inbound SysEx, matched or not. This is the diagnostic for
+	-- whether MainStage delivers the SL88's protocol traffic to the script at
+	-- all - so far it appears not to, which is why the session runs open-loop.
+	if midiEvent[0] == 0xF0 then
+		print('[sllink] <- SYSEX on port=' .. tostring(portName) .. ': ' .. dump_event(midiEvent))
 	end
 
-	-- Reply to the very first inbound event with an SL Link Identification
-	-- Request. Sending it as a *reply* is the whole point of this test; see
-	-- the block comment above. Swallowing that one event is harmless.
-	if not identificationSent then
-		identificationSent = true
-		local msg = sl_link_identification_request()
-		print('[capture] -> replying with SL Link Identification Request (' ..
-		      #msg .. ' bytes, flat form) outport=' .. SLLINK_PROBE_OUTPORT)
-		return { midi = msg, outport = SLLINK_PROBE_OUTPORT }
+	if is_our_sl_frame(midiEvent) then
+		handle_sl_frame(midiEvent)
+		-- Protocol traffic, not music: swallow it, and use the opportunity to
+		-- flush whatever the handler queued.
+		local out = flush_pending()
+		if out ~= nil then return out end
+		return { midi = {} }
 	end
 
 	if midiEvent[0] == 0xC0 then
-		return { midi = {} } -- swallow Program Change, as before
+		return { midi = {} } -- swallow Program Change (patchselector handles it)
 	end
-	return nil -- allow everything else through unmodified
+
+	-- Musical traffic must pass through untouched - never swallow it just to
+	-- piggyback pending output, or notes will hang.
+	return nil
+end
+
+function controller_select_patch(programchangeNumber, patchname, setname, concertname,
+                                 patchlist, currentSetIndex, currentPatchIndex)
+	local p, s, c = patchname or '', setname or '', concertname or ''
+
+	-- MainStage calls this repeatedly with identical values (observed 5x for
+	-- one patch change, partly because the script is loaded once per USB-MIDI
+	-- interface). Repainting each time would waste a lot of MIDI - a full
+	-- repaint is several messages - so only redraw on a real change.
+	if p == currentPatch and s == currentSet and c == currentConcert then
+		return nil
+	end
+
+	currentPatch, currentSet, currentConcert = p, s, c
+	print('[sllink] controller_select_patch: "' .. currentPatch .. '"')
+
+	-- Paint open-loop: we cannot see login confirmations (see the note in
+	-- controller_timer_trigger), so draw whenever MainStage tells us the patch
+	-- changed and let the keyboard ignore it if we are not logged in yet.
+	paint_screen()
+	return flush_pending()
 end
 
 -- MARK: - Device declaration
 
--- Manufacturer/model here are the real SL88 MK2's own identity (see
--- docs/mainstage-integration.md's "The SL88's own MIDI identity" section),
--- not a separate virtual-endpoint identity - see the MATCHING note at the
--- top of this file for why.
---
--- MATCH METHOD (2026-08-18 update): generic (manufacturer/model), not
--- usb_vendor_id/usb_product_id. Comparing this project's outbound attempts
--- against all 98 of Apple's own bundled reference scripts found a clean
--- correlation with no counterexamples: every script that sends unsolicited
--- MIDI from a lifecycle hook (VAX77, KeyLab 88, Launch Control, MPK249,
--- etc.) matches generically; of the only 3 scripts in the whole bundle with
--- an active usb_vendor_id, none send unsolicited MIDI at all - the SL88
--- (unlike the earlier abandoned virtual-endpoint design) has a real
--- MIDIDeviceRef/MIDIEntityRef, so generic matching against it is a
--- genuinely new, untested configuration, not a repeat of the dead virtual-
--- endpoint attempt. usb_vendor_id/usb_product_id (`0x9516`/`0x4039`,
--- decimal below, confirmed live in the Phase 0 v2 spike) kept as a comment
--- for reference, mirroring how Apple's own KeyLab 88.device/config.lua
--- keeps its usb ids commented out.
+-- Items describe MIDI the SL88 **actually transmits**, captured live on
+-- 2026-08-19 (notes, pitch bend, modulation, second stick, sustain - all on
+-- LINK, none on CTRL). Ports use the short names for the same reason outport
+-- does; see the banner at the top of this file.
 function controller_info()
 	return {
 		model = 'SL',
@@ -497,19 +524,8 @@ function controller_info()
 		-- usb_vendor_id = 38166,  -- 0x9516
 		-- usb_product_id = 16441, -- 0x4039
 
-		-- Patch selection is by Bank Select + Program Change, not raw PC
-		-- numbers - see the frame dialect comment block above.
 		patchselector = true,
 
-		-- ITEMS describe MIDI the SL88 **actually transmits**, captured live
-		-- (2026-08-19) with one input port per source while playing the
-		-- keyboard and moving both sticks. Every event - notes, pitch bend,
-		-- modulation, sustain - arrived on **SL LINK**, zero on SL CTRL, so
-		-- that is the `inport`. The previous table here was invented CC
-		-- numbers (0xBF 0x50-0x5C) the SL88 never sends, with no ports
-		-- declared at all; the working Launchkey MK3 reference instead
-		-- declares real controls on real ports, giving MainStage an actual
-		-- bidirectional surface to bind.
 		items = {
 			{name='Keyboard', label='SL88', objectType='Keyboard', midiType='Keyboard',
 			 startKey=21, numberKeys=88, midi={0x90,MIDI_Wildcard,MIDI_Wildcard},

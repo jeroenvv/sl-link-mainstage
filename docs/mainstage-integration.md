@@ -642,6 +642,62 @@ attempted here, not a closed door. **Still true**: the device-script route hasn'
 approach for the MainStage -> app direction yet; `.concert` parsing is the other live option in the
 meantime.
 
+## Lua-only SL Link session — WORKING (2026-08-19)
+
+The helper app is **not needed for the keyboard-facing side**. `config.lua` now speaks SL Link
+directly: identifies, holds the session open, and draws the current MainStage patch on the SL88's
+screen. Confirmed on hardware, with the app quit.
+
+**What works, verified live:**
+
+| Piece | Evidence |
+|:---|:---|
+| Outbound MIDI | `outport='LINK'` — see the section below; this was the whole original blocker |
+| Identification | `IDENTIFICATION APPROVED` (`7F 01`, fw 1.1.2, SL88) |
+| Inbound SysEx to the script | `controller_midi_in` receives SL Link frames, incl. `LOGIN CONFIRMATION` (`00 01`) |
+| Session persistence | 27 timer ticks sustained, query replies (`7F 03 01` = identified) flowing |
+| Standby / Restart | Both observed and handled, with repaint on restart |
+| Drawing on the SL88 screen | A single Write Text renders the patch name |
+
+### The three problems that had to be solved, and how
+
+**1. `settriggertimer` is a ONE-SHOT — and cannot re-arm itself.** Calling it from inside
+`controller_timer_trigger` does nothing; the callback fired exactly once per script instance no matter
+what. It *does* re-arm when called from `controller_midi_in`. (VAX77 arms it from `controller_midi_in`
+for precisely this reason — that detail is easy to read past.)
+
+Consequence: a device script has no free-running clock. The session therefore generates its own by
+sending an **Identification Query** (`7F 03`) on every tick purely to provoke a reply; that reply lands
+in `controller_midi_in`, re-arms the timer, and schedules the next tick. A self-sustaining
+request/response heartbeat that doesn't depend on anyone playing. The query's answer also doubles as a
+session check — a `not identified` result triggers re-identification.
+
+**2. `controller_finalize` was logging us out.** MainStage tears the script down and re-initialises it
+repeatedly (`init → finalize → init …` within seconds, partly because it loads once per matched
+USB-MIDI interface). Sending a Logout Request there meant every spurious teardown actively removed us
+from the APP list — the "showed up briefly, then disappeared" symptom. It no longer sends one; if the
+script really is gone, the keyboard's own ~5s timeout handles it.
+
+**3. Two script instances collide on DeviceID.** The second gets `IDENTIFICATION REJECTED` reason
+`0x00` (DeviceID taken). With no `os`/`io` in the sandbox there's no entropy source, so the script just
+walks its instance byte forward on each rejection until one is accepted.
+
+### Open: multi-message display painting
+
+A **single** Write Text renders correctly. The original paint — Clear Screen + three Write Texts +
+negative delay markers, all concatenated into one flat `midi` array — produced a **black screen**: the
+Clear Screen applied, nothing after it did. Bisecting down to one Write Text fixed it, so the fault is
+in one of the two things removed:
+
+- **the negative delay markers** (`-20`/`-10`) — prime suspect, since "first message applied, rest
+  dropped" is exactly what a corrupted array would look like. The Launchkey MK3 reference does use
+  `-2` between messages, so the mechanism is real; our values or placement may not be.
+- **multiple `F0..F7` messages concatenated in one flat array** — less likely, since the Launchkey
+  reference does exactly this and works, but not yet isolated.
+
+**Next step:** re-add one element at a time (a second Write Text with no delays → then Clear Screen →
+then delays), rather than restoring the whole paint at once.
+
 ## SOLVED (2026-08-19): outbound MIDI works — `outport` needs the SHORT port name
 
 **The whole outbound blocker was the `outport` string.** MainStage wants the short
