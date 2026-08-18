@@ -9,35 +9,46 @@
 -- this was established and MainStageProtocol.swift for the Swift-side
 -- decoder that must agree with every byte offset below.
 --
--- MATCHING: by usb_vendor_id/usb_product_id against the real SL88 MK2
--- (see controller_info() below), NOT generically against a virtual
--- CoreMIDI endpoint. An earlier revision matched generically against a
--- virtual endpoint the app published (manufacturer "SL Link Bridge") to
--- avoid claiming the real keyboard's own device-script identity - that
--- was established dead (docs/mainstage-integration.md's "Virtual device
--- registration" section: a bare MIDISourceCreate/MIDIDestinationCreate
--- endpoint has no MIDIDeviceRef/MIDIEntityRef parent, and MainStage never
--- binds config.lua to one). USB-ID matching against the physical SL88 is
--- the only method confirmed (Phase 0 v2 spike) to actually get this script
--- invoked, with real patch data. Consequence: this script now occupies the
--- SL88's own device-script slot, and `MainStageProtocol.encodeSelection`/
--- `MainStageEndpoint.sendSelection` (app -> MainStage patch selection,
--- sent from the app's *virtual* endpoint) are even less likely to be
--- recognized by MainStage's patchselector handling than before, since that
--- now targets a different endpoint than the one actually matched to this
--- script. Unconfirmed either way; out of scope for the inbound (MainStage
--- -> app) direction this file implements.
+-- MATCHING: generic (manufacturer/model against the real SL88 MK2's own
+-- identity - see controller_info() below), NOT usb_vendor_id/usb_product_id.
+-- An earlier revision matched generically against a *virtual* endpoint the
+-- app published (manufacturer "SL Link Bridge") to avoid claiming the real
+-- keyboard's own device-script identity - that was established dead
+-- (docs/mainstage-integration.md's "Virtual device registration" section: a
+-- bare MIDISourceCreate/MIDIDestinationCreate endpoint has no
+-- MIDIDeviceRef/MIDIEntityRef parent, and MainStage never binds config.lua
+-- to one). A later revision switched to usb_vendor_id/usb_product_id
+-- matching against the physical SL88 instead - confirmed to get the script
+-- invoked, but comparing against all 98 of Apple's bundled reference
+-- scripts found that every one of them sending unsolicited MIDI matches
+-- generically, and none of the 3 usb_vendor_id-matched ones do (see
+-- docs/mainstage-integration.md's "MIDI outbound, round 2"). Generic
+-- matching against the real SL88 (unlike the earlier virtual endpoint) also
+-- has a real MIDIDeviceRef/MIDIEntityRef, so this is the current, settled
+-- choice. Consequence: this script occupies the SL88's own device-script
+-- slot, and `MainStageProtocol.encodeSelection`/`MainStageEndpoint.
+-- sendSelection` (app -> MainStage patch selection, sent from the app's
+-- *virtual* endpoint) are unconfirmed either way; out of scope for the
+-- inbound (MainStage -> app) direction this file implements.
 --
--- TRANSPORT: file-based, not MIDI. Phase 0 v2 (docs/mainstage-
--- integration.md) exhaustively confirmed that no `outport` value - not the
--- app's virtual destination, not any of the SL88's own port names, not
--- omitting `outport` - ever delivers a script-returned MIDI event in this
--- MainStage version. Every lifecycle hook below writes its frame straight
--- to a file with `io.open` instead of returning `{midi=...}`; the app
--- polls those files. The on-the-wire byte layout is unchanged from the
--- original MIDI-SysEx design (still F0...F7, still decoded by the same
--- `MainStageProtocol.decode` on the Swift side) so only the transport
--- changed, not the dialect.
+-- TRANSPORT: neither MIDI nor file writes actually deliver data right now
+-- - both are confirmed dead on real hardware (docs/mainstage-integration.md
+-- has the full history). MIDI: an exhaustive sweep of every plausible
+-- `outport` value (omitted, the app's own virtual destination, every one of
+-- the SL88's real ports in both short and full display-name form, even
+-- with the port pre-announced via an item's own outport field) delivered
+-- nothing, under both matching methods. Files: `io` is not available at all
+-- in MainStage's Lua sandbox (`attempt to index global 'io' (a nil value)`)
+-- - stricter than merely restricted. The `write_frame`/`io.open` calls
+-- below are kept anyway: they're harmless (every call is `pcall`-wrapped,
+-- so a failure - the only outcome that's ever occurred - doesn't disrupt
+-- the script) and the byte layout stays identical to the original MIDI-
+-- SysEx design (still `F0...F7`, still decoded by the same
+-- `MainStageProtocol.decode` on the Swift side) so nothing needs to change
+-- here if a working transport is ever found. Until then, no data actually
+-- reaches the app from this script. See docs/mainstage-integration.md's
+-- "Where this stands" section for the current status and the one remaining
+-- option (Program Change + `.concert` parsing).
 --
 -- Installed outside the app bundle (the app is sandboxed and cannot write
 -- here itself) via Scripts/install-mainstage-script.sh, into:

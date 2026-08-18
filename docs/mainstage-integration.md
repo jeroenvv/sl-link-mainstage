@@ -577,6 +577,68 @@ now.
 `outport` value, and the `io` library have all been ruled out as fixable blockers. The fallback
 (Program Change + `.concert` parsing, noted throughout this file) is the only remaining live option.
 
+## MIDI outbound, round 3 — checked against a real working reference package (2026-08-18)
+
+Jeroen pointed at a second, more concrete source beyond the 98 bundled scripts:
+`https://github.com/mkuron/launchkey-mk3-mainstage`, specifically its released installer,
+`mainstage-devices.pkg`. Downloaded and inspected with `pkgutil --expand` (extracts the payload without
+running any installer script or actually installing anything - safe, read-only). Confirms
+`install-location="Music/Audio Music Apps/MainStage Devices"`, matching this project's own install
+path, and contains real, actively-maintained `config.lua` files for five Launchkey MK3 variants.
+
+**This script demonstrably sends unsolicited MIDI from `controller_initialize` and
+`controller_select_patch`** (`return {midi={...}, outport=DAW_IN}`, and `controller_midi_out` too) -
+real, working, first-hand proof the mechanism this project needs is not fundamentally broken in
+current MainStage, for *some* device. Structural details worth noting:
+
+- `outport` targets `DAW_IN = 'LKMK3 DAW In'` - a **full, unabbreviated CoreMIDI display name**, not a
+  short form. This project's rounds 4-7 above only ever tried the SL88's short `kMIDIPropertyName`
+  forms (`'CTRL'`/`'DAW'`/`'LINK'`), never the full `kMIDIPropertyDisplayName` forms
+  (`'SL CTRL'`/`'SL DAW'`/`'SL LINK'`) under generic matching - genuinely untested.
+- Every item in `controller_info()`'s `items` table that participates in bidirectional communication
+  declares its own `inport`/`outport` (`DAW_OUT`/`DAW_IN`) - unlike this project's `items`, none of
+  which reference any port at all. Raised a real hypothesis: MainStage might only honor an `outport` in
+  a lifecycle-hook return if that port was already "announced" via some item's own `inport`/`outport`.
+- This script does **not** set `patchselector` at all - unlike this project's `config.lua`. Weaker lead
+  (VAX77 does set `patchselector = true` and is presumed to work), but cheap to rule out.
+
+### Retested: rounds 8-12, same dead end
+
+Continued the same patient, one-variable-at-a-time methodology, each confirmed against Jeroen's own
+"ready now" and each further checked ~45s past that before concluding:
+
+| Round | Change | Result |
+|:---|:---|:---|
+| 8 | `outport='SL CTRL'` (full display name) | nothing; timer stopped after one attempt |
+| 9 | `outport='SL DAW'` (full display name) | nothing; timer stopped after one attempt |
+| 10 | `outport='SL LINK'` (full display name) | nothing; timer stopped after one attempt |
+| 11 | `outport='SL DAW'`, pre-announced via a real item's own `outport` field | nothing; timer stopped after one attempt |
+| 12 | Same as 11, plus `patchselector` temporarily disabled | nothing; timer stopped after one attempt |
+
+Every structural difference identified by close comparison with the real working reference - full
+display names, item-level port announcement, `patchselector` - was tested, individually, patiently,
+against real hardware. None changed the outcome. `config.lua` reverted to its safe, outbound-attempt-
+free committed state after each round; MainStage relaunched clean and confirmed healthy throughout.
+
+**This is now about as exhaustive as the Lua side alone can get.** Every lever available from within
+`config.lua` - matching method, every plausible `outport` spelling, item-level port declaration,
+`patchselector` - has been tried, individually and patiently, against real hardware, mirroring a
+confirmed-working reference in every dimension identifiable from its source. The remaining difference
+between this project's SL88 script and the Launchkey MK3 reference is presumably something below the
+Lua layer - most plausibly in how the two devices' USB-MIDI interface descriptors present themselves
+(Novation's DAW port pair may be a firmware-level construct MainStage's native code specifically
+recognizes as DAW-capable, independent of what CoreMIDI happens to name the port) - which isn't
+something a device script can influence or that this project can practically instrument further without
+reverse-engineering MainStage's own binary. **Conclusion unchanged**: the device-script route for
+MainStage -> app data is exhausted; `.concert` parsing is the only remaining live option.
+
+**One process note worth keeping**: earlier rounds in this session judged results against a fixed
+wait after a MainStage relaunch. Jeroen corrected this - `Joseph key2.concert`'s real orchestral
+instruments (Vienna Instruments MIDI) take a long, variable time to finish loading, so a fixed timeout
+confounds "the thing being tested failed" with "MainStage was still busy." Every round from 4 onward
+instead waited for Jeroen's own live confirmation that MainStage had actually finished loading before
+judging anything - see the "mainstage-hardware-test-pacing" memory for the standing version of this.
+
 ### Debugging recipe (don't rediscover this)
 
 - `defaults write com.apple.mainstage3 LUA_DEBUG -bool true`, and set it back to `false` afterwards.
