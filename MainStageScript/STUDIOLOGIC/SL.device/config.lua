@@ -31,24 +31,38 @@
 -- *virtual* endpoint) are unconfirmed either way; out of scope for the
 -- inbound (MainStage -> app) direction this file implements.
 --
--- TRANSPORT: neither MIDI nor file writes actually deliver data right now
--- - both are confirmed dead on real hardware (docs/mainstage-integration.md
--- has the full history). MIDI: an exhaustive sweep of every plausible
--- `outport` value (omitted, the app's own virtual destination, every one of
--- the SL88's real ports in both short and full display-name form, even
--- with the port pre-announced via an item's own outport field) delivered
--- nothing, under both matching methods. Files: `io` is not available at all
--- in MainStage's Lua sandbox (`attempt to index global 'io' (a nil value)`)
--- - stricter than merely restricted. The `write_frame`/`io.open` calls
--- below are kept anyway: they're harmless (every call is `pcall`-wrapped,
--- so a failure - the only outcome that's ever occurred - doesn't disrupt
--- the script) and the byte layout stays identical to the original MIDI-
--- SysEx design (still `F0...F7`, still decoded by the same
--- `MainStageProtocol.decode` on the Swift side) so nothing needs to change
--- here if a working transport is ever found. Until then, no data actually
--- reaches the app from this script. See docs/mainstage-integration.md's
--- "Where this stands" section for the current status and the one remaining
--- option (Program Change + `.concert` parsing).
+-- TRANSPORT: **outbound MIDI from this script WORKS** (established
+-- 2026-08-19 on real hardware). The blocker for every earlier attempt was
+-- simply the `outport` *name*:
+--
+--     outport must be the SHORT kMIDIPropertyName ('LINK'),
+--     NOT the display name ('SL LINK').
+--
+-- MainStage itself tells you this: the `portName` argument it passes to
+-- `controller_midi_in` is 'LINK'. Every prior round used 'SL LINK' (or the
+-- app's virtual destination, or omitted it) and silently delivered nothing.
+-- Proof: sending an SL Link Identification Request with outport='LINK' drew
+-- a real reply from the SL88 on the LINK source -
+--   F0 00 20 1A 16 03 6D 7F 01 01 01 02 01 F7  (IDENTIFICATION APPROVED,
+--                                               firmware 1.1.2, model SL88)
+-- captured by Scripts/sniff-all-sl-ports.swift with the helper app closed,
+-- against a positive control that had already proven the observation chain.
+--
+-- Inbound also works: `controller_midi_in` receives the SL88's traffic,
+-- including SysEx, so this script can both send and receive SL Link.
+--
+-- `io` remains unavailable in MainStage's Lua sandbox (`attempt to index
+-- global 'io' (a nil value)`), so the file transport below is dead. The
+-- `write_frame`/`io.open` calls are harmless (`pcall`-wrapped) and kept only
+-- until the MIDI path fully replaces them. See docs/mainstage-integration.md.
+--
+-- NOTE for a multi-instance-safe design: MainStage loads this script once
+-- per matched USB-MIDI interface (two instances observed). Both used the
+-- same hardcoded DeviceID below, so the second got
+--   F0 00 20 1A 16 03 6D 7F 02 00 ... F7  (IDENTIFICATION REJECTED,
+--                                          reason 0x00 = DeviceID taken)
+-- A real implementation needs a per-instance DeviceID, or must tolerate the
+-- rejection and retry with a different instance byte.
 --
 -- Installed outside the app bundle (the app is sandboxed and cannot write
 -- here itself) via Scripts/install-mainstage-script.sh, into:
@@ -244,10 +258,32 @@ end
 
 -- MARK: - Lifecycle (Bridge Hello / Goodbye / Heartbeat)
 
+-- MARK: - SL Link session, spoken by the script itself (Lua-only mode)
+--
+-- See the big block comment on controller_midi_in below for what this is
+-- testing and why. Byte shape verified against SLLinkEncoder:
+--   F0 00 20 1A 16 <id1> <id2> 7F 00 <ASCII name> 00 F7
+-- The instance byte is arbitrary but must be stable across the session.
+SLLINK_PROBE_ID1 = 0x03 -- HOST_ID, the same constant the app uses
+SLLINK_PROBE_ID2 = 0x6D -- our own instance byte
+-- MainStage reports portName='LINK' (short kMIDIPropertyName) in
+-- controller_midi_in - so that, not 'SL LINK', is the name MainStage
+-- itself uses for this port. Aligning outport to match (2026-08-19).
+SLLINK_PROBE_OUTPORT = 'LINK'
+
+function sl_link_identification_request()
+	local msg = { 0xF0, 0x00, 0x20, 0x1A, 0x16, SLLINK_PROBE_ID1, SLLINK_PROBE_ID2, 0x7F, 0x00 }
+	append_string(msg, 'LuaProbe') -- ASCII + 0x00 terminator
+	table.insert(msg, 0xF7)
+	return msg
+end
+
 function controller_initialize(applicationName, deviceNewlyDetected)
 	settriggertimer(HEARTBEAT_MS) -- prime the periodic heartbeat
 	heartbeatSeq = 0
 	savedPatchListEvent = {}
+	capturedEvents = 0
+	identificationSent = false
 
 	event = bridge_header(FUNC_HELLO)
 	table.insert(event, PROTOCOL_VERSION)
@@ -255,7 +291,15 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	table.insert(event, 0xF7)
 	write_frame(STATUS_PATH, event)
 
-	return nil
+	-- Unsolicited attempt, kept alongside the reply-path attempt in
+	-- controller_midi_in purely as a control: same bytes, same outport, but
+	-- now in the **flat** `midi` form rather than the nested form every
+	-- previous lifecycle probe used. If the reply path works and this one
+	-- doesn't, that isolates unsolicited-vs-reactive as the real difference.
+	local probe = sl_link_identification_request()
+	print('[capture] controller_initialize -> Identification Request (' ..
+	      #probe .. ' bytes, flat form) outport=' .. SLLINK_PROBE_OUTPORT)
+	return { midi = probe, outport = SLLINK_PROBE_OUTPORT }
 end
 
 function controller_finalize()
@@ -340,9 +384,86 @@ end
 -- at the top of this file casting doubt on whether the app-side half of
 -- patchselector actually works now - this side only ever discards, never
 -- depends on it.
+-- ==========================================================================
+-- LUA-ONLY MODE (2026-08-19) - no helper app involved.
+--
+-- Goal: have the script itself speak SL Link to the SL88 - identify, then
+-- capture what comes back - with the "SL Link MainStage" app not running at
+-- all, so nothing else holds the LINK port or drives the session.
+--
+-- Two things are being established here at once:
+--
+-- 1. WHAT LUA ACTUALLY RECEIVES. Every `controller_midi_in` call is logged
+--    with its `portName` and raw bytes. This finally answers an open
+--    question: whether MainStage delivers the declared controls to the
+--    script at all, and on which port it thinks they arrive. It also shows
+--    whether SysEx reaches the script - the VAX77 reference matches
+--    `midiEvent[0] == 0xF0` in its own `controller_midi_in`, so SysEx is
+--    expected to be delivered, which is what would let Lua read SL Link
+--    replies.
+--
+-- 2. WHETHER A *REPLY* GETS SENT. Every failed outbound test so far sent
+--    from a lifecycle hook (`controller_initialize`/`_timer_trigger`/
+--    `_select_patch`) - i.e. unsolicited. Returning MIDI from
+--    `controller_midi_in` is a different, untested path: a reply to an
+--    inbound event. Apple's own M-Audio Oxygen 49 script uses exactly this
+--    (`return {midi={0xB0,0x50+midiEvent[1],0x7F}}`), and it is one of the
+--    few bundled scripts that sends anything at all. If MainStage flushes
+--    the reactive path but not the unsolicited one, this is where it shows.
+--
+-- Also differs in message *shape*: `midi` is a **flat** byte array here
+-- (Launchkey MK3 style, the confirmed-working modern reference), where the
+-- earlier lifecycle probes used VAX77-style nesting (`midi = { event }`).
+-- Both forms appear in shipped scripts; the flat one has never been tried
+-- from this project.
+--
+-- Success looks like: an IDENTIFICATION APPROVED (`... 7F 01 ...`) arriving
+-- back through `controller_midi_in` and/or on the LINK source in
+-- Scripts/sniff-all-sl-ports.swift.
+-- ==========================================================================
+
+capturedEvents = 0
+identificationSent = false
+
+-- Renders a midiEvent (0-indexed, unknown length) as hex for the log.
+function dump_event(midiEvent)
+	local parts = {}
+	local i = 0
+	while i < 64 do
+		local b = midiEvent[i]
+		if b == nil then break end
+		parts[#parts + 1] = string.format('%02X', b)
+		i = i + 1
+	end
+	if #parts == 0 then return '(empty)' end
+	return table.concat(parts, ' ')
+end
+
 function controller_midi_in(midiEvent, portName)
+	capturedEvents = capturedEvents + 1
+	-- Log everything, but cap the volume: playing the keyboard generates a
+	-- lot of traffic and the interesting frames (SysEx replies) are rare.
+	local isSysex = (midiEvent[0] == 0xF0)
+	if isSysex or capturedEvents <= 40 then
+		print('[capture] #' .. capturedEvents ..
+		      ' port=' .. tostring(portName) ..
+		      (isSysex and ' SYSEX ' or ' ') ..
+		      dump_event(midiEvent))
+	end
+
+	-- Reply to the very first inbound event with an SL Link Identification
+	-- Request. Sending it as a *reply* is the whole point of this test; see
+	-- the block comment above. Swallowing that one event is harmless.
+	if not identificationSent then
+		identificationSent = true
+		local msg = sl_link_identification_request()
+		print('[capture] -> replying with SL Link Identification Request (' ..
+		      #msg .. ' bytes, flat form) outport=' .. SLLINK_PROBE_OUTPORT)
+		return { midi = msg, outport = SLLINK_PROBE_OUTPORT }
+	end
+
 	if midiEvent[0] == 0xC0 then
-		return { midi = {} }
+		return { midi = {} } -- swallow Program Change, as before
 	end
 	return nil -- allow everything else through unmodified
 end
@@ -380,22 +501,29 @@ function controller_info()
 		-- numbers - see the frame dialect comment block above.
 		patchselector = true,
 
+		-- ITEMS describe MIDI the SL88 **actually transmits**, captured live
+		-- (2026-08-19) with one input port per source while playing the
+		-- keyboard and moving both sticks. Every event - notes, pitch bend,
+		-- modulation, sustain - arrived on **SL LINK**, zero on SL CTRL, so
+		-- that is the `inport`. The previous table here was invented CC
+		-- numbers (0xBF 0x50-0x5C) the SL88 never sends, with no ports
+		-- declared at all; the working Launchkey MK3 reference instead
+		-- declares real controls on real ports, giving MainStage an actual
+		-- bidirectional surface to bind.
 		items = {
-			{name='Joystick Up', objectType='Button', midiType='Momentary', midi={0xBF,0x50,MIDI_LSB}},
-			{name='Joystick Down', objectType='Button', midiType='Momentary', midi={0xBF,0x51,MIDI_LSB}},
-			{name='Joystick Left', objectType='Button', midiType='Momentary', midi={0xBF,0x52,MIDI_LSB}},
-			{name='Joystick Right', objectType='Button', midiType='Momentary', midi={0xBF,0x53,MIDI_LSB}},
-			{name='Joystick Main', objectType='Button', midiType='Momentary', midi={0xBF,0x54,MIDI_LSB}},
+			{name='Keyboard', label='SL88', objectType='Keyboard', midiType='Keyboard',
+			 startKey=21, numberKeys=88, midi={0x90,MIDI_Wildcard,MIDI_Wildcard},
+			 inport='LINK', outport='LINK'},
 
-			{name='A Encoder', objectType='Knob', midiType='Relative2C', midi={0xBF,0x55,MIDI_LSB}},
-			{name='A Encoder Button', objectType='Button', midiType='Momentary', midi={0xBF,0x56,MIDI_LSB}},
-			{name='B Encoder', objectType='Knob', midiType='Relative2C', midi={0xBF,0x57,MIDI_LSB}},
-			{name='B Encoder Button', objectType='Button', midiType='Momentary', midi={0xBF,0x58,MIDI_LSB}},
+			{name='Pitch Bend', label='Pitch', objectType='Wheel', midi={0xE0,MIDI_MSB,MIDI_LSB},
+			 inport='LINK', outport='LINK'},
+			{name='Modulation', label='Mod', objectType='Wheel', midi={0xB0,0x01,MIDI_LSB},
+			 inport='LINK', outport='LINK'},
+			{name='Stick 2', label='Stick2', objectType='Wheel', midi={0xB0,0x10,MIDI_LSB},
+			 inport='LINK', outport='LINK'},
 
-			{name='Zone 1 Select', objectType='Button', midiType='Momentary', midi={0xBF,0x59,MIDI_LSB}},
-			{name='Zone 2 Select', objectType='Button', midiType='Momentary', midi={0xBF,0x5A,MIDI_LSB}},
-			{name='Zone 3 Select', objectType='Button', midiType='Momentary', midi={0xBF,0x5B,MIDI_LSB}},
-			{name='Zone 4 Select', objectType='Button', midiType='Momentary', midi={0xBF,0x5C,MIDI_LSB}},
+			{name='Sustain Pedal', label='Sustain', objectType='Sustain Pedal', midiType='Momentary',
+			 midi={0xB0,0x40,MIDI_LSB}, inport='LINK', outport='LINK'},
 		}
 	}
 end

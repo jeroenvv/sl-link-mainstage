@@ -302,6 +302,13 @@ fallback (noted above) as the live default rather than a fallback-of-last-resort
 
 ## Where this stands — resume here
 
+> **SUPERSEDED (2026-08-19) — jump to "SOLVED: outbound MIDI works" near the end of this file.**
+> The "remaining blocker" below turned out to be a wrong `outport` string: MainStage wants the short
+> `kMIDIPropertyName` (`'LINK'`), not the display name (`'SL LINK'`). Outbound *and* inbound MIDI both
+> work from the script. The sections between here and there are kept as the investigation record —
+> several of their negative results were measured with a sniffer that could not observe the direction
+> under test, and are explicitly corrected later in this file. Read the last two sections first.
+
 **Script execution: SOLVED.** With both v1 bugs fixed the script matches and runs, and MainStage
 hands it real patch data:
 
@@ -311,10 +318,9 @@ LUA: [probe] controller_initialize appName=MainStage
 LUA: [probe] controller_select_patch patch=C07 Strings
 ```
 
-**Remaining blocker: outbound MIDI from the script never arrives.** No `outport` spelling delivered —
-not our virtual destination `SL MainStage`, not `LINK`/`SL LINK`/`CTRL` (ports the matched device
-owns), not omitting `outport`, not a plain Note On instead of SysEx. Verified against a
-positive-control-checked receiver.
+**Believed at the time — since disproven:** that outbound MIDI from the script never arrives, for any
+`outport` spelling. That conclusion came from a sniffer watching only CoreMIDI *sources* while
+`outport` addresses a *destination*; see the correction and solution sections at the end.
 
 ### Pivot (2026-08-18): matching moved from the virtual endpoint to the real SL88
 
@@ -635,6 +641,48 @@ style observation) rather than editing the script further - a materially differe
 attempted here, not a closed door. **Still true**: the device-script route hasn't produced a working
 approach for the MainStage -> app direction yet; `.concert` parsing is the other live option in the
 meantime.
+
+## SOLVED (2026-08-19): outbound MIDI works — `outport` needs the SHORT port name
+
+**The whole outbound blocker was the `outport` string.** MainStage wants the short
+`kMIDIPropertyName` (`'LINK'`), not the `kMIDIPropertyDisplayName` (`'SL LINK'`) this project had been
+using everywhere.
+
+MainStage says so itself, and we'd been looking straight past it: the `portName` argument it passes to
+`controller_midi_in` is **`LINK`**. Once `controller_midi_in` was instrumented to log its arguments,
+the mismatch was obvious.
+
+**Proof.** With `outport='LINK'`, an SL Link Identification Request sent from the script drew real
+replies from the SL88, captured on the LINK source with the helper app closed:
+
+```
+F0 00 20 1A 16 03 6D 7F 01 01 01 02 01 F7      IDENTIFICATION APPROVED (fw 1.1.2, model SL88)
+F0 00 20 1A 16 03 6D 7F 02 00 01 01 02 01 F7   IDENTIFICATION REJECTED (reason 0x00, DeviceID taken)
+```
+
+`03 6D` is the script's own `LuaProbe` DeviceID. The rejection is the *second* script instance -
+MainStage loads the script once per matched USB-MIDI interface, and both hardcoded the same instance
+byte. Any real implementation needs a per-instance DeviceID or a retry on rejection.
+
+**Inbound works too**: `controller_midi_in` receives the SL88's traffic (38 events captured while
+playing), and the VAX77 reference confirms SysEx is delivered there as well. So the script can both
+send and receive SL Link directly - no helper app required for the keyboard-facing side.
+
+### Why this took so long — the two testing flaws that hid it
+
+Worth recording, because both produced confident wrong conclusions:
+
+1. **The sniffer watched the wrong direction** (see the correction section below). `outport` names a
+   *destination*; the sniffer only ever enumerated *sources*. So `'SL LINK'` and `'LINK'` looked
+   identical - both "silent" - when in fact one was wrong-name-silently-dropped and the other was
+   never actually retried under observable conditions. Round 6 did try `'LINK'`, but with the
+   unobservable setup, so its negative was meaningless.
+2. **No positive control until late.** Once an identification round-trip (request -> keyboard replies
+   on a source) was used, with `Scripts/probe-sllink.swift` proving the chain end-to-end first, the
+   answer appeared within two attempts.
+
+The general lesson: test with a signal you have independently proven you can observe, before trusting
+any negative result.
 
 ## Correction (2026-08-19): rounds 4-10 were UNOBSERVED, not negative
 
