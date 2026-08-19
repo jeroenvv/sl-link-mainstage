@@ -21,6 +21,7 @@ working Lua-only SL Link session (see `docs/mainstage-integration.md` and
 | Encoder 1–4 ring | Lit when that channel is active |
 | Encoder 1–4 press — short | Mute / unmute that channel |
 | Encoder 1–4 press — long | Reset that channel to **0 dB** (unity) |
+| B encoder press — short | Mute / unmute the main fader |
 | B encoder press — long | Reset the main fader to **0 dB** (unity) |
 | Ring when muted | Off |
 
@@ -192,8 +193,8 @@ measurements demand it.
 ### Q6. What raw value is 0 dB? (blocks the long-press resets)
 
 Long-pressing a channel encoder resets that channel to **0 dB**, and long-pressing B resets the main
-fader the same way. "0 dB" is **unity gain, not silence** — the reset must land on the fader's unity
-position, not at the bottom.
+fader the same way. To be unambiguous: **0 dB means the fader's default position (unity gain), not
+silence.** The reset must land where a freshly created fader sits, not at the bottom of its travel.
 
 Where that sits in the value range depends entirely on how Q3 turns out. If channels are driven by a
 mapped item sending 0–127, unity is *not* 127: MainStage's volume faders run past unity (up to about
@@ -302,9 +303,9 @@ Depends on Q4.
   (`R/W = 0`) to sync. Its push button (`0x0B`) is the natural audio-board mute toggle, via the same
   message's `MUTE` byte.
 - **B encoder** (`SLEncoderID.bEncoder`) adjusts MainStage main volume.
-- **B encoder push** (`SLButtonID.bEncoderButton`, `0x0C`) LONG resets the main fader to 0 dB (unity —
-  see Q6), showing the pop-up. Its SHORT action is still unassigned — mute of the main output is the
-  obvious candidate, mirroring the channel encoders, but it is not yet specified.
+- **B encoder push** (`SLButtonID.bEncoderButton`, `0x0C`): SHORT mutes/unmutes the main fader, LONG
+  resets it to 0 dB (unity — see Q6), showing the pop-up. Exactly mirrors the channel encoders, so the
+  gesture means the same thing everywhere.
 - On change, draw a small pop-up (a filled rect plus a level readout) and remove it after ~1.5 s of
   no movement.
 - **Removal is the interesting part**: Clear Screen is banned, so the pop-up must be erased by
