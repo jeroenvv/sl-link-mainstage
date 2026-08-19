@@ -24,37 +24,31 @@ working Lua-only SL Link session (see `docs/mainstage-integration.md` and
 | B encoder press — short | Mute / unmute the main fader |
 | B encoder press — long | Reset the main fader to **0 dB** (unity) |
 | Ring when muted | Off |
+| Zone 1–4 Select buttons | Solo channel 1–4 (button LED shows solo state) |
 
-## Unassigned controls — suggestions for the four Zone Select buttons
+## Button assignments
+
+### DECIDED: the four Zone Select buttons are SOLO
 
 The four **Zone Select** buttons (`SLButtonID.zone1SelectButton`..`zone4SelectButton`, `0x04`-`0x07`)
-sit directly under encoders 1-4 and are still free. Note the encoders' own push buttons
-(`0x00`-`0x03`) are already taken by mute, and each Select button has a white LED
-(`SLWhiteLED.zone1Button`..`zone4Button`, `0x00`-`0x03`) available for state feedback.
+solo channels 1-4. They sit directly under encoders 1-4, keeping the whole column "about that
+channel": mute on the encoder press, solo on the button below it. Each has a white LED
+(`SLWhiteLED.zone1Button`..`zone4Button`, `0x00`-`0x03`) to show solo state.
 
-Also still unassigned: Global (`0x09`), DAW (`0x0A`), Apply (`0x0E`), Cancel (`0x0F`), Home (`0x10`),
-and the A/B encoder push buttons (`0x0B`, `0x0C`).
+Depends on Q3 — if solo turns out to be unreachable, see the fallback below.
 
-### Recommended: keep the four buttons per-channel, put global actions elsewhere
-
-The strongest argument is physical layout - these four buttons are in the same column as the four
-encoders, so anything per-channel is instantly discoverable, and anything global is a surprise.
-
-| Button | Action | Why |
-|:---|:---|:---|
-| Zone 1-4 Select | **Solo channel 1-4** | Natural partner to mute on the encoder press right above it; LED shows solo state; column stays "about that channel" |
-
-Global actions then go on buttons that are already global in character:
+Still unassigned: Global (`0x09`), DAW (`0x0A`), Apply (`0x0E`), Cancel (`0x0F`), Home (`0x10`), and
+the A encoder push button (`0x0B`). Suggested, not yet decided:
 
 | Button | Action | Why |
 |:---|:---|:---|
 | Cancel (`0x0F`) — LONG | **MIDI panic** (All Notes Off + All Sound Off + Reset Controllers on all 16 channels) | Panic belongs on a "stop/abort" button. LONG-press guards against triggering it mid-song by accident, and LONG is confirmed delivered on this hardware (CLAUDE.md deviation 5) |
 | Home (`0x10`) | Force full screen repaint | Already the demo screen's meaning; cheap safety valve if the display ever desyncs |
-| Global (`0x09`) | Toggle screen view: patch list ↔ channel mixer | A second page solves the "where do channel names/levels go" layout problem from Phase 3 |
+| Global (`0x09`) | Toggle screen view: patch list ↔ channel mixer | A second page solves the "where do channel names/levels go" layout problem from Phase 4 |
 
-### If solo turns out to be unreachable (depends on Q3)
+### Fallback if solo turns out to be unreachable (Q3)
 
-Fall back to making the four buttons global utilities:
+Only if solo cannot be driven — make the four buttons global utilities instead:
 
 | Button | Action |
 |:---|:---|
@@ -283,11 +277,14 @@ Depends on Q3.
   readout is separate from it.
 - **Acceptance:** turning encoder 1 changes channel 1's level in MainStage, and the screen agrees.
 
-### Phase 5 — Rings and mute
+### Phase 5 — Rings, mute and solo
 
 - Ring lit when the channel is active; use the RGB LED message (`ItemType 0x05`) and take the colour
   from `controller_midi_out`'s `color` argument where available.
 - Encoder press (`0x00`–`0x03`) SHORT toggles mute; muted → ring off.
+- Zone Select buttons (`0x04`–`0x07`) toggle solo on the same four channels, with the button's white
+  LED showing solo state. Decide how solo and mute interact visually on the ring — a soloed channel
+  and a muted one should not look the same.
 - Encoder press LONG resets that channel to 0 dB (unity — see Q6), and shows the pop-up like any other
   value change. SHORT and LONG must both be handled; never drop LONG (CLAUDE.md deviation 5).
 - Mirror onto the white LEDs (`ItemType 0x02`) if that reads better on hardware.
