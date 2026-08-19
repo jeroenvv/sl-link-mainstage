@@ -82,6 +82,51 @@ keyboard depends on what is actually stuck.
   flush carries an Identification Query whose reply drives the next tick.
 - Drawing rules: one message per flush, ≤72 bytes, **never** Clear Screen, never truncate strings.
 
+## Proven building blocks to port from the Swift implementation
+
+The Swift stack already solved several of these problems against this exact hardware. Port the
+behaviour rather than re-deriving it.
+
+### Encoder decoding — this is the bit that "worked well"
+
+Message is 11 bytes: `F0 00 20 1A 16 ID#1 ID#2 03 EID TK F7`.
+
+```
+delta = TK - 0x40          -- SLLinkDecoder.decodeEncoder: `let delta = tick - 64`
+```
+
+The spec backs this exactly: *"the tick value is 64-centered, meaning that the negative values are all
+the ones inferior to `0x40`, while the positive ones are above this value"*, and encoders *"do not send
+absolute values but rather relative ones"*.
+
+**Why it feels good, and the thing to preserve:** the tick magnitude is **speed-sensitive** — the spec
+notes a fast turn yields ±2, ±3, and ±8 has been observed on this hardware. The Swift code simply adds
+`delta` straight to the value (`zoneValues[0] += delta`). That is the whole trick: **no acceleration
+curve, no smoothing, no accumulator** — the hardware's own speed sensitivity provides fine control when
+turned slowly and coarse jumps when turned fast, for free. Do not "improve" this with a custom
+acceleration ramp.
+
+For the channel encoders this maps directly: add `delta` to the current 0–127 value and clamp. For a
+pop-up, coalesce *repaints* (see Phase 3) but never coalesce the deltas themselves — sum them all, or
+fast sweeps will lose travel.
+
+Validate before use: length exactly 11, and a known `EID`. Reject otherwise, as `SLLinkDecoder` does.
+
+### Buttons
+
+Also 11 bytes: `F0 00 20 1A 16 ID#1 ID#2 01 BID EVT F7`, `EVT` = `0x01` SHORT / `0x02` LONG. Per spec, a
+press held over one second sends LONG immediately; a shorter press sends SHORT **on release**.
+
+**Never drop LONG** (CLAUDE.md deviation 5 — it is confirmed delivered here, contradicting the spec's
+silence), and never silently discard A-encoder traffic: the spec says the host never sees `EID 0x05` /
+`BID 0x0B` because they are reserved for USB audio, but on this firmware they arrive as ordinary
+messages. `SLLinkDemoScreen` deliberately treats A exactly like B for this reason.
+
+### Display memoization
+
+`SLLinkDisplay`'s per-id memoization, its non-overlap requirement, and `invalidate(ids:)` for
+unavoidable overlap — see Phase 3's pop-up notes and Q5.
+
 ## Open questions — resolve these BEFORE building
 
 These are the load-bearing unknowns. Each one can invalidate a whole phase, so each gets a cheap
