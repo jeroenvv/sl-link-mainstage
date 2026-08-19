@@ -19,7 +19,9 @@ working Lua-only SL Link session (see `docs/mainstage-integration.md` and
 | Encoders 1–4 | Control the first four channel strips of the current patch |
 | Encoders 1–4 turn | Shows the same temporary pop-up with the channel name and new value |
 | Encoder 1–4 ring | Lit when that channel is active |
-| Encoder 1–4 press | Mute / unmute that channel |
+| Encoder 1–4 press — short | Mute / unmute that channel |
+| Encoder 1–4 press — long | Reset that channel to **0 dB** (unity) |
+| B encoder press — long | Reset the main fader to **0 dB** (unity) |
 | Ring when muted | Off |
 
 ## Unassigned controls — suggestions for the four Zone Select buttons
@@ -127,7 +129,7 @@ declared as `items` and mapped, by hand in MainStage if necessary.
 **Spike:** on a joystick press, return `{midi={0xBF,0x00,set, 0xBF,0x20,patch, 0xCF,0x00}}` with no
 `outport`, and see whether MainStage switches patch.
 
-### Q2. Do SL88 button/encoder SysEx messages reach the script? (blocks Phases 2–4)
+### Q2. Do SL88 button/encoder SysEx messages reach the script? (blocks Phases 2, 4, 5)
 
 Everything so far only proves *query replies* arrive. The SL88 sends Button (`ItemType 0x01`) and
 Encoder (`0x03`) SL Link messages while a host is logged in, but that has never been observed from Lua.
@@ -142,7 +144,7 @@ route: declare them as `items` and let MainStage map them, by hand in MainStage'
 automatic mapping is not possible. This is exactly what the Launchkey reference does (Q1b), so it is
 the lower-risk path even though it needs setup per concert.
 
-### Q3. How do we read and write channel-strip state? (blocks Phases 3–4)
+### Q3. How do we read and write channel-strip state? (blocks Phases 4–6)
 
 Needed: per-channel name, level, mute state, "is active", and a colour for the ring.
 
@@ -186,6 +188,24 @@ A list of ~8 visible rows is ~8 Write Texts. At one message per flush and `FLUSH
 moved), never the whole list. This is the same per-region memoization `SLLinkDisplay.swift` already
 does on the Swift side — reuse that thinking. Consider raising `FLUSH_SOON_MS` responsiveness only if
 measurements demand it.
+
+### Q6. What raw value is 0 dB? (blocks the long-press resets)
+
+Long-pressing a channel encoder resets that channel to **0 dB**, and long-pressing B resets the main
+fader the same way. "0 dB" is **unity gain, not silence** — the reset must land on the fader's unity
+position, not at the bottom.
+
+Where that sits in the value range depends entirely on how Q3 turns out. If channels are driven by a
+mapped item sending 0–127, unity is *not* 127: MainStage's volume faders run past unity (up to about
++6 dB), so unity lands somewhere below the top of the range and has to be determined rather than
+assumed. Read it off `controller_midi_out`'s `valueString`, which reports the formatted value (e.g.
+`0.0 dB`) — sweep the encoder, find the raw value where the string reads 0 dB, and use that constant.
+
+If instead a direct parameter-set route exists, prefer setting the parameter to unity by value and skip
+the mapping entirely.
+
+**Spike (fold into the Q3 spike):** log `valueString` against the raw value while sweeping one mapped
+volume control, and record the unity point.
 
 ## Phases
 
@@ -266,7 +286,9 @@ Depends on Q3.
 
 - Ring lit when the channel is active; use the RGB LED message (`ItemType 0x05`) and take the colour
   from `controller_midi_out`'s `color` argument where available.
-- Encoder press (`0x00`–`0x03`) toggles mute; muted → ring off.
+- Encoder press (`0x00`–`0x03`) SHORT toggles mute; muted → ring off.
+- Encoder press LONG resets that channel to 0 dB (unity — see Q6), and shows the pop-up like any other
+  value change. SHORT and LONG must both be handled; never drop LONG (CLAUDE.md deviation 5).
 - Mirror onto the white LEDs (`ItemType 0x02`) if that reads better on hardware.
 - **Acceptance:** mute state on the SL88 and in MainStage always agree, including when changed in
   MainStage.
@@ -280,6 +302,9 @@ Depends on Q4.
   (`R/W = 0`) to sync. Its push button (`0x0B`) is the natural audio-board mute toggle, via the same
   message's `MUTE` byte.
 - **B encoder** (`SLEncoderID.bEncoder`) adjusts MainStage main volume.
+- **B encoder push** (`SLButtonID.bEncoderButton`, `0x0C`) LONG resets the main fader to 0 dB (unity —
+  see Q6), showing the pop-up. Its SHORT action is still unassigned — mute of the main output is the
+  obvious candidate, mirroring the channel encoders, but it is not yet specified.
 - On change, draw a small pop-up (a filled rect plus a level readout) and remove it after ~1.5 s of
   no movement.
 - **Removal is the interesting part**: Clear Screen is banned, so the pop-up must be erased by
