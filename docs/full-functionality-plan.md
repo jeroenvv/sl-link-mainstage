@@ -159,7 +159,8 @@ So the return value of `controller_midi_in` rewrites what MainStage *receives*. 
 a return go outward to a device instead. This is the mechanism to use: on an SL88 navigation event,
 return the patchselector triple with no `outport`.
 
-**(b) Declared items + MainStage's own mapping — what Novation actually does.** The Launchkey MK3
+**(b) Declared items + MainStage's own mapping — what Novation actually does.** (Written up in full in
+`docs/mainstage-device-scripts.md` §10.) The Launchkey MK3
 script never injects anything: **every** one of its `{midi=...}` returns carries `outport = DAW_IN`,
 i.e. it only ever talks to the device. Its buttons are exposed as `items` (with `inport`/`outport`), and
 MainStage's assignment layer binds them to actions. It does not set `patchselector` at all.
@@ -221,24 +222,6 @@ this firmware. So driving audio-board volume from A is both spec-aligned and ach
 Still to decide: what MainStage's main volume actually is (concert master vs. output channel strip)
 and how to reach it.
 
-### Q7. Which BID is the Zoom button? (blocks the display-mode toggle)
-
-The spec has **no button called Zoom** — `hardware-io.md`'s BID table names `0x0E` Apply, `0x0F` Cancel,
-`0x10` Home, and `SLButtonID` mirrors it. Jeroen identifies Zoom physically as **the button below
-Cancel**, which by that ordering is the one the spec calls **Home (`0x10`)**; the panel silkscreen and
-the spec's naming evidently differ.
-
-Treat `0x10` as the working assumption, but **confirm it rather than assume**: two BIDs are also
-unaccounted for in the table — `0x08` (almost certainly the reserved APP button, appearing in the
-white-LED table only as a question-marked `0x04 ?`) and `0x0D` (unexplained) — so an undocumented
-button is not impossible.
-
-**Fold into the Q2 spike:** log *every* BID seen, including `0x08` and `0x0D`, and press the physical
-Zoom button. Whatever BID arrives is the answer.
-
-**Knock-on:** `0x10` was pencilled in as "force full repaint" in the button suggestions. If Zoom is
-`0x10`, that moves — repaint is a good fit for a LONG press of the same button, or for Apply (`0x0E`).
-
 ### Q5. Is the byte budget enough for a patch list? (blocks Phase 1)
 
 A list of ~8 visible rows is ~8 Write Texts. At one message per flush and `FLUSH_SOON_MS = 100` that is
@@ -266,6 +249,24 @@ the mapping entirely.
 
 **Spike (fold into the Q3 spike):** log `valueString` against the raw value while sweeping one mapped
 volume control, and record the unity point.
+
+### Q7. Which BID is the Zoom button? (blocks the display-mode toggle)
+
+The spec has **no button called Zoom** — `hardware-io.md`'s BID table names `0x0E` Apply, `0x0F` Cancel,
+`0x10` Home, and `SLButtonID` mirrors it. Jeroen identifies Zoom physically as **the button below
+Cancel**, which by that ordering is the one the spec calls **Home (`0x10`)**; the panel silkscreen and
+the spec's naming evidently differ.
+
+Treat `0x10` as the working assumption, but **confirm it rather than assume**: two BIDs are also
+unaccounted for in the table — `0x08` (almost certainly the reserved APP button, appearing in the
+white-LED table only as a question-marked `0x04 ?`) and `0x0D` (unexplained) — so an undocumented
+button is not impossible.
+
+**Fold into the Q2 spike:** log *every* BID seen, including `0x08` and `0x0D`, and press the physical
+Zoom button. Whatever BID arrives is the answer.
+
+**Knock-on:** `0x10` was pencilled in as "force full repaint" in the button suggestions. If Zoom is
+`0x10`, that moves — repaint is a good fit for a LONG press of the same button, or for Apply (`0x0E`).
 
 ## Phases
 
@@ -409,22 +410,7 @@ Depends on Q4.
 - **B encoder push** (`SLButtonID.bEncoderButton`, `0x0C`): SHORT mutes/unmutes the main fader, LONG
   resets it to 0 dB (unity — see Q6), showing the pop-up. Exactly mirrors the channel encoders, so the
   gesture means the same thing everywhere.
-- On change, draw a small pop-up (a filled rect plus a level readout) and remove it after ~1.5 s of
-  no movement.
-- **Removal is the interesting part**: Clear Screen is banned, so the pop-up must be erased by
-  redrawing exactly the regions it covered. (Phase 3 builds this; the volume encoders are just two more
-  callers.)
-
-  The Swift side already solved this shape and the pattern should be ported rather than reinvented:
-  `SLLinkDisplay` memoizes per region id and documents a hard **non-overlap requirement** (a redraw of
-  a lower layer would otherwise paint over unchanged layers stacked on top, since the SLMK2 has no
-  layers and simply paints in message order). For genuinely unavoidable overlap — which a pop-up is —
-  it provides `invalidate(ids:)` to force every id sharing the covered region to be resent together.
-  So: draw the pop-up, and on dismissal `invalidate` the ids underneath and redraw them.
-
-  Design the pop-up to sit where restore is cheap — overlapping as few list rows as possible.
-- Timing: the session clock is the only timer, so pop-up dismissal is quantised to the tick rate.
-  A dedicated shorter interval while a pop-up is visible may be needed.
+- Both show the shared pop-up from Phase 3 — the erase/restore machinery lives there, not here.
 - **Acceptance:** A changes the SL88's own output level and B changes MainStage's, each showing the
 shared pop-up.
 

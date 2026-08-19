@@ -194,6 +194,12 @@ exact threshold may vary.)*
 - **`os` should be assumed absent too**, so there is no clock and no entropy source. If you need a
   unique per-instance value, derive it from protocol feedback (e.g. bump a counter when the device
   rejects a duplicate ID) rather than randomness.
+- **`bit32` *is* available** (`bit32.band` is used in shipped scripts), as are the usual `string.*`
+  and `math.*` functions.
+- **`string.crunch(text, maxChars)` is an undocumented MainStage-injected helper** — it fits a string
+  into a character budget for a small hardware display. Used by 7 of Apple's bundled scripts and by the
+  Launchkey MK3 script, always as `string.crunch(name, 16)` / `(valueString, 8)` and similar. Prefer it
+  over hand-rolled truncation when writing to a character-cell display.
 - `print()` works, and goes to stdout — see §9.
 
 ## 8. Instances and lifecycle
@@ -234,7 +240,50 @@ returned. A hardware round-trip costs a slow MainStage relaunch; most bugs do no
 and variable time to become ready, and a result captured during startup is indistinguishable from a
 failure. Confirm it is loaded rather than waiting a fixed interval.
 
-## 10. Checklist
+## 10. Case study: the Launchkey MK3 script
+
+<https://github.com/mkuron/launchkey-mk3-mainstage> is the most useful third-party example available —
+actively maintained, and doing everything a rich integration needs. Its released `mainstage-devices.pkg`
+can be inspected read-only without installing:
+
+```bash
+pkgutil --expand mainstage-devices.pkg out
+mkdir payload && cd payload && gunzip -c ../out/*.pkg/Payload | cpio -id
+```
+
+Its `PackageInfo` confirms the install location independently: `install-location=
+"Music/Audio Music Apps/MainStage Devices"`.
+
+Techniques worth stealing:
+
+- **A dedicated DAW port pair.** `DAW_IN = 'LKMK3 DAW In'`, `DAW_OUT = 'LKMK3 DAW Out'`, declared once
+  and referenced as `inport`/`outport` on **every** interactive item. Note these are that device's
+  actual CoreMIDI port names — the rule from §4 still holds: use whatever `controller_midi_in` reports
+  as `portName`, whatever its length.
+- **Enter and leave the device's DAW mode explicitly.** `controller_initialize` sends `0x9f 0x0c 0x7f`
+  to switch the hardware into DAW mode plus SysEx setting pad/fader/pot sub-modes;
+  `controller_finalize` sends `0x9f 0x0c 0x00` to switch back. It then filters the device's own echo of
+  that activation message in `controller_midi_in`, so it does not confuse its own state.
+- **It never injects into MainStage.** Every single `{midi=...}` return carries `outport = DAW_IN` — it
+  talks only to the device, and relies on declared `items` plus MainStage's assignment layer for
+  control. It does not set `patchselector`. This is the opposite design choice from Apple's Oxygen
+  script (§4) and is the lower-risk one.
+- **`controller_midi_out` drives the display.** It receives the parameter `name`, `valueString` and
+  `color` for each mapped control and writes them to the Launchkey's screen, caching the last label and
+  value per control (`labelDisplayCache` / `valueDisplayCache`) so an unchanged parameter costs no
+  SysEx. This is the pattern to copy for any device with a screen.
+- **Deferred post-switch updates.** `controller_select_patch` builds a table of "things to update after
+  the patch change" (LEDs off, parameter names cleared) keyed by control, and
+  `controller_select_patch_done` simply returns it. That keeps the switch itself fast and lets later
+  `controller_midi_out` calls cancel individual entries before they are sent.
+- **Nearest-colour matching.** MainStage supplies an arbitrary RGB `color`; the device accepts only a
+  fixed 128-entry palette. The script converts using a redmean distance function and memoizes the
+  result per colour. Any device with an indexed LED palette needs this.
+- **Conditional item lists.** Items are built in a plain Lua table and pruned at `controller_info` time
+  (`HAS_FADERS`), so one script serves five hardware variants.
+- **Flat `midi` arrays with `-2` delay markers** between concatenated messages.
+
+## 11. Checklist
 
 - [ ] Installed under `MainStage Devices/`, not `MIDI Device Scripts/`
 - [ ] `controller_info` returns `model`, `manufacturer`, `items`
