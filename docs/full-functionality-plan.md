@@ -13,12 +13,65 @@ working Lua-only SL Link session (see `docs/mainstage-integration.md` and
 | Joystick Left / Right | Previous / next set |
 | Joystick main button — short | Select the highlighted patch |
 | Joystick main button — long | Jump to the first patch of the set |
+| A encoder | SL88 audio-board volume (SL Link Master Volume) |
 | B encoder | MainStage main volume |
 | B encoder turn | Shows a temporary pop-up with the level, which then disappears |
 | Encoders 1–4 | Control the first four channel strips of the current patch |
 | Encoder 1–4 ring | Lit when that channel is active |
 | Encoder 1–4 press | Mute / unmute that channel |
 | Ring when muted | Off |
+
+## Unassigned controls — suggestions for the four Zone Select buttons
+
+The four **Zone Select** buttons (`SLButtonID.zone1SelectButton`..`zone4SelectButton`, `0x04`-`0x07`)
+sit directly under encoders 1-4 and are still free. Note the encoders' own push buttons
+(`0x00`-`0x03`) are already taken by mute, and each Select button has a white LED
+(`SLWhiteLED.zone1Button`..`zone4Button`, `0x00`-`0x03`) available for state feedback.
+
+Also still unassigned: Global (`0x09`), DAW (`0x0A`), Apply (`0x0E`), Cancel (`0x0F`), Home (`0x10`),
+and the A/B encoder push buttons (`0x0B`, `0x0C`).
+
+### Recommended: keep the four buttons per-channel, put global actions elsewhere
+
+The strongest argument is physical layout - these four buttons are in the same column as the four
+encoders, so anything per-channel is instantly discoverable, and anything global is a surprise.
+
+| Button | Action | Why |
+|:---|:---|:---|
+| Zone 1-4 Select | **Solo channel 1-4** | Natural partner to mute on the encoder press right above it; LED shows solo state; column stays "about that channel" |
+
+Global actions then go on buttons that are already global in character:
+
+| Button | Action | Why |
+|:---|:---|:---|
+| Cancel (`0x0F`) — LONG | **MIDI panic** (All Notes Off + All Sound Off + Reset Controllers on all 16 channels) | Panic belongs on a "stop/abort" button. LONG-press guards against triggering it mid-song by accident, and LONG is confirmed delivered on this hardware (CLAUDE.md deviation 5) |
+| Home (`0x10`) | Force full screen repaint | Already the demo screen's meaning; cheap safety valve if the display ever desyncs |
+| Global (`0x09`) | Toggle screen view: patch list ↔ channel mixer | A second page solves the "where do channel names/levels go" layout problem from Phase 3 |
+
+### If solo turns out to be unreachable (depends on Q3)
+
+Fall back to making the four buttons global utilities:
+
+| Button | Action |
+|:---|:---|
+| Zone 1 Select | **MIDI panic** (LONG-press to confirm) |
+| Zone 2 Select | Tap tempo |
+| Zone 3 Select | Metronome / click on-off |
+| Zone 4 Select | Toggle patch list ↔ channel mixer view |
+
+### Other candidates worth considering
+
+- **Mute all / "silence"** — one button that mutes every channel, for fast stage silence.
+- **Tuner toggle** — common live need, if MainStage exposes it to a mapped control.
+- **Bookmark / jump to a favourite patch** — SHORT jumps, LONG sets the bookmark.
+- **Previous patch (toggle back)** — flip between the last two patches, useful mid-song.
+
+**On MIDI panic specifically:** it is worth defining exactly what it sends -
+CC 123 (All Notes Off), CC 120 (All Sound Off) and CC 121 (Reset All Controllers) on all 16 channels is
+the thorough version. That is 48 messages, which must respect the byte budget and one-message-per-flush
+rule, so it will drain over a second or so rather than firing instantly - acceptable for a panic, but
+worth knowing. Whether it is sent to MainStage (inbound substitution, Q1a) or straight out to the
+keyboard depends on what is actually stuck.
 
 ## What already works (do not re-derive)
 
@@ -34,20 +87,44 @@ working Lua-only SL Link session (see `docs/mainstage-integration.md` and
 These are the load-bearing unknowns. Each one can invalidate a whole phase, so each gets a cheap
 spike first, in this order.
 
-### Q1. How does the script tell MainStage to change patch? (blocks Phase 2)
+### Q1. How does the script tell MainStage to change patch? — RESEARCHED 2026-08-19
 
-`controller_info()` sets `patchselector = true`, so MainStage's own core listens for Bank Select
-MSB = SetIndex, LSB = PatchIndex on channel 16, then a Program Change. But **the script's `outport`
-sends to the keyboard, not to MainStage.**
+`controller_info()` sets `patchselector = true`, so MainStage's core listens for Bank Select
+MSB = SetIndex, LSB = PatchIndex on channel 16, then a Program Change. But **`outport` sends to the
+keyboard, not to MainStage**, so that is not the route.
 
-Hypothesis: returning `{midi = ...}` from `controller_midi_in` **without** an `outport` substitutes the
-event on the inbound path, i.e. MainStage sees it as if the device had sent it. Apple's own
-`M-Audio/Oxygen 49 #1.device` does exactly this shape (`return {midi={0xB0,0x50+midiEvent[1],0x7F}}`).
+Checked both references. They show **two different mechanisms**, and neither is `outport`:
 
-**Spike:** on any SL88 button press, return `{midi={0xBF,0x00,set, 0xBF,0x20,patch, 0xCF,0x00}}` with no
-`outport`, and see whether MainStage switches patch. If it does not, fall back options are (a) drive
-selection from mapped `items` in Layout mode, or (b) abandon device-driven selection and make the
-screen a read-only display.
+**(a) Inbound substitution — confirmed to exist.** Apple's own
+`M-Audio/Oxygen 49 #1.device/config.lua` returns MIDI from `controller_midi_in` with **no `outport`**:
+
+```lua
+function controller_midi_in(midiEvent, portName)
+    if midiEvent[0] == 0xB0 and (midiEvent[1] == 0x00 or midiEvent[1] == 0x20) then
+        return {}                                    -- swallow
+    end
+    if midiEvent[0] == 0xc0 then
+        return {midi={0xB0,0x50+midiEvent[1],0x7F}}  -- REPLACE inbound PC with a CC
+    end
+    return nil                                       -- pass through
+end
+```
+
+So the return value of `controller_midi_in` rewrites what MainStage *receives*. `outport` is what makes
+a return go outward to a device instead. This is the mechanism to use: on an SL88 navigation event,
+return the patchselector triple with no `outport`.
+
+**(b) Declared items + MainStage's own mapping — what Novation actually does.** The Launchkey MK3
+script never injects anything: **every** one of its `{midi=...}` returns carries `outport = DAW_IN`,
+i.e. it only ever talks to the device. Its buttons are exposed as `items` (with `inport`/`outport`), and
+MainStage's assignment layer binds them to actions. It does not set `patchselector` at all.
+
+**Plan:** try (a) first, since it needs no per-concert setup. Fall back to (b), which is the
+better-trodden path and dovetails with Q2 — the SL88's buttons also emit ordinary MIDI, which can be
+declared as `items` and mapped, by hand in MainStage if necessary.
+
+**Spike:** on a joystick press, return `{midi={0xBF,0x00,set, 0xBF,0x20,patch, 0xCF,0x00}}` with no
+`outport`, and see whether MainStage switches patch.
 
 ### Q2. Do SL88 button/encoder SysEx messages reach the script? (blocks Phases 2–4)
 
@@ -57,6 +134,12 @@ Encoder (`0x03`) SL Link messages while a host is logged in, but that has never 
 **Spike:** log every inbound SysEx with `ItemType` in `{0x01, 0x03}` while pressing buttons and turning
 encoders. Confirm IDs against `SLLinkProtocol.swift` (`SLButtonID`, `SLEncoderID`, `SLButtonEvent`).
 Note that encoder ticks are speed-sensitive (±8 observed), so treat the delta as signed magnitude.
+
+**Also log channel-voice traffic in the same spike.** The SL88's buttons are expected to emit ordinary
+MIDI (CC/note) alongside — or instead of — the SL Link SysEx. If they do, that is a second, simpler
+route: declare them as `items` and let MainStage map them, by hand in MainStage's own assignment UI if
+automatic mapping is not possible. This is exactly what the Launchkey reference does (Q1b), so it is
+the lower-risk path even though it needs setup per concert.
 
 ### Q3. How do we read and write channel-strip state? (blocks Phases 3–4)
 
@@ -72,10 +155,26 @@ has never been exercised in this project.
 **Risk:** if mapping must be done by hand per concert, this stops being plug-and-play. Investigate
 whether MainStage auto-maps by control name.
 
-### Q4. Main volume — which target? (blocks Phase 5)
+### Q4. Two separate volumes — RESOLVED 2026-08-19
 
-"MainStage main volume" could be the concert's master volume or the output channel strip. Decide, then
-determine whether it is reachable via a mapped item or needs a specific CC.
+There are two distinct volumes and they get **different encoders**:
+
+| Encoder | Target | Mechanism |
+|:---|:---|:---|
+| **A** | the SL88's own USB audio-board volume | SL Link **Master Volume** message, `ItemType 0x07` |
+| **B** | MainStage main volume | still open — mapped item or a CC MainStage listens to |
+
+Master Volume (`hardware-io.md`) is `F0 00 20 1A 16 ID#1 ID#2 07 R/W VOL MUTE F7`, where `R/W = 1` to
+write, `VOL` is **0–100 as a percentage** (values >100 ignored), and `MUTE` non-zero mutes. A read
+(`R/W = 0`, `VOL` omitted) makes the SL88 answer with the current volume and mute state — use that on
+startup to sync. `MUTE` may be omitted for backwards compatibility.
+
+Note the spec claims the A encoder is *reserved* for exactly this and never reaches the host, but
+CLAUDE.md deviation 5 records that A encoder messages **do** arrive as ordinary SL Link messages on
+this firmware. So driving audio-board volume from A is both spec-aligned and achievable.
+
+Still to decide: what MainStage's main volume actually is (concert master vs. output channel strip)
+and how to reach it.
 
 ### Q5. Is the byte budget enough for a patch list? (blocks Phase 1)
 
@@ -139,16 +238,28 @@ Depends on Q3.
 - **Acceptance:** mute state on the SL88 and in MainStage always agree, including when changed in
   MainStage.
 
-### Phase 5 — Main volume on the B encoder + pop-up
+### Phase 5 — Volumes (A and B encoders) + pop-up
 
 Depends on Q4.
 
-- B encoder (`SLEncoderID.bEncoder`) adjusts main volume.
+- **A encoder** (`SLEncoderID.aEncoder`) adjusts the SL88's own audio-board volume via the Master
+  Volume message (`ItemType 0x07`, `R/W = 1`, `VOL` 0-100). Read the current value at startup
+  (`R/W = 0`) to sync. Its push button (`0x0B`) is the natural audio-board mute toggle, via the same
+  message's `MUTE` byte.
+- **B encoder** (`SLEncoderID.bEncoder`) adjusts MainStage main volume.
 - On change, draw a small pop-up (a filled rect plus a level readout) and remove it after ~1.5 s of
   no movement.
 - **Removal is the interesting part**: Clear Screen is banned, so the pop-up must be erased by
-  redrawing exactly the regions it covered. Design the pop-up to sit in a region whose restore is
-  cheap — ideally one that overlaps as few list rows as possible.
+  redrawing exactly the regions it covered.
+
+  The Swift side already solved this shape and the pattern should be ported rather than reinvented:
+  `SLLinkDisplay` memoizes per region id and documents a hard **non-overlap requirement** (a redraw of
+  a lower layer would otherwise paint over unchanged layers stacked on top, since the SLMK2 has no
+  layers and simply paints in message order). For genuinely unavoidable overlap — which a pop-up is —
+  it provides `invalidate(ids:)` to force every id sharing the covered region to be resent together.
+  So: draw the pop-up, and on dismissal `invalidate` the ids underneath and redraw them.
+
+  Design the pop-up to sit where restore is cheap — overlapping as few list rows as possible.
 - Timing: the session clock is the only timer, so pop-up dismissal is quantised to the tick rate.
   A dedicated shorter interval while a pop-up is visible may be needed.
 - **Acceptance:** turning B shows the level and the screen returns exactly to its previous state.
