@@ -17,6 +17,7 @@ working Lua-only SL Link session (see `docs/mainstage-integration.md` and
 | B encoder | MainStage main volume |
 | B encoder turn | Shows a temporary pop-up with the level, which then disappears |
 | Encoders 1–4 | Control the first four channel strips of the current patch |
+| Encoders 1–4 turn | Shows the same temporary pop-up with the channel name and new value |
 | Encoder 1–4 ring | Lit when that channel is active |
 | Encoder 1–4 press | Mute / unmute that channel |
 | Ring when muted | Off |
@@ -219,17 +220,49 @@ Depends on Q1 + Q2.
 - Handle both `SLButtonEvent.short` and `.long` — never drop LONG (see CLAUDE.md deviation 5).
 - **Acceptance:** the SL88 alone can browse and select across sets; MainStage follows.
 
-### Phase 3 — Encoders 1–4 → first four channel strips
+### Phase 3 — Shared value pop-up
+
+Every encoder shows its value change the same way, so the pop-up is **one shared component**, not four
+plus two. Built here, before its callers (Phases 4 and 6), and testable on its own with any dummy
+label/value — it does not depend on Q3.
+
+**Contract:** `show_popup(label, value)` — draw/refresh; `dismiss_popup()` — erase and restore.
+
+Design points, all forced by constraints established earlier:
+
+- **One pop-up at a time, last mover wins.** A single fixed screen region, so restoring it is a single
+  known set of region ids. Two simultaneous pop-ups would mean tracking two overlap sets for no real
+  benefit.
+- **Draw the frame once, then only update the value.** A pop-up is a background rect + label + value.
+  Re-sending all three on every encoder tick would swamp the byte budget. On first tick draw all
+  three; on subsequent ticks re-send **only the value text** — one message, so one flush.
+- **Coalesce fast ticks.** Encoder deltas are speed-sensitive (±8 observed in ordinary use), and ticks
+  arrive far faster than a flush. Accumulate the delta and repaint the value at most once per flush,
+  rather than queueing one repaint per tick — otherwise the queue grows unboundedly during a fast
+  sweep. `drop_queued_display()` already gives the "supersede rather than pile up" behaviour needed.
+- **Dismissal restores by redrawing, never by clearing.** Use the ported `invalidate(ids:)` pattern:
+  force every region id the pop-up covered to be resent, then redraw them. Clear Screen stays banned.
+- **Dismissal timing is quantised to the session clock.** ~1.5 s of no movement is the target; while a
+  pop-up is visible the tick interval may need shortening so it disappears promptly rather than at the
+  next 3 s keepalive.
+- **Placement:** choose a region overlapping as few patch-list rows as possible, since those rows are
+  what must be redrawn on dismissal.
+
+**Acceptance:** turning any of A, B or encoders 1–4 shows the right label and value, a fast sweep stays
+responsive without flooding, and the screen returns *exactly* to its previous state afterwards.
+
+### Phase 4 — Encoders 1–4 → first four channel strips
 
 Depends on Q3.
 
 - Map encoders `0x00`–`0x03` to the first four channels of the current patch.
 - Turning adjusts that channel's level; the value comes back via `controller_midi_out`.
 - Show each channel's name and level on screen beneath the list (or on a second page — decide during
-  Phase 1 layout).
+  Phase 1 layout). Transient feedback while turning is the shared pop-up from Phase 3; the persistent
+  readout is separate from it.
 - **Acceptance:** turning encoder 1 changes channel 1's level in MainStage, and the screen agrees.
 
-### Phase 4 — Rings and mute
+### Phase 5 — Rings and mute
 
 - Ring lit when the channel is active; use the RGB LED message (`ItemType 0x05`) and take the colour
   from `controller_midi_out`'s `color` argument where available.
@@ -238,7 +271,7 @@ Depends on Q3.
 - **Acceptance:** mute state on the SL88 and in MainStage always agree, including when changed in
   MainStage.
 
-### Phase 5 — Volumes (A and B encoders) + pop-up
+### Phase 6 — Volumes (A and B encoders)
 
 Depends on Q4.
 
@@ -250,7 +283,8 @@ Depends on Q4.
 - On change, draw a small pop-up (a filled rect plus a level readout) and remove it after ~1.5 s of
   no movement.
 - **Removal is the interesting part**: Clear Screen is banned, so the pop-up must be erased by
-  redrawing exactly the regions it covered.
+  redrawing exactly the regions it covered. (Phase 3 builds this; the volume encoders are just two more
+  callers.)
 
   The Swift side already solved this shape and the pattern should be ported rather than reinvented:
   `SLLinkDisplay` memoizes per region id and documents a hard **non-overlap requirement** (a redraw of
@@ -262,7 +296,8 @@ Depends on Q4.
   Design the pop-up to sit where restore is cheap — overlapping as few list rows as possible.
 - Timing: the session clock is the only timer, so pop-up dismissal is quantised to the tick rate.
   A dedicated shorter interval while a pop-up is visible may be needed.
-- **Acceptance:** turning B shows the level and the screen returns exactly to its previous state.
+- **Acceptance:** A changes the SL88's own output level and B changes MainStage's, each showing the
+shared pop-up.
 
 ## Cross-cutting constraints to respect
 
