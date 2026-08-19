@@ -18,7 +18,7 @@ working Lua-only SL Link session (see `docs/mainstage-integration.md` and
 | B encoder turn | Shows a temporary pop-up with the level, which then disappears |
 | Encoders 1–4 | Control the first four channel strips of the current patch |
 | Encoders 1–4 turn | Shows the same temporary pop-up with the channel name and new value |
-| Encoder 1–4 ring | Lit when that channel is active |
+| Encoder 1–4 ring | Lit when that channel is active (single RGB lamp: colour + brightness only, no level arc) |
 | Encoder 1–4 press — short | Mute / unmute that channel |
 | Encoder 1–4 press — long | Reset that channel to **0 dB** (unity) |
 | B encoder press — short | Mute / unmute the main fader |
