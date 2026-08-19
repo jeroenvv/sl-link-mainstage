@@ -32,8 +32,11 @@ MIDI endpoints whose display name contains "LINK" (the macOS port is named `SL L
 `Connect + Identify` logs `SL LINK MIDI port not found.`
 
 Key build settings: `MACOSX_DEPLOYMENT_TARGET = 26.5`, `SWIFT_VERSION = 5.0`,
-`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, `ENABLE_APP_SANDBOX = YES` (entitlements and Info.plist
-are Xcode-generated — there are no checked-in `.entitlements` or `Info.plist` files).
+`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, `ENABLE_APP_SANDBOX = YES`. Info.plist is
+Xcode-generated (no checked-in `Info.plist`), but entitlements **are** checked in at
+`SL-Link-Mainstage/SL-Link-Mainstage.entitlements` and wired up via `CODE_SIGN_ENTITLEMENTS` — they
+carry a scoped `temporary-exception.files.absolute-path.read-only` for the MainStage bridge files.
+Note that entitlement's paths must be the resolved `/private/tmp/...` form, not the `/tmp` symlink.
 
 `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` makes *every* unannotated declaration in the project
 implicitly main-actor-isolated, including plain enums/structs, not just classes. All of the
@@ -41,6 +44,38 @@ implicitly main-actor-isolated, including plain enums/structs, not just classes.
 `nonisolated` accordingly - if you add a new type under `SLLink/` and it needs to be called from a
 background queue, it needs the same annotation, or you'll get "main actor-isolated ... cannot be
 used in nonisolated context" warnings (errors under the Swift 6 language mode).
+
+## Working efficiently in this repo
+
+Lessons paid for in a long MainStage-bridge session. They are about *how* to work here, not about the
+protocol.
+
+**Edit files with the Edit/Write tools, not `python`/`sed` heredocs.** Editing a tracked file from the
+shell makes the harness re-dump the whole file back into context — `config.lua` is ~600 lines, and
+doing this repeatedly was the single largest waste of a long session. `Edit` also fails loudly on a
+stale match, where a shell replacement silently no-ops or duplicates a section.
+
+**Cap noisy output.** `xcodebuild` prints hundreds of lines of compiler invocations; pipe it through
+`| tail -5`. Same for long `grep`/`cat`. Batch independent greps into one call, and read targeted line
+ranges of long files rather than the whole file.
+
+**Dump what an unknown API gives you before testing hypotheses about it.** The `outport` blocker cost
+about ten hardware round-trips; MainStage had been passing the answer all along as
+`controller_midi_in`'s `portName` argument. One log line, ordered first, would have ended it.
+
+**Prove you can observe the signal before trusting a negative.** A dozen rounds concluded "outbound
+MIDI never works" using a sniffer that watched CoreMIDI *sources* while `outport` addresses a
+*destination*. Prefer a request/response probe over a fire-and-forget send. See the
+`test-mainstage-script` skill.
+
+**Prefer one decisive experiment to a sweep.** Sweeping six `outport` values with no working
+observation path produced six meaningless results.
+
+**Keep commit messages short.** Subject line plus a few lines at most. Extended reasoning, evidence
+tables and rejected hypotheses belong in `docs/`, which the commit can reference.
+
+**Use the skills.** `.claude/skills/test-mainstage-script` (hardware deploy/verify loop) and
+`.claude/skills/lua-harness` (offline verification before spending a hardware round-trip).
 
 ## Codec tests
 
