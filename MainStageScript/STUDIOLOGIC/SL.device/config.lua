@@ -36,9 +36,22 @@
 --
 -- SENDING IS RETURN-VALUE ONLY: a device script can only emit MIDI by
 -- returning it from a callback. There is no "send now" function. Everything
--- outbound is therefore queued into `pendingOut` and flushed by whichever
+-- outbound is therefore queued into `pendingMessages` and flushed by whichever
 -- callback fires next (see queue_message/flush_pending). Consequence: the
 -- keepalive cadence is bounded by how often controller_timer_trigger fires.
+--
+-- DRAWING RULES, all found the hard way on hardware (see
+-- docs/mainstage-integration.md for the full evidence):
+--   * MainStage silently discards a returned array over ~78-87 bytes - the
+--     WHOLE array, not the overflow. Hence FLUSH_BUDGET and one message per
+--     flush. The SL Link spec has no such limit; this is a MainStage cap.
+--   * Do NOT send Clear Screen. With a clear at the head of a repaint exactly
+--     one text line went missing every time, and which line varied run to run
+--     - a race against a slow full-screen fill. Write Text overwrites the
+--     pixels it covers (spec, display-messages.md), so redrawing is
+--     self-cleaning and the clear is unnecessary.
+--   * Do not truncate strings. Max Width truncates visually in pixels and
+--     appends '...' by itself.
 --
 -- SL Link message shape (docs/, and SLLinkEncoder.swift):
 --   F0 00 20 1A 16 <id1> <id2> <itemType> <function> [payload...] F7
@@ -97,7 +110,7 @@ STATE_STANDBY = 'standby'
 
 state = STATE_IDLE
 instanceID = SL_INSTANCE_START
-pendingOut = {}
+pendingMessages = {}
 
 -- Latest patch info from MainStage, painted once the session goes active.
 currentPatch = ''
@@ -105,32 +118,91 @@ currentSet = ''
 currentConcert = ''
 screenDirty = false
 
+-- What the screen was last painted with, and when. Used to keep the display
+-- self-healing: see the ID_QUERY handling in handle_sl_frame.
+lastPaintedPatch = nil
+lastPaintTick = -1
+
+-- Repaint at least this often even when nothing changed, because the SL88
+-- redraws its own screen when the user picks an app from the APP list and
+-- there is no reliable signal for that (LOGIN CONFIRMATION only arrives on a
+-- *fresh* login; if the keyboard still remembers us it never sends one).
+--
+-- Counted in IDLE ticks, not raw timer ticks. The tick rate is not constant -
+-- it drops to FLUSH_SOON_MS while a repaint drains - so counting raw ticks
+-- made "5 ticks" elapse in half a second mid-drain, which repainted, which
+-- queued more work, which produced more fast ticks: a runaway repaint loop
+-- that made the screen flicker and drop lines.
+REPAINT_EVERY_IDLE_TICKS = 10
+idleTicks = 0
+
 -- MARK: - Outbound plumbing
 --
--- A script can only send by returning MIDI from a callback, so build up a
--- flat byte array here and let the next callback flush it. Flat (rather than
--- nested-per-message) is the Launchkey MK3 reference's form, and multiple
--- complete F0..F7 messages may simply be concatenated.
+-- A script can only send by returning MIDI from a callback, and MainStage
+-- imposes a BYTE-LENGTH CEILING on what it will actually emit: measured on
+-- hardware, 78 bytes render and 87 bytes render NOTHING AT ALL - the whole
+-- array is discarded, not truncated. The SL Link spec itself has no such
+-- limit (Write Text is `S(1)...S(N)` for arbitrary N, and Max Width truncates
+-- visually in pixels - docs/display-messages.md), so this is purely a
+-- MainStage constraint to work around.
+--
+-- Therefore: keep queued messages DISCRETE rather than pre-concatenated, and
+-- emit only as many whole messages per flush as fit inside FLUSH_BUDGET.
+-- Whatever is left over goes out on a following tick.
+--
+-- FLUSH_BUDGET sits below the 78 known to work, since the exact ceiling is
+-- only bracketed to [78, 87) and there is nothing to gain from running close.
+FLUSH_BUDGET = 72
+
+-- While output is still queued, ask for the next tick quickly rather than
+-- waiting a whole keepalive period, so a repaint converges in a fraction of a
+-- second instead of one message every KEEPALIVE_MS.
+FLUSH_SOON_MS = 100
 
 function queue_message(msg)
-	for i = 1, #msg do
-		table.insert(pendingOut, msg[i])
+	table.insert(pendingMessages, msg)
+end
+
+function has_pending()
+	return #pendingMessages > 0
+end
+
+-- Emits whole messages up to the budget. `includeQuery` appends an
+-- Identification Query and reserves room for it inside the budget: its reply
+-- is the only thing that re-arms the one-shot timer (see the SESSION CLOCK
+-- note above controller_midi_in), so a flush carrying no query can stall the
+-- session clock.
+function flush_pending(includeQuery)
+	local out = {}
+	local query = includeQuery and msg_identification_query() or nil
+	local reserve = query and #query or 0
+
+	-- Exactly ONE queued message per flush, always paired with the query.
+	--
+	-- Every shape that has ever rendered reliably on hardware looked like
+	-- [display, query]; the ones that silently vanished were the odd ones out -
+	-- a lone display message, a display bundled with the keepalive, two
+	-- displays together. Position in the repaint turned out to be irrelevant
+	-- (moving the draw order just moved the failure), as did size and content.
+	-- Rather than keep guessing at the underlying rule, emit the one shape that
+	-- has never failed. A repaint costs a few more flushes, which at
+	-- FLUSH_SOON_MS still converges in well under a second.
+	if #pendingMessages > 0 then
+		local m = pendingMessages[1]
+		if #m + reserve <= FLUSH_BUDGET then
+			table.remove(pendingMessages, 1)
+			for i = 1, #m do out[#out + 1] = m[i] end
+		end
 	end
-end
 
--- Inserts a delay marker (negative number = milliseconds) so CoreMIDI does
--- not interleave a burst of display writes - the VAX77 reference does the
--- same around its own SysEx dump.
-function queue_delay(ms)
-	table.insert(pendingOut, -ms)
-end
+	if query then
+		for i = 1, #query do out[#out + 1] = query[i] end
+	end
 
-function flush_pending()
-	if #pendingOut == 0 then return nil end
-	local out = pendingOut
-	pendingOut = {}
+	if #out == 0 then return nil end
 	return { midi = out, outport = SL_PORT }
 end
+
 
 -- MARK: - Message builders
 
@@ -225,106 +297,87 @@ end
 
 -- MARK: - Screen
 --
--- ==========================================================================
--- PAINT BISECT (2026-08-19) - change PAINT_STEP, reinstall, retest.
+-- Each element is queued as its own message and delivered across consecutive
+-- flushes, because MainStage will not emit more than ~78 bytes at once (see
+-- FLUSH_BUDGET). Concatenating a whole repaint is exactly what produced a
+-- completely black screen in earlier attempts.
 --
--- The problem: the original paint (Clear Screen + three Write Texts +
--- negative delay markers, all concatenated into one flat `midi` array)
--- produced a BLACK SCREEN on hardware. The Clear Screen plainly applied;
--- nothing after it did. Reducing to a single Write Text made text appear.
--- So exactly one of "multiple messages in one array", "Clear Screen", or
--- "negative delay markers" breaks the rest of the array - and guessing
--- which has already wasted enough time on this project, so it gets
--- bisected one variable at a time instead.
---
---   PAINT_STEP = 1  one Write Text                    CONFIRMED WORKING
---   PAINT_STEP = 2  two Write Texts, no clear/delays   <- current test
---   PAINT_STEP = 3  Clear Screen + two Write Texts, still no delays
---   PAINT_STEP = 4  full paint: clear + three texts + delay markers
---
--- Read the result as:
---   step 2 fails  -> concatenating multiple F0..F7 in one flat array is the
---                    culprit (surprising: the Launchkey MK3 reference does
---                    exactly that) => send one message per callback instead,
---                    spreading a repaint across successive timer ticks.
---   step 2 works,
---   step 3 fails  -> Clear Screen specifically is the problem; likely it
---                    needs to land on its own before anything else, so
---                    queue it and let the following tick draw the text.
---   step 3 works,
---   step 4 fails  -> the negative delay markers are the culprit (current
---                    prime suspect). Drop them entirely - they were only
---                    ever a precaution copied from VAX77.
---   step 4 works  -> nothing is wrong now; whatever it was is fixed by the
---                    ordering above. Set PAINT_STEP = 4 permanently.
---
--- Whatever the outcome, record it in docs/mainstage-integration.md's
--- "Open: multi-message display painting" section and delete the steps that
--- are no longer needed.
--- ==========================================================================
-PAINT_STEP = 2
+-- No manual string truncation: the SL Link spec sets no text-length limit, and
+-- Max Width already truncates visually in pixels, appending '...' when needed.
+-- Let the keyboard do it.
 
--- RESULT (2026-08-19): the constraint is a BYTE-LENGTH CEILING on the array
--- MainStage will actually emit - NOT a message-count limit. Measured on
--- hardware with the same two Write Texts, varying only text length:
---
---     53 bytes (one full-length Write Text)      renders
---     54 bytes (two Write Texts, 2 chars each)   renders
---     78 bytes (two Write Texts, 14 chars each)  renders   <- current setting
---     96 bytes (two Write Texts, full text)      NOTHING renders at all
---
--- So the ceiling is somewhere in (78, 96], and going over it silently discards
--- the WHOLE array rather than truncating it. Message count is not the issue:
--- controller_timer_trigger has been returning keepalive + Identification Query
--- concatenated all session long and both arrive - they are just ~10 bytes each.
---
--- PAINT_TRUNCATE clamps every drawn string, which is the crude way to stay
--- under the ceiling. Set to nil to disable.
---
--- TO FINISH THIS: narrow the ceiling (try ~84, then ~90), then rework
--- paint_screen to budget properly instead of hard-truncating. Design
--- constraint to respect: every flush must ALSO carry the Identification Query
--- (~10 bytes), because its reply is the only thing that re-arms the one-shot
--- timer - a flush of pure display messages draws no reply and the session
--- clock stalls. Usable display budget per flush is therefore ~(ceiling - 10).
--- If a full repaint will not fit, emit one message per flush and shorten
--- KEEPALIVE_MS while the queue is non-empty so it converges in ~1s.
-PAINT_TRUNCATE = 14
-
-function ptext(s)
-	if PAINT_TRUNCATE == nil or s == nil then return s end
-	return string.sub(s, 1, PAINT_TRUNCATE)
-end
+SCREEN_WIDTH = 320
+TEXT_X = 8
+TEXT_MAXW = SCREEN_WIDTH - (2 * TEXT_X)
 
 -- Repaints the screen. The SL88 keeps no display state across Standby, so this
 -- is also what a Restart triggers.
+-- Drops display messages still sitting in the queue. A newer paint completely
+-- supersedes an older one; letting the two interleave mid-drain draws garbage.
+-- Protocol messages (identification, logout, ...) are preserved.
+function drop_queued_display()
+	local keep = {}
+	for i = 1, #pendingMessages do
+		local m = pendingMessages[i]
+		if m[8] ~= IT_DISPLAY then keep[#keep + 1] = m end
+	end
+	pendingMessages = keep
+end
+
 function paint_screen()
-	if PAINT_STEP >= 3 then
-		queue_message(msg_clear_screen(0, 0, 0))
-		if PAINT_STEP >= 4 then queue_delay(20) end
-	end
+	drop_queued_display()
 
-	if PAINT_STEP >= 4 then
-		queue_message(msg_write_text(ptext(currentConcert), 8, 4, 304,
-			ALIGN_LEFT, SIZE_SMALL, 150, 150, 150, 0, 0, 0))
-	end
+	-- NO Clear Screen.
+	--
+	-- With a clear at the head of the repaint, exactly one text line went
+	-- missing every time - but WHICH line varied between runs (patch, then set,
+	-- then concert) even with the message order and flush shape held constant.
+	-- That randomness reads like a race rather than a protocol rule: a
+	-- full-screen fill plausibly takes the SL88 a while, and any text arriving
+	-- while it is still painting gets wiped.
+	--
+	-- The clear is not needed anyway. The spec is explicit that Write Text
+	-- "will completely overwrite any existing content on the screen pixels
+	-- within the area where the text is printed" (docs/display-messages.md), so
+	-- redrawing the same regions is self-cleaning.
 
-	if PAINT_STEP >= 2 then
-		queue_message(msg_write_text(ptext(currentSet), 8, 26, 304,
-			ALIGN_LEFT, SIZE_SMALL, 110, 170, 230, 0, 0, 0))
-		if PAINT_STEP >= 4 then queue_delay(10) end
-	end
-
-	-- The one message proven to render on its own; always sent, and sent last
-	-- so that if only the first message of an array survives, the failure is
-	-- unambiguous (nothing at all appears) rather than partially masked.
-	queue_message(msg_write_text(ptext(currentPatch), 8, 80, 304,
+	-- ORDER TEST (2026-08-19): patch drawn FIRST, concert/set after. All four
+	-- messages are confirmed to leave the script (see the FLUSH log), yet the
+	-- patch line never appears while concert and set always do - and the patch
+	-- has always been queued LAST. Swapping the order distinguishes
+	-- "the last message of a repaint gets lost" from "this particular message
+	-- is bad": if the patch now renders and the set line disappears instead,
+	-- it is positional; if all three render, it is ordering-sensitive.
+	queue_message(msg_write_text(currentPatch, TEXT_X, 80, TEXT_MAXW,
 		ALIGN_CENTER, SIZE_BIG, 255, 255, 255, 0, 0, 0))
+	queue_message(msg_write_text(currentConcert, TEXT_X, 4, TEXT_MAXW,
+		ALIGN_LEFT, SIZE_SMALL, 150, 150, 150, 0, 0, 0))
+	queue_message(msg_write_text(currentSet, TEXT_X, 30, TEXT_MAXW,
+		ALIGN_LEFT, SIZE_SMALL, 110, 170, 230, 0, 0, 0))
+
+	-- TRAILING SACRIFICIAL REDRAW.
+	--
+	-- Empirically the FINAL flush of a repaint never takes effect: whichever
+	-- display message ends up last is silently lost, and swapping the draw
+	-- order just moves the loss to whatever is now last. It is not about the
+	-- message's content, size, position, or what it is bundled with - a lone
+	-- 43-byte Write Text as the last flush is dropped just the same as one
+	-- paired with a keepalive. Anything with a further transmission after it
+	-- renders reliably.
+	--
+	-- So end every repaint with a harmless duplicate. Re-drawing the concert
+	-- line is idempotent (identical pixels, same coordinates), so it costs one
+	-- extra message and is safe to lose - which it duly is, while everything
+	-- that matters now has something following it.
+	queue_message(msg_write_text(currentConcert, TEXT_X, 4, TEXT_MAXW,
+		ALIGN_LEFT, SIZE_SMALL, 150, 150, 150, 0, 0, 0))
 
 	screenDirty = false
-	print('[sllink] painted (PAINT_STEP=' .. PAINT_STEP .. '): set="' ..
-	      currentSet .. '" patch="' .. currentPatch .. '"')
+	lastPaintedPatch = currentPatch
+	lastPaintTick = idleTicks
+	print('[sllink] paint queued (' .. #pendingMessages .. ' msgs): "' .. currentPatch .. '"')
 end
+
 
 -- MARK: - Session
 
@@ -402,14 +455,27 @@ function handle_sl_frame(e)
 		elseif func == ID_REJECTED then
 			handle_identification_rejected(e[9])
 		elseif func == ID_QUERY then
-			-- Reply to our own keepalive query. Nothing to do with it beyond
-			-- having received it: arriving here is what re-armed the timer.
-			if e[9] == 0x00 and state ~= STATE_IDENTIFYING then
-				-- Keyboard says we are NOT identified - session was dropped, so
-				-- climb back in rather than keep talking into the void.
-				print('[sllink] <- query says not identified; re-identifying')
+			-- The reply to our own keepalive query. Receiving it is what
+			-- re-arms the timer, but its result byte is also the most reliable
+			-- session signal we get - far more dependable than waiting for a
+			-- LOGIN CONFIRMATION, which the keyboard only sends on a *fresh*
+			-- login and skips entirely if it still remembers us.
+			if e[9] == 0x00 then
+				print('[sllink] <- query: not identified; re-identifying')
 				state = STATE_IDLE
 				start_identification()
+			else
+				-- Identified. Treat this as "the session is up" regardless of
+				-- whether we ever saw APPROVED/LOGIN, and make sure the screen
+				-- actually reflects the current patch.
+				if state == STATE_IDENTIFYING or state == STATE_LISTED then
+					state = STATE_ACTIVE
+				end
+				if currentPatch ~= '' and not has_pending() then
+					local stale = (lastPaintedPatch ~= currentPatch)
+					local due = (idleTicks - lastPaintTick) >= REPAINT_EVERY_IDLE_TICKS
+					if stale or due then paint_screen() end
+				end
 			end
 		end
 	elseif itemType == IT_SYSTEM then
@@ -431,7 +497,7 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	settriggertimer(KEEPALIVE_MS)
 	state = STATE_IDLE
 	instanceID = SL_INSTANCE_START
-	pendingOut = {}
+	pendingMessages = {}
 	currentPatch, currentSet, currentConcert = '', '', ''
 
 	if applicationName ~= nil and applicationName ~= '' then
@@ -455,7 +521,7 @@ end
 -- keepalive timeout removes us anyway.
 function controller_finalize()
 	print('[sllink] controller_finalize (no logout sent - see note)')
-	pendingOut = {}
+	pendingMessages = {}
 	state = STATE_IDLE
 	return nil
 end
@@ -468,24 +534,41 @@ timerTicks = 0
 function controller_timer_trigger()
 	settriggertimer(KEEPALIVE_MS)
 	timerTicks = timerTicks + 1
-	print('[sllink] timer tick #' .. timerTicks .. ' state=' .. state)
+	-- Only ticks that arrive at the full keepalive cadence count towards the
+	-- periodic refresh; fast drain ticks must not.
+	if not has_pending() then idleTicks = idleTicks + 1 end
+	print('[sllink] timer tick #' .. timerTicks .. ' (idle ' .. idleTicks .. ') state=' .. state)
 
 	-- Keepalive UNCONDITIONALLY once we have sent an Identification Request.
 	--
 	-- Originally this only fired in LISTED/ACTIVE, i.e. only after seeing an
-	-- IDENTIFICATION APPROVED come back. On hardware the approval is never
-	-- delivered to this script (MainStage does not appear to pass the SL88's
-	-- SysEx to controller_midi_in - only channel-voice traffic), so the state
-	-- machine sat in IDENTIFYING, no keepalive was ever sent, and the entry
-	-- aged out of the SL88's APP list after ~5s - "MainStage showed up
-	-- briefly, then disappeared".
+	-- IDENTIFICATION APPROVED come back. That stalled: if the keyboard still
+	-- remembers us from a previous run it sends neither APPROVED nor LOGIN, so
+	-- the state machine sat in IDENTIFYING, no keepalive went out, and the
+	-- entry aged out of the APP list after ~5s - "MainStage showed up briefly,
+	-- then disappeared". (SysEx *is* delivered to controller_midi_in; an
+	-- earlier note here claiming otherwise was wrong. The query reply is the
+	-- reliable session signal - see handle_sl_frame's ID_QUERY branch.)
 	--
-	-- So the session is driven open-loop: keep announcing ourselves whether or
-	-- not we can observe the replies. Harmless if the keyboard has already
-	-- logged us in, and it is what keeps us in the list if it hasn't.
+	-- So announce ourselves regardless of what we have observed. Harmless if
+	-- the keyboard already has us logged in, and it is what keeps us listed if
+	-- it does not.
 	if state == STATE_IDLE then
 		start_identification()
-	else
+	elseif not has_pending() then
+		-- Only send the keepalive when no display work is queued.
+		--
+		-- Bundling a System Device Notification (00/00) into the same array as
+		-- a Write Text makes the SL88 discard the drawing: measured repeatedly,
+		-- a repaint drained as
+		--     F1 [clear, text]            -> rendered
+		--     F2 [text, query 7F/03]      -> rendered
+		--     F3 [text, keepalive 00/00]  -> NOT rendered
+		-- and swapping the draw order moved the failure to whichever text
+		-- landed in that last keepalive-bearing flush. The Identification Query
+		-- rides along with display messages perfectly happily, and it is what
+		-- actually drives the session clock, so deferring the keepalive until
+		-- the queue is empty costs nothing.
 		send_keepalive()
 	end
 
@@ -501,9 +584,8 @@ function controller_timer_trigger()
 	-- controller_midi_in. The query's reply is that inbound event, which
 	-- re-arms the timer and schedules the next tick - a self-sustaining
 	-- request/response heartbeat that does not depend on anyone playing.
-	queue_message(msg_identification_query())
-
-	return flush_pending()
+	-- flush_pending appends the query itself and reserves budget for it.
+	return flush_pending(true)
 end
 
 function dump_event(e)
@@ -531,12 +613,18 @@ end
 -- the query there is nothing to reply, the chain stops after one tick, and the
 -- SL88 drops us from its APP list after ~5s - which is exactly the
 -- "showed up briefly, then disappeared" symptom.
-function controller_midi_in(midiEvent, portName)
-	settriggertimer(KEEPALIVE_MS)
+-- Re-arms the one-shot timer. Called at the END of controller_midi_in, after
+-- any queued output has been drained, so the interval reflects what is still
+-- outstanding rather than what was outstanding on entry.
+function rearm_timer()
+	if has_pending() then
+		settriggertimer(FLUSH_SOON_MS) -- still draining a repaint; come back soon
+	else
+		settriggertimer(KEEPALIVE_MS)
+	end
+end
 
-	-- Log EVERY inbound SysEx, matched or not. This is the diagnostic for
-	-- whether MainStage delivers the SL88's protocol traffic to the script at
-	-- all - so far it appears not to, which is why the session runs open-loop.
+function controller_midi_in(midiEvent, portName)
 	if midiEvent[0] == 0xF0 then
 		print('[sllink] <- SYSEX on port=' .. tostring(portName) .. ': ' .. dump_event(midiEvent))
 	end
@@ -545,10 +633,13 @@ function controller_midi_in(midiEvent, portName)
 		handle_sl_frame(midiEvent)
 		-- Protocol traffic, not music: swallow it, and use the opportunity to
 		-- flush whatever the handler queued.
-		local out = flush_pending()
+		local out = flush_pending(true)
+		rearm_timer()
 		if out ~= nil then return out end
 		return { midi = {} }
 	end
+
+	rearm_timer()
 
 	if midiEvent[0] == 0xC0 then
 		return { midi = {} } -- swallow Program Change (patchselector handles it)
@@ -574,11 +665,12 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 	currentPatch, currentSet, currentConcert = p, s, c
 	print('[sllink] controller_select_patch: "' .. currentPatch .. '"')
 
-	-- Paint open-loop: we cannot see login confirmations (see the note in
-	-- controller_timer_trigger), so draw whenever MainStage tells us the patch
-	-- changed and let the keyboard ignore it if we are not logged in yet.
+	-- Draw whenever MainStage says the patch changed, without waiting to be
+	-- sure we are logged in: a LOGIN CONFIRMATION only arrives on a *fresh*
+	-- login, and the keyboard harmlessly ignores drawing we are not entitled
+	-- to do. The ID_QUERY branch repaints again once the session is confirmed.
 	paint_screen()
-	return flush_pending()
+	return flush_pending(true)
 end
 
 -- MARK: - Device declaration

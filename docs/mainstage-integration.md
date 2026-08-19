@@ -682,7 +682,43 @@ script really is gone, the keyboard's own ~5s timeout handles it.
 `0x00` (DeviceID taken). With no `os`/`io` in the sandbox there's no entropy source, so the script just
 walks its instance byte forward on each rejection until one is accepted.
 
-### Display painting: there is a BYTE-LENGTH CEILING on what MainStage will emit
+### Display painting — WORKING (2026-08-19). Three rules, all found empirically
+
+The SL88 now shows concert, set and patch, updating live as the patch changes. Getting there needed
+three separate constraints, none of them documented anywhere:
+
+**Rule 1 — stay under MainStage's byte ceiling.** See the measurements below: over ~78-87 bytes the
+*entire* returned array is discarded. `FLUSH_BUDGET = 72`, one message per flush.
+
+**Rule 2 — never send Clear Screen.** This was the last and worst one. With a clear at the head of a
+repaint, exactly one text line went missing every single time — but *which* line varied between
+otherwise identical runs (patch, then set, then concert), even with the message order and flush shape
+held constant. That randomness is the signature of a race, not a protocol rule: a full-screen fill
+plausibly takes the SL88 a while, and text arriving while it is still painting gets wiped. Removing the
+clear fixed it outright.
+
+It is also unnecessary: the spec states Write Text "will completely overwrite any existing content on
+the screen pixels within the area where the text is printed", so redrawing the same regions is
+self-cleaning.
+
+**Rule 3 — don't truncate strings yourself.** `Max Width` truncates visually in pixels and appends
+'...' on its own (`docs/display-messages.md`). The spec sets **no** limit on text length — Write Text is
+`S(1)...S(N)` for arbitrary N — so the only reason to shorten anything is Rule 1's byte budget.
+
+**Dead ends worth not repeating**, each disproven by a later observation:
+
+| Theory | Killed by |
+|:---|:---|
+| "the last message in a flush is dropped" | the query is frequently last and always arrives |
+| "the last flush of a repaint is dropped" | adding a trailing sacrificial redraw didn't help; the failure stayed put |
+| "a display message bundled with the keepalive is lost" | separating them changed nothing |
+| "it's positional — whichever line is queued last" | reordering moved the failure, but so did leaving order alone |
+| "it's the message content/size/coordinates" | every line rendered fine in some run |
+
+The tell was that the *identity* of the missing line changed between runs with everything else fixed —
+which ruled out every deterministic explanation and pointed at the clear.
+
+### Byte-length ceiling: the measurements
 
 The original paint (Clear Screen + three Write Texts + delay markers, one flat array) produced a
 **black screen**. Bisecting found the real rule, and it is not what it looked like at first.
@@ -706,21 +742,18 @@ That also retroactively explains the very first "black screen": at 105 bytes the
 over the limit, and the Clear Screen appearing to "work" was just the screen having nothing drawn on
 it, not a partial application.
 
-**Current committed state:** `PAINT_STEP = 2`, `PAINT_TRUNCATE = 14` — set name + patch name, each
-clamped to 14 characters, 78 bytes total. Confirmed rendering on hardware.
+**Resolved.** `paint_screen` queues each line as a discrete message and `flush_pending` emits exactly
+one per flush, always paired with the Identification Query (~10 bytes) so its reply keeps the one-shot
+timer alive. A full repaint is 4 messages and converges in about half a second at
+`FLUSH_SOON_MS = 100`. No truncation and no Clear Screen — see the three rules above.
 
-**Next steps, in order:**
+**Still open, both minor:**
 
-1. Narrow the ceiling further (try ~84, then ~90) to get the exact budget. Both knobs are one-liners
-   at the top of the Screen section in `config.lua`.
-2. Redesign `paint_screen` to respect that budget rather than truncating so aggressively. The
-   constraint to design around: **every flush must also carry the Identification Query** (~10 bytes),
-   because that reply is the only thing that re-arms the one-shot timer — a flush of pure display
-   messages gets no reply and the session clock stalls until some other MIDI arrives. So the usable
-   display budget per flush is roughly (ceiling − 10).
-3. If a full repaint cannot fit in one flush, spread it over successive ticks (queue several messages,
-   emit one per flush) and shorten `KEEPALIVE_MS` while the queue is non-empty so a repaint converges
-   in about a second instead of one message per 3 s.
+- The exact ceiling was never pinned, only bracketed to [78, 87) — the conservative `FLUSH_BUDGET = 72`
+  made it moot.
+- Whether the trailing sacrificial redraw in `paint_screen` is still needed now that Clear Screen (the
+  actual culprit) is gone. It costs one extra idempotent message per repaint and was part of the
+  configuration verified working on hardware, so it was left in rather than removed on a hunch.
 
 ## SOLVED (2026-08-19): outbound MIDI works — `outport` needs the SHORT port name
 
