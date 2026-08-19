@@ -279,17 +279,38 @@ Depends on Q3.
 
 ### Phase 5 — Rings, mute and solo
 
-- Ring lit when the channel is active; use the RGB LED message (`ItemType 0x05`) and take the colour
-  from `controller_midi_out`'s `color` argument where available.
+**What the hardware can actually do** (`hardware-io.md`) — more limited than the word "ring" suggests:
+
+- There are **4 RGB LEDs total**, one per zone encoder (`LID` 0–3):
+  `F0 00 20 1A 16 ID#1 ID#2 05 LID R G B BR F7` — 7-bit colour per channel (same encoding as the
+  display) plus a single **brightness** byte `BR`, 0–127, applying to the whole LED.
+- **It is one lamp, not a segmented ring.** No arc, no per-segment control, no way to represent a level
+  on it. A ring can express *state* (colour + brightness) but **never a value** — level feedback must
+  come from the pop-up and the on-screen readout instead.
+- The other 12 LEDs are **white, on/off only** (`ItemType 0x02`, `LST` 0/1), and that includes the A and
+  B encoder LEDs (`0x0A`, `0x0B`). So **B cannot indicate the main volume level either**.
+
+**Proposed state → appearance** (brightness values are a starting point; check on hardware):
+
+| Channel state | Ring |
+|:---|:---|
+| Active | Channel colour from `controller_midi_out`'s `color`, normal brightness (~90) |
+| Muted | Off (`BR = 0`) |
+| Soloed | Distinct colour at full brightness (~127) — must not read as either of the above |
+| No such channel (fewer than 4) | Off |
+
+Solo also lights the Zone Select button's own white LED
+(`SLWhiteLED.zone1Button`..`zone4Button`), which is the unambiguous solo indicator; the ring colour is
+the supporting cue.
+
 - Encoder press (`0x00`–`0x03`) SHORT toggles mute; muted → ring off.
-- Zone Select buttons (`0x04`–`0x07`) toggle solo on the same four channels, with the button's white
-  LED showing solo state. Decide how solo and mute interact visually on the ring — a soloed channel
-  and a muted one should not look the same.
 - Encoder press LONG resets that channel to 0 dB (unity — see Q6), and shows the pop-up like any other
   value change. SHORT and LONG must both be handled; never drop LONG (CLAUDE.md deviation 5).
-- Mirror onto the white LEDs (`ItemType 0x02`) if that reads better on hardware.
-- **Acceptance:** mute state on the SL88 and in MainStage always agree, including when changed in
-  MainStage.
+- Zone Select buttons (`0x04`–`0x07`) toggle solo on the same four channels.
+- **Open:** what a channel that is *both* soloed and muted looks like, and whether "another channel is
+  soloed, so this one is implicitly silent" deserves its own appearance (dimmed, say).
+- **Acceptance:** mute and solo state on the SL88 and in MainStage always agree, including when changed
+  in MainStage; a long press lands the channel exactly on 0 dB.
 
 ### Phase 6 — Volumes (A and B encoders)
 
