@@ -8,7 +8,9 @@ working Lua-only SL Link session (see `docs/mainstage-integration.md` and
 
 | Control | Behaviour |
 |:---|:---|
-| Screen | Patch list of the current set, with the highlighted entry visible |
+| Screen — default mode | Patch list of the current set, with the active patch highlighted |
+| Screen — zoomed mode | Current patch only, in a large font for readability at a distance |
+| Zoom button | Toggles between the two display modes |
 | Joystick Up / Down | Move highlight one patch up / down |
 | Joystick Left / Right | Previous / next set |
 | Joystick main button — short | Select the highlighted patch |
@@ -43,8 +45,8 @@ the A encoder push button (`0x0B`). Suggested, not yet decided:
 | Button | Action | Why |
 |:---|:---|:---|
 | Cancel (`0x0F`) — LONG | **MIDI panic** (All Notes Off + All Sound Off + Reset Controllers on all 16 channels) | Panic belongs on a "stop/abort" button. LONG-press guards against triggering it mid-song by accident, and LONG is confirmed delivered on this hardware (CLAUDE.md deviation 5) |
-| Home (`0x10`) | Force full screen repaint | Already the demo screen's meaning; cheap safety valve if the display ever desyncs |
-| Global (`0x09`) | Toggle screen view: patch list ↔ channel mixer | A second page solves the "where do channel names/levels go" layout problem from Phase 4 |
+| Apply (`0x0E`) | Force full screen repaint | Cheap safety valve if the display ever desyncs. Moved here from Home (`0x10`), which is the Zoom button — see Q7. Could equally be a LONG press of Zoom itself |
+| Global (`0x09`) | Toggle screen view: patch list ↔ channel mixer | A second page solves the "where do channel names/levels go" layout problem from Phase 4. Note this is a *different* toggle from Zoom (Q7), which switches list ↔ single-patch |
 
 ### Fallback if solo turns out to be unreachable (Q3)
 
@@ -174,6 +176,24 @@ this firmware. So driving audio-board volume from A is both spec-aligned and ach
 Still to decide: what MainStage's main volume actually is (concert master vs. output channel strip)
 and how to reach it.
 
+### Q7. Which BID is the Zoom button? (blocks the display-mode toggle)
+
+The spec has **no button called Zoom** — `hardware-io.md`'s BID table names `0x0E` Apply, `0x0F` Cancel,
+`0x10` Home, and `SLButtonID` mirrors it. Jeroen identifies Zoom physically as **the button below
+Cancel**, which by that ordering is the one the spec calls **Home (`0x10`)**; the panel silkscreen and
+the spec's naming evidently differ.
+
+Treat `0x10` as the working assumption, but **confirm it rather than assume**: two BIDs are also
+unaccounted for in the table — `0x08` (almost certainly the reserved APP button, appearing in the
+white-LED table only as a question-marked `0x04 ?`) and `0x0D` (unexplained) — so an undocumented
+button is not impossible.
+
+**Fold into the Q2 spike:** log *every* BID seen, including `0x08` and `0x0D`, and press the physical
+Zoom button. Whatever BID arrives is the answer.
+
+**Knock-on:** `0x10` was pencilled in as "force full repaint" in the button suggestions. If Zoom is
+`0x10`, that moves — repaint is a good fit for a LONG press of the same button, or for Apply (`0x0E`).
+
 ### Q5. Is the byte budget enough for a patch list? (blocks Phase 1)
 
 A list of ~8 visible rows is ~8 Write Texts. At one message per flush and `FLUSH_SOON_MS = 100` that is
@@ -212,7 +232,27 @@ one-commit-per-phase convention.
 Throwaway probes, not shipped code. Outcome is a written answer in this document for each question.
 **Do not start Phase 1 until Q1 and Q2 are answered**, since a "no" on either reshapes everything.
 
-### Phase 1 — Patch list on screen (read-only)
+### Phase 1 — Patch list on screen (read-only), plus display modes
+
+Two modes, toggled by the Zoom button — physically the button below Cancel, i.e. BID `0x10`, which the
+spec calls Home (confirm in the spike, see Q7):
+
+- **Default — list.** Patch list of the current set, active patch highlighted.
+- **Zoomed — single patch.** Only the current patch name, large font, for reading at a distance.
+  `SIZE_BIG` is 33 px (`display-messages.md`); on a 320×240 screen that allows a genuinely large,
+  centred readout, optionally with the set name small above it.
+
+Switching modes must erase what the other mode drew. Clear Screen is banned (see the drawing rules),
+so **use Draw Rectangle** (`ItemType 0x04`, function `0x02`:
+`... 04 02 XMSB XLSB YMSB YLSB WMSB WLSB HMSB HLSB R G B F7`) to paint over the regions being vacated.
+That is the erase primitive this project has not needed until now, and it is also what the pop-up's
+restore should use.
+
+**Caution:** Clear Screen turned out to be slow enough to race with following draws. A rectangle fill is
+smaller and should be safer, but that is an assumption — verify a large rect fill does not race the
+same way before relying on it, and keep erase rects as small as the layout allows.
+
+
 
 - Keep the whole patch list from `controller_select_patch` (it already provides `patchlist` with
   `.IsPatch`, `.PatchIndex`, `.SetIndex`, `.Label`).
