@@ -71,6 +71,13 @@ MIDI never works" using a sniffer that watched CoreMIDI *sources* while `outport
 **Prefer one decisive experiment to a sweep.** Sweeping six `outport` values with no working
 observation path produced six meaningless results.
 
+**Dispatch exploration to a subagent.** Open-ended searching — "where is X handled", "how do the 98
+bundled MainStage scripts use Y", auditing several files — should go to an `Explore`/Haiku/Sonnet
+agent, which returns a summary. Searching inline dumps every raw result into the session context
+permanently; in one long session `Read` results alone reached ~130% of the context window, mostly
+re-reads. Not worth the spawn for a single targeted grep or a known `file:line`. Verify what an agent
+reports rather than relaying it unchecked.
+
 **Keep commit messages short.** Subject line plus a few lines at most. Extended reasoning, evidence
 tables and rejected hypotheses belong in `docs/`, which the commit can reference.
 
