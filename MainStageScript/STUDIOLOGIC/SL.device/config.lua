@@ -224,35 +224,106 @@ function msg_write_text(text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, b
 end
 
 -- MARK: - Screen
+--
+-- ==========================================================================
+-- PAINT BISECT (2026-08-19) - change PAINT_STEP, reinstall, retest.
+--
+-- The problem: the original paint (Clear Screen + three Write Texts +
+-- negative delay markers, all concatenated into one flat `midi` array)
+-- produced a BLACK SCREEN on hardware. The Clear Screen plainly applied;
+-- nothing after it did. Reducing to a single Write Text made text appear.
+-- So exactly one of "multiple messages in one array", "Clear Screen", or
+-- "negative delay markers" breaks the rest of the array - and guessing
+-- which has already wasted enough time on this project, so it gets
+-- bisected one variable at a time instead.
+--
+--   PAINT_STEP = 1  one Write Text                    CONFIRMED WORKING
+--   PAINT_STEP = 2  two Write Texts, no clear/delays   <- current test
+--   PAINT_STEP = 3  Clear Screen + two Write Texts, still no delays
+--   PAINT_STEP = 4  full paint: clear + three texts + delay markers
+--
+-- Read the result as:
+--   step 2 fails  -> concatenating multiple F0..F7 in one flat array is the
+--                    culprit (surprising: the Launchkey MK3 reference does
+--                    exactly that) => send one message per callback instead,
+--                    spreading a repaint across successive timer ticks.
+--   step 2 works,
+--   step 3 fails  -> Clear Screen specifically is the problem; likely it
+--                    needs to land on its own before anything else, so
+--                    queue it and let the following tick draw the text.
+--   step 3 works,
+--   step 4 fails  -> the negative delay markers are the culprit (current
+--                    prime suspect). Drop them entirely - they were only
+--                    ever a precaution copied from VAX77.
+--   step 4 works  -> nothing is wrong now; whatever it was is fixed by the
+--                    ordering above. Set PAINT_STEP = 4 permanently.
+--
+-- Whatever the outcome, record it in docs/mainstage-integration.md's
+-- "Open: multi-message display painting" section and delete the steps that
+-- are no longer needed.
+-- ==========================================================================
+PAINT_STEP = 2
 
--- Repaints the whole screen. The SL88 keeps no display state across Standby,
--- so this is also what a Restart triggers.
--- CURRENT STATE (2026-08-19): a single Write Text, sent on its own, renders
--- correctly on the SL88. **Confirmed working on hardware.**
+-- RESULT (2026-08-19): the constraint is a BYTE-LENGTH CEILING on the array
+-- MainStage will actually emit - NOT a message-count limit. Measured on
+-- hardware with the same two Write Texts, varying only text length:
 --
--- An earlier version of this function queued Clear Screen + three Write Texts
--- + negative delay markers into one flat array, and the result was a black
--- screen: the Clear Screen clearly landed, nothing after it did. Bisecting to
--- this single message made text appear, so the fault is in one of the two
--- things that were removed:
---   (a) the negative delay markers (-20/-10) - prime suspect. In a flat array
---       they may be corrupting everything that follows them, which would
---       explain "first message applied, rest dropped" exactly. The Launchkey
---       MK3 reference uses -2 between messages, so the mechanism itself is
---       real; the encoding of our values may not be.
---   (b) multiple complete F0..F7 messages concatenated in one flat array. The
---       Launchkey reference does exactly this and works, so this is the less
---       likely of the two - but it has not been isolated yet.
+--     53 bytes (one full-length Write Text)      renders
+--     54 bytes (two Write Texts, 2 chars each)   renders
+--     78 bytes (two Write Texts, 14 chars each)  renders   <- current setting
+--     96 bytes (two Write Texts, full text)      NOTHING renders at all
 --
--- NEXT STEP: re-add one element at a time (first a second Write Text with no
--- delays; then Clear Screen; then delays) to find which one breaks it, rather
--- than restoring the whole original paint at once.
+-- So the ceiling is somewhere in (78, 96], and going over it silently discards
+-- the WHOLE array rather than truncating it. Message count is not the issue:
+-- controller_timer_trigger has been returning keepalive + Identification Query
+-- concatenated all session long and both arrive - they are just ~10 bytes each.
+--
+-- PAINT_TRUNCATE clamps every drawn string, which is the crude way to stay
+-- under the ceiling. Set to nil to disable.
+--
+-- TO FINISH THIS: narrow the ceiling (try ~84, then ~90), then rework
+-- paint_screen to budget properly instead of hard-truncating. Design
+-- constraint to respect: every flush must ALSO carry the Identification Query
+-- (~10 bytes), because its reply is the only thing that re-arms the one-shot
+-- timer - a flush of pure display messages draws no reply and the session
+-- clock stalls. Usable display budget per flush is therefore ~(ceiling - 10).
+-- If a full repaint will not fit, emit one message per flush and shorten
+-- KEEPALIVE_MS while the queue is non-empty so it converges in ~1s.
+PAINT_TRUNCATE = 14
+
+function ptext(s)
+	if PAINT_TRUNCATE == nil or s == nil then return s end
+	return string.sub(s, 1, PAINT_TRUNCATE)
+end
+
+-- Repaints the screen. The SL88 keeps no display state across Standby, so this
+-- is also what a Restart triggers.
 function paint_screen()
-	queue_message(msg_write_text(currentPatch, 8, 80, 304,
+	if PAINT_STEP >= 3 then
+		queue_message(msg_clear_screen(0, 0, 0))
+		if PAINT_STEP >= 4 then queue_delay(20) end
+	end
+
+	if PAINT_STEP >= 4 then
+		queue_message(msg_write_text(ptext(currentConcert), 8, 4, 304,
+			ALIGN_LEFT, SIZE_SMALL, 150, 150, 150, 0, 0, 0))
+	end
+
+	if PAINT_STEP >= 2 then
+		queue_message(msg_write_text(ptext(currentSet), 8, 26, 304,
+			ALIGN_LEFT, SIZE_SMALL, 110, 170, 230, 0, 0, 0))
+		if PAINT_STEP >= 4 then queue_delay(10) end
+	end
+
+	-- The one message proven to render on its own; always sent, and sent last
+	-- so that if only the first message of an array survives, the failure is
+	-- unambiguous (nothing at all appears) rather than partially masked.
+	queue_message(msg_write_text(ptext(currentPatch), 8, 80, 304,
 		ALIGN_CENTER, SIZE_BIG, 255, 255, 255, 0, 0, 0))
 
 	screenDirty = false
-	print('[sllink] painted: "' .. currentPatch .. '"')
+	print('[sllink] painted (PAINT_STEP=' .. PAINT_STEP .. '): set="' ..
+	      currentSet .. '" patch="' .. currentPatch .. '"')
 end
 
 -- MARK: - Session

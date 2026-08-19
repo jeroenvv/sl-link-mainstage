@@ -682,21 +682,45 @@ script really is gone, the keyboard's own ~5s timeout handles it.
 `0x00` (DeviceID taken). With no `os`/`io` in the sandbox there's no entropy source, so the script just
 walks its instance byte forward on each rejection until one is accepted.
 
-### Open: multi-message display painting
+### Display painting: there is a BYTE-LENGTH CEILING on what MainStage will emit
 
-A **single** Write Text renders correctly. The original paint — Clear Screen + three Write Texts +
-negative delay markers, all concatenated into one flat `midi` array — produced a **black screen**: the
-Clear Screen applied, nothing after it did. Bisecting down to one Write Text fixed it, so the fault is
-in one of the two things removed:
+The original paint (Clear Screen + three Write Texts + delay markers, one flat array) produced a
+**black screen**. Bisecting found the real rule, and it is not what it looked like at first.
 
-- **the negative delay markers** (`-20`/`-10`) — prime suspect, since "first message applied, rest
-  dropped" is exactly what a corrupted array would look like. The Launchkey MK3 reference does use
-  `-2` between messages, so the mechanism is real; our values or placement may not be.
-- **multiple `F0..F7` messages concatenated in one flat array** — less likely, since the Launchkey
-  reference does exactly this and works, but not yet isolated.
+**It is a length limit, not a message-count limit.** Measured on hardware, same two Write Texts each
+time, varying only the text length:
 
-**Next step:** re-add one element at a time (a second Write Text with no delays → then Clear Screen →
-then delays), rather than restoring the whole paint at once.
+| Payload | Bytes | Renders? |
+|:---|---:|:---|
+| one Write Text (full patch name) | 53 | ✅ |
+| two Write Texts, truncated to 2 chars | 54 | ✅ |
+| two Write Texts, truncated to 14 chars | 78 | ✅ |
+| two Write Texts, full text | 96 | ❌ nothing at all |
+
+So the ceiling sits **between 78 and 96 bytes**, and exceeding it silently discards the *entire*
+array — not just the overflow. Message count is fine: `controller_timer_trigger` has been returning
+keepalive + Identification Query concatenated for the whole session (17-27 sustained ticks) and both
+arrive; they are simply small (~10 bytes each).
+
+That also retroactively explains the very first "black screen": at 105 bytes the original paint was
+over the limit, and the Clear Screen appearing to "work" was just the screen having nothing drawn on
+it, not a partial application.
+
+**Current committed state:** `PAINT_STEP = 2`, `PAINT_TRUNCATE = 14` — set name + patch name, each
+clamped to 14 characters, 78 bytes total. Confirmed rendering on hardware.
+
+**Next steps, in order:**
+
+1. Narrow the ceiling further (try ~84, then ~90) to get the exact budget. Both knobs are one-liners
+   at the top of the Screen section in `config.lua`.
+2. Redesign `paint_screen` to respect that budget rather than truncating so aggressively. The
+   constraint to design around: **every flush must also carry the Identification Query** (~10 bytes),
+   because that reply is the only thing that re-arms the one-shot timer — a flush of pure display
+   messages gets no reply and the session clock stalls until some other MIDI arrives. So the usable
+   display budget per flush is roughly (ceiling − 10).
+3. If a full repaint cannot fit in one flush, spread it over successive ticks (queue several messages,
+   emit one per flush) and shorten `KEEPALIVE_MS` while the queue is non-empty so a repaint converges
+   in about a second instead of one message per 3 s.
 
 ## SOLVED (2026-08-19): outbound MIDI works — `outport` needs the SHORT port name
 
