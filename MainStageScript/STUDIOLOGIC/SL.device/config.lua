@@ -1,61 +1,32 @@
 -- SL MainStage - MainStage MIDI Device Script for the Studiologic SL88 MK2
 --
--- Speaks the SL Link protocol **directly from Lua**, with no helper
--- application involved: the script identifies itself to the keyboard, holds
--- the session alive, and draws the current MainStage patch on the SL88's
--- screen. See docs/mainstage-integration.md for how this was established and
--- SL-Link-Mainstage/SLLink/ for the Swift implementation every byte here is
+-- Speaks SL Link directly from Lua, with no helper application: identifies to
+-- the keyboard, holds the session alive, and draws the current MainStage patch
+-- on the SL88's screen.
+--
+-- Background is in docs/, not here:
+--   docs/mainstage-device-scripts.md  writing MainStage Lua device scripts
+--   docs/implementing-sl-link.md      the SL Link protocol, and where hardware
+--                                     disagrees with the published spec
+--   docs/mainstage-integration.md     status, and the historical record
+-- SL-Link-Mainstage/SLLink/ is the Swift implementation every byte here is
 -- checked against.
 --
 -- =========================================================================
--- THE ONE THING THAT MATTERS MOST (2026-08-19)
+-- FOUR RULES YOU MUST NOT BREAK. Each was found the hard way; each fails
+-- SILENTLY, which is why they are repeated here rather than left in docs.
 --
---     outport must be the SHORT kMIDIPropertyName:  'LINK'
---     NOT the CoreMIDI display name:                'SL LINK'
---
--- Getting this wrong makes MainStage silently drop every outbound message,
--- with no error anywhere. It cost this project a dozen test rounds and a
--- premature "this is impossible" conclusion. MainStage tells you the right
--- name itself: the `portName` argument handed to controller_midi_in is
--- 'LINK'. Confirmed on hardware - with outport='LINK' the SL88 answers an
--- Identification Request with IDENTIFICATION APPROVED:
---   F0 00 20 1A 16 03 6D 7F 01 01 01 02 01 F7   (firmware 1.1.2, model SL88)
+--  1. outport is the SHORT kMIDIPropertyName ('LINK'), never the display
+--     name ('SL LINK'). Wrong name = every message discarded, no error.
+--     MainStage reports the right one as controller_midi_in's portName.
+--  2. One message per flush, <= FLUSH_BUDGET bytes. Over MainStage's ceiling
+--     (~78-87) the ENTIRE returned array is dropped, not just the overflow.
+--  3. Never send Clear Screen. It races with the draws that follow it and
+--     loses a line - a different one each run. Write Text overwrites the
+--     pixels it covers, so redrawing is self-cleaning.
+--  4. Never truncate strings. Max Width truncates visually in pixels and
+--     appends '...' itself.
 -- =========================================================================
---
--- MATCHING: generic, on the SL88's own manufacturer/model ('STUDIOLOGIC'/
--- 'SL'), not usb_vendor_id/usb_product_id - see controller_info() at the
--- bottom and docs/mainstage-integration.md's "MIDI outbound, round 2".
---
--- MULTIPLE INSTANCES: MainStage loads this script once per matched USB-MIDI
--- interface (two instances observed on this SL88). They cannot share a
--- DeviceID - the second one gets IDENTIFICATION REJECTED with reason 0x00
--- ("DeviceID taken"). Rather than trying to invent per-instance entropy in a
--- sandboxed Lua with no `os`/`io`, this script simply walks its instance byte
--- forward on every rejection until the keyboard accepts one. Self-healing and
--- deterministic - see handle_identification_rejected().
---
--- SENDING IS RETURN-VALUE ONLY: a device script can only emit MIDI by
--- returning it from a callback. There is no "send now" function. Everything
--- outbound is therefore queued into `pendingMessages` and flushed by whichever
--- callback fires next (see queue_message/flush_pending). Consequence: the
--- keepalive cadence is bounded by how often controller_timer_trigger fires.
---
--- DRAWING RULES, all found the hard way on hardware (see
--- docs/mainstage-integration.md for the full evidence):
---   * MainStage silently discards a returned array over ~78-87 bytes - the
---     WHOLE array, not the overflow. Hence FLUSH_BUDGET and one message per
---     flush. The SL Link spec has no such limit; this is a MainStage cap.
---   * Do NOT send Clear Screen. With a clear at the head of a repaint exactly
---     one text line went missing every time, and which line varied run to run
---     - a race against a slow full-screen fill. Write Text overwrites the
---     pixels it covers (spec, display-messages.md), so redrawing is
---     self-cleaning and the clear is unnecessary.
---   * Do not truncate strings. Max Width truncates visually in pixels and
---     appends '...' by itself.
---
--- SL Link message shape (docs/, and SLLinkEncoder.swift):
---   F0 00 20 1A 16 <id1> <id2> <itemType> <function> [payload...] F7
---   00 20 1A = Fatar/Studiologic manufacturer ID, 16 = SL Link protocol ID.
 
 -- MARK: - Protocol constants (mirror SLLinkProtocol.swift exactly)
 

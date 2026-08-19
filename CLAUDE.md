@@ -162,62 +162,31 @@ can't be avoided.
 All messages: `F0 00 20 1A 16 <id1> <id2> <itemType> [function] [payload...] F7`
 (`00 20 1A` = Fatar/Studiologic manufacturer ID, `16` = SL Link protocol ID).
 
-Implemented: Identification (request/approved/rejected/query), System (device notification,
-login confirmation/recall, logout request/confirmation, standby, restart), Display (clear/rect/
-text/bitmap-from-library), Buttons, Encoders, White/RGB LEDs. **Out of scope** (see the project
-plan's Scope boundary): device icon upload, Master Volume, Hardware/Pedal Settings queries - their
-`ItemType`/`Function` constants are kept in `SLLinkProtocol.swift` as accurate spec references, but
-nothing encodes or decodes them.
+**The protocol itself is documented in [`docs/implementing-sl-link.md`](docs/implementing-sl-link.md)**
+— encoding rules, session lifecycle, display, hardware I/O, and the four places real hardware
+disagrees with the published spec. Read that rather than re-deriving from the spec.
 
-Two spec discrepancies from the reference JUCE implementations, both switchable from the dev console
-without a rebuild:
+Project-specific notes that live only here:
 
-1. **ID byte semantics** — the spec's prose describes one 14-bit random ID; both reference
-   implementations instead use `(HOST_ID constant, random instance byte)`. `SLLinkSession` follows
-   the reference implementations (`SLLinkHeader.defaultHostID = 0x03`) and persists the pair in
-   `UserDefaults` (fixing the old code's "new random ID every connect" bug, which discarded Login
-   Recall). Both bytes are editable from the dev console.
-2. **Where the app name goes** — the spec puts it only in the Identification Request; both reference
-   implementations also append it to every keepalive. `SLLinkSession.useNameInKeepalive` defaults to
-   the spec-only path; flip it from the dev console (`SLLinkController.useNameInKeepalive`) if the
-   app never appears in the SL88's APP list.
+- **Implemented:** Identification, System (device notification, login confirmation/recall, logout,
+  standby, restart), Display (clear/rect/text/bitmap), Buttons, Encoders, White/RGB LEDs.
+  **Out of scope:** device icon upload, Master Volume, Hardware/Pedal Settings queries — their
+  constants are kept in `SLLinkProtocol.swift` as spec references, but nothing encodes or decodes them.
+- **Two discrepancies are switchable from the dev console** without a rebuild, because they were
+  inferred from the reference JUCE implementations rather than confirmed on hardware:
+  `SLLinkHeader.defaultHostID = 0x03` with the DeviceID pair persisted in `UserDefaults` (the spec
+  instead describes one 14-bit random ID), and `SLLinkSession.useNameInKeepalive` (the reference
+  implementations append the app name to every keepalive; the spec puts it only in the Identification
+  Request). Flip the latter if the app never appears in the SL88's APP list.
+- The **hardware-confirmed deviations** — swapped firmware/model payloads, A encoder/button reaching
+  the host, LONG_PRESSION delivered, trailing-byte optionality — are catalogued in
+  `docs/implementing-sl-link.md` §7. Do not reintroduce logic that special-cases or drops A traffic,
+  or that drops LONG_PRESSION, based on the spec's claims without re-confirming against hardware.
 
-**Hardware-confirmed deviations** — the two above were inferred from the reference implementations;
-these two were found by capturing live SysEx from a physically attached SL88 MK2 (firmware 1.1.2,
-model byte `0x01` = SL88) and are not optional/switchable, because the spec's documented forms simply
-never arrive:
-
-3. **Identification Approved carries the firmware/model payload, not Login Confirmation.** The spec
-   documents Identification Approved (`7F 01`) as a bare 10 bytes, and puts a 4-byte `MAJ MIN REV SL`
-   payload on Login Confirmation/Recall (`00 01` / `00 06`) instead. Real hardware does the opposite:
-   Approved arrives as 14 bytes with `MAJ MIN REV SL` appended (captured: `F0 00 20 1A 16 03 2A 7F 01
-   01 01 02 01 F7`, decoding to firmware 1.1.2 / SL88), and Login Confirmation arrives as a bare 10
-   bytes with no payload at all (captured: `F0 00 20 1A 16 03 2A 00 01 F7`). `SLLinkDecoder` accepts
-   both the spec-derived and hardware-observed length for all three functions (`identificationApproved`,
-   `loginConfirmed`, `loginRecall` all carry `firmware`/`model` as optionals); `SLLinkSession` latches
-   the values from whichever message actually carries them and carries them forward through later
-   state transitions that don't. Login Recall's payload has never been observed on hardware either;
-   its optionality is inferred by symmetry with Login Confirmation, not separately captured.
-4. **Trailing-byte optionality is the general pattern, not a one-off.** The spec itself documents some
-   trailing bytes as optional elsewhere (Master Volume's `MUTE` byte, Hardware Settings' `HST` byte -
-   both out of scope here, see above). Prefer accepting the known variant lengths explicitly over a
-   strict `bytes.count == N` guard when extending the decoder, per point 3.
-5. **The A Encoder and A Encoder Button are not actually reserved from the Host.** `hardware-io.md`
-   states the Host never receives A Encoder (`EID 0x05`) / A Encoder Button (`BID 0x0B`) messages -
-   supposedly reserved for the USB audio board's volume/mute - and says nothing about whether
-   LONG_PRESSION is delivered. A live capture from a physically attached SL88 MK2 (firmware 1.1.2)
-   contradicts both: A Encoder/A Encoder Button messages arrive as ordinary SL Link messages (no
-   accompanying Master Volume or channel-voice CC/pitch-bend traffic), and LONG_PRESSION (`EVT 0x02`)
-   is delivered for ordinary buttons (captured on the Zone 1 Encoder Button, `BID 0x00`).
-   `SLLinkDemoScreen` treats A identically to B rather than special-casing or dropping it - see its
-   type-level doc comment. Don't reintroduce logic that special-cases or silently discards A traffic,
-   or that drops LONG_PRESSION, based on the spec's claims without re-confirming against hardware.
-
-Session lifecycle (`SLLinkSession`): identify -> approved -> 3s keepalive (5s hard timeout on the
-keyboard) -> user selects the app -> login confirmation/recall -> active -> standby/restart bracket
-the user leaving/returning to SL-Link mode (screen must be fully repainted on restart, since the
-keyboard retains no display state across standby) -> logout is a request/confirm pair, either side
-can initiate.
+Session lifecycle: identify -> approved -> 3s keepalive (5s hard timeout on the keyboard) -> user
+selects the app -> login confirmation/recall -> active -> standby/restart bracket the user leaving and
+returning to SL-Link mode (full repaint required on restart) -> logout is a request/confirm pair,
+either side can initiate.
 
 ## Hardware verification status
 
