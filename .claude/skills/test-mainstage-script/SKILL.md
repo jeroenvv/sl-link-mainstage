@@ -9,6 +9,26 @@ Every hardware round-trip costs a MainStage relaunch (slow - the concert loads r
 instruments) plus a request for Jeroen's attention. Treat round-trips as the scarce resource: verify
 offline first with the `lua-harness` skill, and make each hardware run answer a single question.
 
+## Model routing — run this loop on the session model, not in a subagent
+
+**Do not dispatch this skill wholesale to a subagent.** Two reasons:
+
+1. **It has to talk to Jeroen mid-loop.** Waiting for his "MainStage has loaded" confirmation is the
+   central rule below, and a subagent cannot ask him. Substituting a timer reintroduces exactly the
+   mistake he corrected — see the `mainstage-hardware-test-pacing` memory.
+2. **The failures here are failures of interpretation, not execution.** Running install → restart →
+   read-log is trivial. Deciding *"is this a real negative, or did I just fail to observe it?"* is
+   what cost about ten round-trips. That is judgement work and belongs on the session model.
+
+**The efficient split**, per the standing routing policy:
+
+- **Session model (Opus)** — forming the hypothesis, deciding what the single question is, asking
+  Jeroen for readiness, and interpreting the logs.
+- **Haiku agent** — the mechanical steps: `install-mainstage-script.sh`, `restart-mainstage.sh`,
+  compiling and starting the sniffer, `defaults write` for `LUA_DEBUG`, and cleanup.
+- **Sonnet agent** — any edit to `config.lua` the test requires, including one-line diagnostic
+  `print()` additions. Do not hand-edit those on the session model.
+
 ## Before deploying
 
 1. `luac -p "MainStageScript/STUDIOLOGIC/SL.device/config.lua"` — never deploy a file that will not

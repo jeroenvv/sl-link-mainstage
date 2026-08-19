@@ -9,6 +9,11 @@ A hardware test costs a MainStage relaunch and Jeroen's attention. Most bugs do 
 script is plain Lua, so drive it directly. This caught the timer re-arm ordering bug and a runaway
 repaint loop before either reached the keyboard.
 
+**Model:** dispatch this to a **Sonnet** agent — writing and running a harness is a coding task, and
+per the standing routing policy every code edit goes to Sonnet rather than being hand-done on the
+session model. Drop to **Haiku** when only *re-running* an unchanged harness. Interpreting a surprising
+failure is diagnosis and belongs back on the session model.
+
 Requires `lua` (`brew install lua`). `luac -p` is the syntax gate — run it first, always.
 
 ## The stub
