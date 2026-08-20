@@ -616,7 +616,7 @@ BIG_MAX_CHARS = 27
 -- constant's comment above for why its geometry is an estimate). SIZE_MEDIUM
 -- is smaller than SIZE_BIG, so more characters fit in the same width; also
 -- unmeasured, retune the same way as BIG_MAX_CHARS.
-MEDIUM_MAX_CHARS = 26
+MEDIUM_MAX_CHARS = 36
 
 -- pad_centered() (see its definition below) pads truncated names out to
 -- exactly these character counts before they are drawn. Assert the budget
