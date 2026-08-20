@@ -66,6 +66,25 @@ Recorded here because each looked like a dead end at the time:
 
 ## Open issues
 
+- **NEXT THING TO FIX: the periodic self-heal repaint is not firing.** Observed 2026-08-20 on a run
+  where the user lost the display twice. In both cases the log shows the session perfectly healthy —
+  `state=active`, the keyboard answering queries with `7F 03 01` (identified), no rejection, no
+  re-identify, no `STANDBY`/`RESTART`/`LOGOUT` — while **70+ consecutive idle ticks pass with no
+  `paint queued` line at all**. The first repaint appears only *after* the user re-selects the app
+  and a `LOGIN` arrives.
+
+  So the failure the user experiences as "the connection drops" is really: the SL88 takes our app off
+  its display with **no protocol signal**, and `REPAINT_EVERY_IDLE_TICKS` — the mechanism that exists
+  precisely to recover from that — never runs, so the screen stays blank until the app is re-picked
+  by hand. Find out why the `due` branch in `handle_sl_frame`'s `ID_QUERY` handler is not being
+  reached (suspect the `idleTicks`/`lastPaintTick` bookkeeping, or the `not has_pending()` guard
+  never being true while queries keep the queue busy).
+
+  Note it is **not yet proven** that repainting restores a de-selected app — the keyboard may ignore
+  draws from an app that is not on screen. Establish that first, or the fix may be treating a symptom
+  the hardware will not let us treat.
+
+
 - **The session drops after some time and must be re-picked from the SL88's APP list.** DIAGNOSED
   2026-08-20 — it is *not* a keepalive or timeout problem. MainStage tears the script down and
   re-initialises it mid-session (4 finalize/initialize cycles in one run, while `state=active`). Each

@@ -1,0 +1,2163 @@
+[sllink] controller_initialize (app="MainStage")
+[sllink] -> Identification Request as (03 6D) on outport=LINK
+[sllink][spike] FLUSH #1 regionId=none bytes=20 queueDepthAfter=0
+[sllink] controller_finalize (no logout sent - see note)
+[sllink] controller_initialize (app="MainStage")
+[sllink] -> Identification Request as (03 6D) on outport=LINK
+[sllink][spike] FLUSH #1 regionId=none bytes=20 queueDepthAfter=0
+[sllink] controller_select_patch: patchlist not yet available - keeping last displayed patch ""
+[sllink] timer tick #1 (idle 1) state=identifying
+[sllink][spike] FLUSH #2 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #2 (idle 2) state=active
+[sllink][spike] FLUSH #3 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #3 (idle 3) state=active
+[sllink][spike] FLUSH #4 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #4 (idle 4) state=active
+[sllink][spike] FLUSH #5 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink][spike] controller_select_patch: one-time patchlist dump (n=76 currentSetIndex=12 currentPatchIndex=2)
+[sllink][spike]   patchlist[1] raw = table: 0xa8898a700
+[sllink][spike]     IsPatch (boolean) = false
+[sllink][spike]     PatchIndex (number) = 0
+[sllink][spike]     SetIndex (number) = 0
+[sllink][spike]     Label (string) = 1 Prologue
+[sllink][spike]   patchlist[2] raw = table: 0xa8898a740
+[sllink][spike]     IsPatch (boolean) = true
+[sllink][spike]     PatchIndex (number) = 0
+[sllink][spike]     SetIndex (number) = 0
+[sllink][spike]     Label (string) = m.1 C07 Strings
+[sllink][spike]   patchlist[3] raw = table: 0xa8898ac80
+[sllink][spike]     IsPatch (boolean) = false
+[sllink][spike]     PatchIndex (number) = 0
+[sllink][spike]     SetIndex (number) = 1
+[sllink][spike]     Label (string) = 2. Jacob & Sons / Joseph's Coat
+[sllink][spike]   patchlist[4] raw = table: 0xa8898acc0
+[sllink][spike]     IsPatch (boolean) = true
+[sllink][spike]     PatchIndex (number) = 0
+[sllink][spike]     SetIndex (number) = 1
+[sllink][spike]     Label (string) = m.1 A90 Orchestra hit
+[sllink][spike]   patchlist[5] raw = table: 0xa8898a600
+[sllink][spike]     IsPatch (boolean) = true
+[sllink][spike]     PatchIndex (number) = 1
+[sllink][spike]     SetIndex (number) = 1
+[sllink][spike]     Label (string) = m.26 C07 Strings
+[sllink][spike] patch_field(IsPatch): using key "IsPatch"
+[sllink][spike] patch_field(SetIndex): using key "SetIndex"
+[sllink][spike] patch_field(PatchIndex): using key "PatchIndex"
+[sllink][spike] patch_label: using key "Label"
+[sllink] controller_select_patch: "m.53 C06 Strings" (3 rows in set) concert="Joseph key2" set="10. A pharao's story"
+[sllink] update queued (6 msgs) mode=zoom "m.53 C06 Strings"
+[sllink][spike] FLUSH #6 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #5 (idle 4) state=active
+[sllink][spike] FLUSH #7 regionId=zset bytes=45 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #6 (idle 4) state=active
+[sllink][spike] FLUSH #8 regionId=zname1 bytes=41 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #7 (idle 4) state=active
+[sllink][spike] FLUSH #9 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #8 (idle 4) state=active
+[sllink][spike] FLUSH #10 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #9 (idle 4) state=active
+[sllink][spike] FLUSH #11 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #10 (idle 5) state=active
+[sllink][spike] FLUSH #12 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #11 (idle 6) state=active
+[sllink][spike] FLUSH #13 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+2026-08-20 15:44:57.486 MainStage[94193:6287761] Audio engine overloaded, resetting
+[sllink] timer tick #12 (idle 7) state=active
+[sllink][spike] FLUSH #14 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #13 (idle 8) state=active
+[sllink][spike] FLUSH #15 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #14 (idle 9) state=active
+[sllink][spike] FLUSH #16 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #15 (idle 10) state=active
+[sllink][spike] FLUSH #17 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #16 (idle 11) state=active
+[sllink][spike] FLUSH #18 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #17 (idle 12) state=active
+[sllink][spike] FLUSH #19 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #18 (idle 13) state=active
+[sllink][spike] FLUSH #20 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #19 (idle 14) state=active
+[sllink][spike] FLUSH #21 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "m.53 C06 Strings"
+[sllink][spike] FLUSH #22 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #20 (idle 14) state=active
+[sllink][spike] FLUSH #23 regionId=zset bytes=45 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #21 (idle 14) state=active
+[sllink][spike] FLUSH #24 regionId=zname1 bytes=41 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #22 (idle 14) state=active
+[sllink][spike] FLUSH #25 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #23 (idle 14) state=active
+[sllink][spike] FLUSH #26 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #24 (idle 14) state=active
+[sllink][spike] FLUSH #27 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #25 (idle 15) state=active
+[sllink][spike] FLUSH #28 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #26 (idle 16) state=active
+[sllink][spike] FLUSH #29 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A25 Metallic guitar" (20 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (5 msgs) mode=zoom "A25 Metallic guitar"
+[sllink][spike] FLUSH #30 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #27 (idle 16) state=active
+[sllink][spike] FLUSH #31 regionId=zname1 bytes=37 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #28 (idle 16) state=active
+[sllink][spike] FLUSH #32 regionId=zname2 bytes=31 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #29 (idle 16) state=active
+[sllink][spike] FLUSH #33 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #30 (idle 16) state=active
+[sllink][spike] FLUSH #34 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #31 (idle 17) state=active
+[sllink][spike] FLUSH #35 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #32 (idle 18) state=active
+[sllink][spike] FLUSH #36 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "Sharp Keyboard" (20 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (4 msgs) mode=zoom "Sharp Keyboard"
+[sllink][spike] FLUSH #37 regionId=zname1 bytes=39 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #33 (idle 18) state=active
+[sllink][spike] FLUSH #38 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #34 (idle 18) state=active
+[sllink][spike] FLUSH #39 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #35 (idle 18) state=active
+[sllink][spike] FLUSH #40 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "C09 Hammond fast leslie" (20 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (4 msgs) mode=zoom "C09 Hammond fast leslie"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #36 (idle 18) state=active
+[sllink][spike] FLUSH #41 regionId=zname1 bytes=36 queueDepthAfter=3
+2026-08-20 15:45:37.379 MainStage[94193:6287761] Audio engine overloaded, resetting
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #37 (idle 18) state=active
+[sllink][spike] FLUSH #42 regionId=zname2 bytes=36 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #38 (idle 18) state=active
+[sllink][spike] FLUSH #43 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #39 (idle 18) state=active
+[sllink][spike] FLUSH #44 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+2026-08-20 15:45:37.903 MainStage[94193:6287761] Audio engine overloaded, resetting
+[sllink] controller_select_patch: "A69 Claps" (20 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (4 msgs) mode=zoom "A69 Claps"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #40 (idle 18) state=active
+[sllink][spike] FLUSH #45 regionId=zname1 bytes=34 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #41 (idle 18) state=active
+[sllink][spike] FLUSH #46 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #42 (idle 18) state=active
+[sllink][spike] FLUSH #47 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #43 (idle 18) state=active
+[sllink][spike] FLUSH #48 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "C09 Hammond fast leslie" (20 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (4 msgs) mode=zoom "C09 Hammond fast leslie"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #44 (idle 18) state=active
+[sllink][spike] FLUSH #49 regionId=zname1 bytes=36 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #45 (idle 18) state=active
+[sllink][spike] FLUSH #50 regionId=zname2 bytes=36 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #46 (idle 18) state=active
+[sllink][spike] FLUSH #51 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #47 (idle 18) state=active
+[sllink][spike] FLUSH #52 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #48 (idle 19) state=active
+[sllink][spike] FLUSH #53 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #49 (idle 20) state=active
+[sllink][spike] FLUSH #54 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #50 (idle 21) state=active
+[sllink][spike] FLUSH #55 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 00 04 F7
+[sllink] <- STANDBY
+[sllink][spike] <- CC on port=LINK ch=1 data=123,0
+[sllink][spike] <- CC on port=CTRL ch=1 data=121,0
+[sllink] timer tick #51 (idle 22) state=standby
+[sllink][spike] FLUSH #56 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 00 05 F7
+[sllink] <- RESTART - repainting (SL88 retains no screen state)
+[sllink] paint queued (6 msgs) mode=zoom "C09 Hammond fast leslie"
+[sllink][spike] FLUSH #57 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #52 (idle 22) state=active
+[sllink][spike] FLUSH #58 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #53 (idle 22) state=active
+[sllink][spike] FLUSH #59 regionId=zname1 bytes=36 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #54 (idle 22) state=active
+[sllink][spike] FLUSH #60 regionId=zname2 bytes=36 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #55 (idle 22) state=active
+[sllink][spike] FLUSH #61 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #56 (idle 22) state=active
+[sllink][spike] FLUSH #62 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #57 (idle 23) state=active
+[sllink][spike] FLUSH #63 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #58 (idle 24) state=active
+[sllink][spike] FLUSH #64 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #59 (idle 25) state=active
+[sllink][spike] FLUSH #65 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #60 (idle 26) state=active
+[sllink][spike] FLUSH #66 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #61 (idle 27) state=active
+[sllink][spike] FLUSH #67 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #62 (idle 28) state=active
+[sllink][spike] FLUSH #68 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #63 (idle 29) state=active
+[sllink][spike] FLUSH #69 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #64 (idle 30) state=active
+[sllink][spike] FLUSH #70 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #65 (idle 31) state=active
+[sllink][spike] FLUSH #71 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A90 Orchestra hit" (20 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (4 msgs) mode=zoom "A90 Orchestra hit"
+[sllink][spike] FLUSH #72 regionId=zname1 bytes=38 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #66 (idle 31) state=active
+[sllink][spike] FLUSH #73 regionId=zname2 bytes=28 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #67 (idle 31) state=active
+[sllink][spike] FLUSH #74 regionId=zpos bytes=29 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #68 (idle 31) state=active
+[sllink][spike] FLUSH #75 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #69 (idle 32) state=active
+[sllink][spike] FLUSH #76 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #70 (idle 33) state=active
+[sllink][spike] FLUSH #77 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #71 (idle 34) state=active
+[sllink][spike] FLUSH #78 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "-- Sounds --" (20 rows in set) concert="Joseph key2" set="Joseph key2"
+[sllink] update queued (5 msgs) mode=zoom "-- Sounds --"
+[sllink][spike] FLUSH #79 regionId=zset bytes=36 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #72 (idle 34) state=active
+[sllink][spike] FLUSH #80 regionId=zname1 bytes=37 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #73 (idle 34) state=active
+[sllink][spike] FLUSH #81 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #74 (idle 34) state=active
+[sllink][spike] FLUSH #82 regionId=zpos bytes=29 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #75 (idle 34) state=active
+[sllink][spike] FLUSH #83 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "Untitled Patch" (21 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (4 msgs) mode=zoom "Untitled Patch"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #76 (idle 34) state=active
+[sllink][spike] FLUSH #84 regionId=zset bytes=37 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #77 (idle 34) state=active
+[sllink][spike] FLUSH #85 regionId=zname1 bytes=39 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #78 (idle 34) state=active
+[sllink][spike] FLUSH #86 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #79 (idle 34) state=active
+[sllink][spike] FLUSH #87 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #80 (idle 35) state=active
+[sllink][spike] FLUSH #88 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #81 (idle 36) state=active
+[sllink][spike] FLUSH #89 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #82 (idle 37) state=active
+[sllink][spike] FLUSH #90 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #83 (idle 38) state=active
+[sllink][spike] FLUSH #91 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "C05 Brassy Trombones" (21 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (3 msgs) mode=zoom "C05 Brassy Trombones"
+[sllink][spike] FLUSH #92 regionId=zname1 bytes=35 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #84 (idle 38) state=active
+[sllink][spike] FLUSH #93 regionId=zname2 bytes=34 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #85 (idle 38) state=active
+[sllink][spike] FLUSH #94 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #86 (idle 39) state=active
+[sllink][spike] FLUSH #95 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #87 (idle 40) state=active
+[sllink][spike] FLUSH #96 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #88 (idle 41) state=active
+[sllink][spike] FLUSH #97 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+2026-08-20 15:47:00.551 MainStage[94193:6287761] Warning: Column selection is not supported in view-based table and outline views (<GSamplerEditorTableView: 0xa8902d900>).
+[sllink] timer tick #89 (idle 42) state=active
+[sllink][spike] FLUSH #98 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #90 (idle 43) state=active
+[sllink][spike] FLUSH #99 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #91 (idle 44) state=active
+[sllink][spike] FLUSH #100 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #92 (idle 45) state=active
+[sllink][spike] FLUSH #101 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #93 (idle 46) state=active
+[sllink][spike] FLUSH #102 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #94 (idle 47) state=active
+[sllink][spike] FLUSH #103 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #95 (idle 48) state=active
+[sllink][spike] FLUSH #104 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "C05 Brassy Trombones"
+[sllink][spike] FLUSH #105 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #96 (idle 48) state=active
+[sllink][spike] FLUSH #106 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #97 (idle 48) state=active
+[sllink][spike] FLUSH #107 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #98 (idle 48) state=active
+[sllink][spike] FLUSH #108 regionId=zname2 bytes=34 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #99 (idle 48) state=active
+[sllink][spike] FLUSH #109 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #100 (idle 48) state=active
+[sllink][spike] FLUSH #110 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #101 (idle 49) state=active
+[sllink][spike] FLUSH #111 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #102 (idle 50) state=active
+[sllink][spike] FLUSH #112 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #103 (idle 51) state=active
+[sllink][spike] FLUSH #113 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #104 (idle 52) state=active
+[sllink][spike] FLUSH #114 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #105 (idle 53) state=active
+[sllink][spike] FLUSH #115 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #106 (idle 54) state=active
+[sllink][spike] FLUSH #116 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #107 (idle 55) state=active
+[sllink][spike] FLUSH #117 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #108 (idle 56) state=active
+[sllink][spike] FLUSH #118 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #109 (idle 57) state=active
+[sllink][spike] FLUSH #119 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #110 (idle 58) state=active
+[sllink][spike] FLUSH #120 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "C05 Brassy Trombones"
+[sllink][spike] FLUSH #121 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #111 (idle 58) state=active
+[sllink][spike] FLUSH #122 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #112 (idle 58) state=active
+[sllink][spike] FLUSH #123 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #113 (idle 58) state=active
+[sllink][spike] FLUSH #124 regionId=zname2 bytes=34 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #114 (idle 58) state=active
+[sllink][spike] FLUSH #125 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #115 (idle 58) state=active
+[sllink][spike] FLUSH #126 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #116 (idle 59) state=active
+[sllink][spike] FLUSH #127 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #117 (idle 60) state=active
+[sllink][spike] FLUSH #128 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #118 (idle 61) state=active
+[sllink][spike] FLUSH #129 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #119 (idle 62) state=active
+[sllink][spike] FLUSH #130 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #120 (idle 63) state=active
+[sllink][spike] FLUSH #131 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #121 (idle 64) state=active
+[sllink][spike] FLUSH #132 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #122 (idle 65) state=active
+[sllink][spike] FLUSH #133 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #123 (idle 66) state=active
+[sllink][spike] FLUSH #134 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #124 (idle 67) state=active
+[sllink][spike] FLUSH #135 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #125 (idle 68) state=active
+[sllink][spike] FLUSH #136 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "C05 Brassy Trombones"
+[sllink][spike] FLUSH #137 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #126 (idle 68) state=active
+[sllink][spike] FLUSH #138 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #127 (idle 68) state=active
+[sllink][spike] FLUSH #139 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #128 (idle 68) state=active
+[sllink][spike] FLUSH #140 regionId=zname2 bytes=34 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #129 (idle 68) state=active
+[sllink][spike] FLUSH #141 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #130 (idle 68) state=active
+[sllink][spike] FLUSH #142 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #131 (idle 69) state=active
+[sllink][spike] FLUSH #143 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #132 (idle 70) state=active
+[sllink][spike] FLUSH #144 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "Joseph key2" (1 rows in set) concert="Joseph key2" set=""
+[sllink] update queued (5 msgs) mode=zoom "Joseph key2"
+[sllink][spike] FLUSH #145 regionId=zset bytes=25 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #133 (idle 70) state=active
+[sllink][spike] FLUSH #146 regionId=zname1 bytes=36 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "C05 Brassy Trombones" (21 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink][spike] coalesced regionId=zname2 (queue depth now 5)
+[sllink][spike] coalesced regionId=zpos (queue depth now 5)
+[sllink] update queued (6 msgs) mode=zoom "C05 Brassy Trombones"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #134 (idle 70) state=active
+[sllink][spike] FLUSH #147 regionId=zname2 bytes=34 queueDepthAfter=5
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #135 (idle 70) state=active
+[sllink][spike] FLUSH #148 regionId=zpos bytes=29 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #136 (idle 70) state=active
+[sllink][spike] FLUSH #149 regionId=none bytes=36 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #137 (idle 70) state=active
+[sllink][spike] FLUSH #150 regionId=zset bytes=37 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #138 (idle 70) state=active
+[sllink][spike] FLUSH #151 regionId=zname1 bytes=35 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #139 (idle 70) state=active
+[sllink][spike] FLUSH #152 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #140 (idle 71) state=active
+[sllink][spike] FLUSH #153 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #141 (idle 72) state=active
+[sllink][spike] FLUSH #154 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "10. A pharao's story" (3 rows in set) concert="Joseph key2" set="Joseph key2"
+[sllink] update queued (5 msgs) mode=zoom "10. A pharao's story"
+[sllink][spike] FLUSH #155 regionId=zset bytes=36 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #142 (idle 72) state=active
+[sllink][spike] FLUSH #156 regionId=zname1 bytes=39 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #143 (idle 72) state=active
+[sllink][spike] FLUSH #157 regionId=zname2 bytes=30 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #144 (idle 72) state=active
+[sllink][spike] FLUSH #158 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #145 (idle 72) state=active
+[sllink][spike] FLUSH #159 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "Untitled Set" (0 rows in set) concert="Joseph key2" set="Joseph key2"
+[sllink] update queued (4 msgs) mode=zoom "Untitled Set"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #146 (idle 72) state=active
+[sllink][spike] FLUSH #160 regionId=zname1 bytes=37 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #147 (idle 72) state=active
+[sllink][spike] FLUSH #161 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #148 (idle 72) state=active
+[sllink][spike] FLUSH #162 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #149 (idle 72) state=active
+[sllink][spike] FLUSH #163 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #150 (idle 73) state=active
+[sllink][spike] FLUSH #164 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #151 (idle 74) state=active
+[sllink][spike] FLUSH #165 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #152 (idle 75) state=active
+[sllink][spike] FLUSH #166 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #153 (idle 76) state=active
+[sllink][spike] FLUSH #167 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #154 (idle 77) state=active
+[sllink][spike] FLUSH #168 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "C05 Brassy Trombones" (1 rows in set) concert="Joseph key2" set="11. Poor, poor pharaoh / Song of the king"
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] update queued (5 msgs) mode=zoom "C05 Brassy Trombones"
+[sllink][spike] FLUSH #169 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #155 (idle 77) state=active
+[sllink][spike] FLUSH #170 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #156 (idle 77) state=active
+[sllink][spike] FLUSH #171 regionId=zname2 bytes=34 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #157 (idle 77) state=active
+[sllink][spike] FLUSH #172 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #158 (idle 77) state=active
+[sllink][spike] FLUSH #173 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #159 (idle 78) state=active
+[sllink][spike] FLUSH #174 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #160 (idle 79) state=active
+[sllink][spike] FLUSH #175 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 00 01 F7
+[sllink] <- LOGIN - session active
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] paint queued (6 msgs) mode=zoom "C05 Brassy Trombones"
+[sllink][spike] FLUSH #176 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #161 (idle 79) state=active
+[sllink][spike] FLUSH #177 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #162 (idle 79) state=active
+[sllink][spike] FLUSH #178 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #163 (idle 79) state=active
+[sllink][spike] FLUSH #179 regionId=zname2 bytes=34 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #164 (idle 79) state=active
+[sllink][spike] FLUSH #180 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #165 (idle 79) state=active
+[sllink][spike] FLUSH #181 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #166 (idle 80) state=active
+[sllink][spike] FLUSH #182 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #167 (idle 81) state=active
+[sllink][spike] FLUSH #183 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #168 (idle 82) state=active
+[sllink][spike] FLUSH #184 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #169 (idle 83) state=active
+[sllink][spike] FLUSH #185 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #170 (idle 84) state=active
+[sllink][spike] FLUSH #186 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #171 (idle 85) state=active
+[sllink][spike] FLUSH #187 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #172 (idle 86) state=active
+[sllink][spike] FLUSH #188 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 00 01 F7
+[sllink] <- LOGIN - session active
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] paint queued (6 msgs) mode=zoom "C05 Brassy Trombones"
+[sllink][spike] FLUSH #189 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #173 (idle 86) state=active
+[sllink][spike] FLUSH #190 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #174 (idle 86) state=active
+[sllink][spike] FLUSH #191 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #175 (idle 86) state=active
+[sllink][spike] FLUSH #192 regionId=zname2 bytes=34 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #176 (idle 86) state=active
+[sllink][spike] FLUSH #193 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #177 (idle 86) state=active
+[sllink][spike] FLUSH #194 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x3F delta=-1 frame=F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x3F delta=-1 frame=F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x3F delta=-1 frame=F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x3F delta=-1 frame=F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x3F delta=-1 frame=F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x3F delta=-1 frame=F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x3F delta=-1 frame=F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x3F delta=-1 frame=F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x3F delta=-1 frame=F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x3F delta=-1 frame=F0 00 20 1A 16 03 6D 03 06 3F F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink][spike] <- ENCODER eid=0x06 tick=0x41 delta=1 frame=F0 00 20 1A 16 03 6D 03 06 41 F7
+[sllink] timer tick #178 (idle 87) state=active
+[sllink][spike] FLUSH #195 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #179 (idle 88) state=active
+[sllink][spike] FLUSH #196 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #180 (idle 89) state=active
+[sllink][spike] FLUSH #197 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #181 (idle 90) state=active
+[sllink][spike] FLUSH #198 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #182 (idle 91) state=active
+[sllink][spike] FLUSH #199 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #183 (idle 92) state=active
+[sllink][spike] FLUSH #200 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #184 (idle 93) state=active
+[sllink][spike] FLUSH #201 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #185 (idle 94) state=active
+[sllink][spike] FLUSH #202 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #186 (idle 95) state=active
+[sllink][spike] FLUSH #203 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #187 (idle 96) state=active
+[sllink][spike] FLUSH #204 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] paint queued (6 msgs) mode=zoom "C05 Brassy Trombones"
+[sllink][spike] FLUSH #205 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #188 (idle 96) state=active
+[sllink][spike] FLUSH #206 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #189 (idle 96) state=active
+[sllink][spike] FLUSH #207 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #190 (idle 96) state=active
+[sllink][spike] FLUSH #208 regionId=zname2 bytes=34 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #191 (idle 96) state=active
+[sllink][spike] FLUSH #209 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #192 (idle 96) state=active
+[sllink][spike] FLUSH #210 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #193 (idle 97) state=active
+[sllink][spike] FLUSH #211 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink][spike] <- CC on port=LINK ch=1 data=1,36
+[sllink][spike] <- CC on port=LINK ch=1 data=1,35
+[sllink] timer tick #194 (idle 98) state=active
+[sllink][spike] FLUSH #212 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #195 (idle 99) state=active
+[sllink][spike] FLUSH #213 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #196 (idle 100) state=active
+[sllink][spike] FLUSH #214 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #197 (idle 101) state=active
+[sllink][spike] FLUSH #215 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #198 (idle 102) state=active
+[sllink][spike] FLUSH #216 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "m.53 C06 Strings" (3 rows in set) concert="Joseph key2" set="10. A pharao's story"
+[sllink] update queued (5 msgs) mode=zoom "m.53 C06 Strings"
+[sllink][spike] FLUSH #217 regionId=zset bytes=45 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #199 (idle 102) state=active
+[sllink][spike] FLUSH #218 regionId=zname1 bytes=41 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #200 (idle 102) state=active
+[sllink][spike] FLUSH #219 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #201 (idle 102) state=active
+[sllink][spike] FLUSH #220 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #202 (idle 102) state=active
+[sllink][spike] FLUSH #221 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #203 (idle 103) state=active
+[sllink][spike] FLUSH #222 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "11. Poor, poor pharaoh / Song of the king" (1 rows in set) concert="Joseph key2" set="Joseph key2"
+[sllink] update queued (5 msgs) mode=zoom "11. Poor, poor pharaoh / Song of the king"
+[sllink][spike] FLUSH #223 regionId=zset bytes=36 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #204 (idle 103) state=active
+[sllink][spike] FLUSH #224 regionId=zname1 bytes=39 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #205 (idle 103) state=active
+[sllink][spike] FLUSH #225 regionId=zname2 bytes=41 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #206 (idle 103) state=active
+[sllink][spike] FLUSH #226 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #207 (idle 103) state=active
+[sllink][spike] FLUSH #227 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "m.1 C05 Brassy Trombones" (1 rows in set) concert="Joseph key2" set="11. Poor, poor pharaoh / Song of the king"
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] update queued (4 msgs) mode=zoom "m.1 C05 Brassy Trombones"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #208 (idle 103) state=active
+[sllink][spike] FLUSH #228 regionId=zset bytes=62 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #209 (idle 103) state=active
+[sllink][spike] FLUSH #229 regionId=zname1 bytes=39 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #210 (idle 103) state=active
+[sllink][spike] FLUSH #230 regionId=zname2 bytes=34 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #211 (idle 103) state=active
+[sllink][spike] FLUSH #231 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #212 (idle 104) state=active
+[sllink][spike] FLUSH #232 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #213 (idle 105) state=active
+[sllink][spike] FLUSH #233 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #214 (idle 106) state=active
+[sllink][spike] FLUSH #234 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A41 Flute" (21 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (5 msgs) mode=zoom "A41 Flute"
+[sllink][spike] FLUSH #235 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #215 (idle 106) state=active
+[sllink][spike] FLUSH #236 regionId=zname1 bytes=34 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #216 (idle 106) state=active
+[sllink][spike] FLUSH #237 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #217 (idle 106) state=active
+[sllink][spike] FLUSH #238 regionId=zpos bytes=29 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #218 (idle 106) state=active
+[sllink][spike] FLUSH #239 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "Untitled Patch" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (3 msgs) mode=zoom "Untitled Patch"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #219 (idle 106) state=active
+[sllink][spike] FLUSH #240 regionId=zname1 bytes=39 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #220 (idle 106) state=active
+[sllink][spike] FLUSH #241 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #221 (idle 106) state=active
+[sllink][spike] FLUSH #242 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #222 (idle 107) state=active
+[sllink][spike] FLUSH #243 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #223 (idle 108) state=active
+[sllink][spike] FLUSH #244 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A32 Reedy patch" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (2 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #245 regionId=zname1 bytes=40 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #224 (idle 108) state=active
+[sllink][spike] FLUSH #246 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #225 (idle 109) state=active
+[sllink][spike] FLUSH #247 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #226 (idle 110) state=active
+[sllink][spike] FLUSH #248 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #227 (idle 111) state=active
+[sllink][spike] FLUSH #249 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #228 (idle 112) state=active
+[sllink][spike] FLUSH #250 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "B14 Banjo" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (3 msgs) mode=zoom "B14 Banjo"
+[sllink][spike] FLUSH #251 regionId=zname1 bytes=34 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #229 (idle 112) state=active
+[sllink][spike] FLUSH #252 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #230 (idle 112) state=active
+[sllink][spike] FLUSH #253 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+objc[94193]: Weak reference loaded from 0x16f855c48 contains 0xa62551290 which is not in the weak references table
+[sllink] timer tick #231 (idle 113) state=active
+[sllink][spike] FLUSH #254 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #232 (idle 114) state=active
+[sllink][spike] FLUSH #255 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #233 (idle 115) state=active
+[sllink][spike] FLUSH #256 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #234 (idle 116) state=active
+[sllink][spike] FLUSH #257 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #235 (idle 117) state=active
+[sllink][spike] FLUSH #258 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #236 (idle 118) state=active
+[sllink][spike] FLUSH #259 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #237 (idle 119) state=active
+[sllink][spike] FLUSH #260 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #238 (idle 120) state=active
+[sllink][spike] FLUSH #261 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #239 (idle 121) state=active
+[sllink][spike] FLUSH #262 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #240 (idle 122) state=active
+[sllink][spike] FLUSH #263 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "B14 Banjo"
+[sllink][spike] FLUSH #264 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #241 (idle 122) state=active
+[sllink][spike] FLUSH #265 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #242 (idle 122) state=active
+[sllink][spike] FLUSH #266 regionId=zname1 bytes=34 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #243 (idle 122) state=active
+[sllink][spike] FLUSH #267 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #244 (idle 122) state=active
+[sllink][spike] FLUSH #268 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #245 (idle 122) state=active
+[sllink][spike] FLUSH #269 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #246 (idle 123) state=active
+[sllink][spike] FLUSH #270 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #247 (idle 124) state=active
+[sllink][spike] FLUSH #271 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #248 (idle 125) state=active
+[sllink][spike] FLUSH #272 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #249 (idle 126) state=active
+[sllink][spike] FLUSH #273 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #250 (idle 127) state=active
+[sllink][spike] FLUSH #274 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #251 (idle 128) state=active
+[sllink][spike] FLUSH #275 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #252 (idle 129) state=active
+[sllink][spike] FLUSH #276 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #253 (idle 130) state=active
+[sllink][spike] FLUSH #277 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #254 (idle 131) state=active
+[sllink][spike] FLUSH #278 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #255 (idle 132) state=active
+[sllink][spike] FLUSH #279 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "B14 Banjo"
+[sllink][spike] FLUSH #280 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #256 (idle 132) state=active
+[sllink][spike] FLUSH #281 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #257 (idle 132) state=active
+[sllink][spike] FLUSH #282 regionId=zname1 bytes=34 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #258 (idle 132) state=active
+[sllink][spike] FLUSH #283 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #259 (idle 132) state=active
+[sllink][spike] FLUSH #284 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #260 (idle 132) state=active
+[sllink][spike] FLUSH #285 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #261 (idle 133) state=active
+[sllink][spike] FLUSH #286 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #262 (idle 134) state=active
+[sllink][spike] FLUSH #287 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #263 (idle 135) state=active
+[sllink][spike] FLUSH #288 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #264 (idle 136) state=active
+[sllink][spike] FLUSH #289 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A32 Reedy patch" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (3 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #290 regionId=zname1 bytes=40 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #265 (idle 136) state=active
+[sllink][spike] FLUSH #291 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #266 (idle 136) state=active
+[sllink][spike] FLUSH #292 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #267 (idle 137) state=active
+[sllink][spike] FLUSH #293 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #268 (idle 138) state=active
+[sllink][spike] FLUSH #294 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #269 (idle 139) state=active
+[sllink][spike] FLUSH #295 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #270 (idle 140) state=active
+[sllink][spike] FLUSH #296 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #271 (idle 141) state=active
+[sllink][spike] FLUSH #297 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #272 (idle 142) state=active
+[sllink][spike] FLUSH #298 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #273 (idle 143) state=active
+[sllink][spike] FLUSH #299 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #274 (idle 144) state=active
+[sllink][spike] FLUSH #300 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+objc[94193]: Weak reference loaded from 0x16f854478 contains 0xa5f07b720 which is not in the weak references table
+[sllink] timer tick #275 (idle 145) state=active
+[sllink][spike] FLUSH #301 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #276 (idle 146) state=active
+[sllink][spike] FLUSH #302 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #303 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #277 (idle 146) state=active
+[sllink][spike] FLUSH #304 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #278 (idle 146) state=active
+[sllink][spike] FLUSH #305 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #279 (idle 146) state=active
+[sllink][spike] FLUSH #306 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #280 (idle 146) state=active
+[sllink][spike] FLUSH #307 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #281 (idle 146) state=active
+[sllink][spike] FLUSH #308 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #282 (idle 147) state=active
+[sllink][spike] FLUSH #309 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #283 (idle 148) state=active
+[sllink][spike] FLUSH #310 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #284 (idle 149) state=active
+[sllink][spike] FLUSH #311 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #285 (idle 150) state=active
+[sllink][spike] FLUSH #312 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink][spike] <- CC on port=LINK ch=1 data=1,38
+[sllink][spike] <- CC on port=LINK ch=1 data=1,50
+[sllink][spike] <- CC on port=LINK ch=1 data=1,67
+[sllink][spike] <- CC on port=LINK ch=1 data=1,83
+[sllink][spike] <- CC on port=LINK ch=1 data=1,95
+[sllink][spike] <- CC on port=LINK ch=1 data=1,104
+[sllink][spike] <- CC on port=LINK ch=1 data=1,111
+[sllink][spike] <- CC on port=LINK ch=1 data=1,117
+[sllink][spike] <- CC on port=LINK ch=1 data=1,120
+[sllink][spike] <- CC on port=LINK ch=1 data=1,123
+[sllink][spike] <- CC on port=LINK ch=1 data=1,125
+[sllink][spike] <- CC on port=LINK ch=1 data=1,126
+[sllink][spike] <- CC on port=LINK ch=1 data=1,127
+[sllink] timer tick #286 (idle 151) state=active
+[sllink][spike] FLUSH #313 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #287 (idle 152) state=active
+[sllink][spike] FLUSH #314 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #288 (idle 153) state=active
+[sllink][spike] FLUSH #315 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #289 (idle 154) state=active
+[sllink][spike] FLUSH #316 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #290 (idle 155) state=active
+[sllink][spike] FLUSH #317 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #291 (idle 156) state=active
+[sllink][spike] FLUSH #318 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #319 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #292 (idle 156) state=active
+[sllink][spike] FLUSH #320 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #293 (idle 156) state=active
+[sllink][spike] FLUSH #321 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #294 (idle 156) state=active
+[sllink][spike] FLUSH #322 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #295 (idle 156) state=active
+[sllink][spike] FLUSH #323 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #296 (idle 156) state=active
+[sllink][spike] FLUSH #324 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #297 (idle 157) state=active
+[sllink][spike] FLUSH #325 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #298 (idle 158) state=active
+[sllink][spike] FLUSH #326 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #299 (idle 159) state=active
+[sllink][spike] FLUSH #327 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #300 (idle 160) state=active
+[sllink][spike] FLUSH #328 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "C15 Bassoon" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (3 msgs) mode=zoom "C15 Bassoon"
+[sllink][spike] FLUSH #329 regionId=zname1 bytes=36 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #301 (idle 160) state=active
+[sllink][spike] FLUSH #330 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #302 (idle 160) state=active
+[sllink][spike] FLUSH #331 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #303 (idle 161) state=active
+[sllink][spike] FLUSH #332 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A32 Reedy patch" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (3 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #333 regionId=zname1 bytes=40 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #304 (idle 161) state=active
+[sllink][spike] FLUSH #334 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #305 (idle 161) state=active
+[sllink][spike] FLUSH #335 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #306 (idle 162) state=active
+[sllink][spike] FLUSH #336 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #307 (idle 163) state=active
+[sllink][spike] FLUSH #337 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #308 (idle 164) state=active
+[sllink][spike] FLUSH #338 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #309 (idle 165) state=active
+[sllink][spike] FLUSH #339 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #310 (idle 166) state=active
+[sllink][spike] FLUSH #340 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #311 (idle 167) state=active
+[sllink][spike] FLUSH #341 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #312 (idle 168) state=active
+[sllink][spike] FLUSH #342 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #313 (idle 169) state=active
+[sllink][spike] FLUSH #343 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #314 (idle 170) state=active
+[sllink][spike] FLUSH #344 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #315 (idle 171) state=active
+[sllink][spike] FLUSH #345 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #346 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #316 (idle 171) state=active
+[sllink][spike] FLUSH #347 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #317 (idle 171) state=active
+[sllink][spike] FLUSH #348 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #318 (idle 171) state=active
+[sllink][spike] FLUSH #349 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #319 (idle 171) state=active
+[sllink][spike] FLUSH #350 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #320 (idle 171) state=active
+[sllink][spike] FLUSH #351 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #321 (idle 172) state=active
+[sllink][spike] FLUSH #352 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #322 (idle 173) state=active
+[sllink][spike] FLUSH #353 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #323 (idle 174) state=active
+[sllink][spike] FLUSH #354 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #324 (idle 175) state=active
+[sllink][spike] FLUSH #355 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #325 (idle 176) state=active
+[sllink][spike] FLUSH #356 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #326 (idle 177) state=active
+[sllink][spike] FLUSH #357 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #327 (idle 178) state=active
+[sllink][spike] FLUSH #358 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #328 (idle 179) state=active
+[sllink][spike] FLUSH #359 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #329 (idle 180) state=active
+[sllink][spike] FLUSH #360 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #330 (idle 181) state=active
+[sllink][spike] FLUSH #361 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #362 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #331 (idle 181) state=active
+[sllink][spike] FLUSH #363 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #332 (idle 181) state=active
+[sllink][spike] FLUSH #364 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #333 (idle 181) state=active
+[sllink][spike] FLUSH #365 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #334 (idle 181) state=active
+[sllink][spike] FLUSH #366 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #335 (idle 181) state=active
+[sllink][spike] FLUSH #367 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #336 (idle 182) state=active
+[sllink][spike] FLUSH #368 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #337 (idle 183) state=active
+[sllink][spike] FLUSH #369 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #338 (idle 184) state=active
+[sllink][spike] FLUSH #370 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #339 (idle 185) state=active
+[sllink][spike] FLUSH #371 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+objc[94193]: Weak reference loaded from 0x16f854478 contains 0xa5ed4f090 which is not in the weak references table
+[sllink] timer tick #340 (idle 186) state=active
+[sllink][spike] FLUSH #372 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #341 (idle 187) state=active
+[sllink][spike] FLUSH #373 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #342 (idle 188) state=active
+[sllink][spike] FLUSH #374 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #343 (idle 189) state=active
+[sllink][spike] FLUSH #375 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #344 (idle 190) state=active
+[sllink][spike] FLUSH #376 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #345 (idle 191) state=active
+[sllink][spike] FLUSH #377 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #378 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #346 (idle 191) state=active
+[sllink][spike] FLUSH #379 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #347 (idle 191) state=active
+[sllink][spike] FLUSH #380 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #348 (idle 191) state=active
+[sllink][spike] FLUSH #381 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #349 (idle 191) state=active
+[sllink][spike] FLUSH #382 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #350 (idle 191) state=active
+[sllink][spike] FLUSH #383 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #351 (idle 192) state=active
+[sllink][spike] FLUSH #384 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #352 (idle 193) state=active
+[sllink][spike] FLUSH #385 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #353 (idle 194) state=active
+[sllink][spike] FLUSH #386 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #354 (idle 195) state=active
+[sllink][spike] FLUSH #387 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #355 (idle 196) state=active
+[sllink][spike] FLUSH #388 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #356 (idle 197) state=active
+[sllink][spike] FLUSH #389 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #357 (idle 198) state=active
+[sllink][spike] FLUSH #390 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #358 (idle 199) state=active
+[sllink][spike] FLUSH #391 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #359 (idle 200) state=active
+[sllink][spike] FLUSH #392 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #360 (idle 201) state=active
+[sllink][spike] FLUSH #393 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #394 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #361 (idle 201) state=active
+[sllink][spike] FLUSH #395 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #362 (idle 201) state=active
+[sllink][spike] FLUSH #396 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #363 (idle 201) state=active
+[sllink][spike] FLUSH #397 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #364 (idle 201) state=active
+[sllink][spike] FLUSH #398 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #365 (idle 201) state=active
+[sllink][spike] FLUSH #399 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #366 (idle 202) state=active
+[sllink][spike] FLUSH #400 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #367 (idle 203) state=active
+[sllink][spike] FLUSH #401 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #368 (idle 204) state=active
+[sllink][spike] FLUSH #402 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #369 (idle 205) state=active
+[sllink][spike] FLUSH #403 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #370 (idle 206) state=active
+[sllink][spike] FLUSH #404 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #371 (idle 207) state=active
+[sllink][spike] FLUSH #405 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #372 (idle 208) state=active
+[sllink][spike] FLUSH #406 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #373 (idle 209) state=active
+[sllink][spike] FLUSH #407 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #374 (idle 210) state=active
+[sllink][spike] FLUSH #408 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #375 (idle 211) state=active
+[sllink][spike] FLUSH #409 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #410 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #376 (idle 211) state=active
+[sllink][spike] FLUSH #411 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #377 (idle 211) state=active
+[sllink][spike] FLUSH #412 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #378 (idle 211) state=active
+[sllink][spike] FLUSH #413 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #379 (idle 211) state=active
+[sllink][spike] FLUSH #414 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #380 (idle 211) state=active
+[sllink][spike] FLUSH #415 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #381 (idle 212) state=active
+[sllink][spike] FLUSH #416 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #382 (idle 213) state=active
+[sllink][spike] FLUSH #417 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "Joseph key2" (1 rows in set) concert="Joseph key2" set=""
+[sllink] update queued (4 msgs) mode=zoom "Joseph key2"
+[sllink][spike] FLUSH #418 regionId=zset bytes=25 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #383 (idle 213) state=active
+[sllink][spike] FLUSH #419 regionId=zname1 bytes=36 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A32 Reedy patch" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink][spike] coalesced regionId=zpos (queue depth now 4)
+[sllink] update queued (5 msgs) mode=zoom "A32 Reedy patch"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #384 (idle 213) state=active
+[sllink][spike] FLUSH #420 regionId=zpos bytes=29 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #385 (idle 213) state=active
+[sllink][spike] FLUSH #421 regionId=none bytes=36 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #386 (idle 213) state=active
+[sllink][spike] FLUSH #422 regionId=zset bytes=37 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #387 (idle 213) state=active
+[sllink][spike] FLUSH #423 regionId=zname1 bytes=40 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #388 (idle 213) state=active
+[sllink][spike] FLUSH #424 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #389 (idle 214) state=active
+[sllink][spike] FLUSH #425 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A32 Reedy patch" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (2 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #426 regionId=zpos bytes=29 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A02 Sharp Brass Phycho Strings" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (5 msgs) mode=zoom "A02 Sharp Brass Phycho Strings"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #390 (idle 214) state=active
+[sllink][spike] FLUSH #427 regionId=none bytes=36 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #391 (idle 214) state=active
+[sllink][spike] FLUSH #428 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #392 (idle 214) state=active
+[sllink][spike] FLUSH #429 regionId=zname2 bytes=39 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #393 (idle 214) state=active
+[sllink][spike] FLUSH #430 regionId=zpos bytes=29 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #394 (idle 214) state=active
+[sllink][spike] FLUSH #431 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A90 Orchestra hit" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (4 msgs) mode=zoom "A90 Orchestra hit"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #395 (idle 214) state=active
+[sllink][spike] FLUSH #432 regionId=zname1 bytes=38 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #396 (idle 214) state=active
+[sllink][spike] FLUSH #433 regionId=zname2 bytes=28 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #397 (idle 214) state=active
+[sllink][spike] FLUSH #434 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #398 (idle 214) state=active
+[sllink][spike] FLUSH #435 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A02 Sharp Brass Phycho Strings" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (4 msgs) mode=zoom "A02 Sharp Brass Phycho Strings"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #399 (idle 214) state=active
+[sllink][spike] FLUSH #436 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #400 (idle 214) state=active
+[sllink][spike] FLUSH #437 regionId=zname2 bytes=39 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #401 (idle 214) state=active
+[sllink][spike] FLUSH #438 regionId=zpos bytes=29 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #402 (idle 214) state=active
+[sllink][spike] FLUSH #439 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #403 (idle 215) state=active
+[sllink][spike] FLUSH #440 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #404 (idle 216) state=active
+[sllink][spike] FLUSH #441 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #405 (idle 217) state=active
+[sllink][spike] FLUSH #442 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #406 (idle 218) state=active
+[sllink][spike] FLUSH #443 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #407 (idle 219) state=active
+[sllink][spike] FLUSH #444 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #408 (idle 220) state=active
+[sllink][spike] FLUSH #445 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "m.1 C05 Brassy Trombones" (1 rows in set) concert="Joseph key2" set="11. Poor, poor pharaoh / Song of the king"
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] update queued (5 msgs) mode=zoom "m.1 C05 Brassy Trombones"
+[sllink][spike] FLUSH #446 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #409 (idle 220) state=active
+[sllink][spike] FLUSH #447 regionId=zname1 bytes=39 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #410 (idle 220) state=active
+[sllink][spike] FLUSH #448 regionId=zname2 bytes=34 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #411 (idle 220) state=active
+[sllink][spike] FLUSH #449 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #412 (idle 220) state=active
+[sllink][spike] FLUSH #450 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #413 (idle 221) state=active
+[sllink][spike] FLUSH #451 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #414 (idle 222) state=active
+[sllink][spike] FLUSH #452 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A32 Reedy patch" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (5 msgs) mode=zoom "A32 Reedy patch"
+[sllink][spike] FLUSH #453 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #415 (idle 222) state=active
+[sllink][spike] FLUSH #454 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #416 (idle 222) state=active
+[sllink][spike] FLUSH #455 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #417 (idle 222) state=active
+[sllink][spike] FLUSH #456 regionId=zpos bytes=29 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #418 (idle 222) state=active
+[sllink][spike] FLUSH #457 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "m.1 C05 Brassy Trombones" (1 rows in set) concert="Joseph key2" set="11. Poor, poor pharaoh / Song of the king"
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] update queued (5 msgs) mode=zoom "m.1 C05 Brassy Trombones"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #419 (idle 222) state=active
+[sllink][spike] FLUSH #458 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #420 (idle 222) state=active
+[sllink][spike] FLUSH #459 regionId=zname1 bytes=39 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #421 (idle 222) state=active
+[sllink][spike] FLUSH #460 regionId=zname2 bytes=34 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #422 (idle 222) state=active
+[sllink][spike] FLUSH #461 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #423 (idle 222) state=active
+[sllink][spike] FLUSH #462 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A32 Reedy patch" (2 rows in set) concert="Joseph key2" set="11. Poor, poor pharaoh / Song of the king"
+[sllink] update queued (4 msgs) mode=zoom "A32 Reedy patch"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #424 (idle 222) state=active
+[sllink][spike] FLUSH #463 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #425 (idle 222) state=active
+[sllink][spike] FLUSH #464 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #426 (idle 222) state=active
+[sllink][spike] FLUSH #465 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #427 (idle 222) state=active
+[sllink][spike] FLUSH #466 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #428 (idle 223) state=active
+[sllink][spike] FLUSH #467 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #429 (idle 224) state=active
+[sllink][spike] FLUSH #468 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #430 (idle 225) state=active
+[sllink][spike] FLUSH #469 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #431 (idle 226) state=active
+[sllink][spike] FLUSH #470 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "m.23 A32 Reedy patch" (2 rows in set) concert="Joseph key2" set="11. Poor, poor pharaoh / Song of the king"
+[sllink] update queued (3 msgs) mode=zoom "m.23 A32 Reedy patch"
+[sllink][spike] FLUSH #471 regionId=zname1 bytes=39 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #432 (idle 226) state=active
+[sllink][spike] FLUSH #472 regionId=zname2 bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #433 (idle 226) state=active
+[sllink][spike] FLUSH #473 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #434 (idle 227) state=active
+[sllink][spike] FLUSH #474 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #435 (idle 228) state=active
+[sllink][spike] FLUSH #475 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #436 (idle 229) state=active
+[sllink][spike] FLUSH #476 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A50 Flute" (22 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (5 msgs) mode=zoom "A50 Flute"
+[sllink][spike] FLUSH #477 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #437 (idle 229) state=active
+[sllink][spike] FLUSH #478 regionId=zname1 bytes=34 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #438 (idle 229) state=active
+[sllink][spike] FLUSH #479 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #439 (idle 229) state=active
+[sllink][spike] FLUSH #480 regionId=zpos bytes=29 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #440 (idle 229) state=active
+[sllink][spike] FLUSH #481 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #441 (idle 230) state=active
+[sllink][spike] FLUSH #482 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A50 Flute" (23 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (2 msgs) mode=zoom "A50 Flute"
+[sllink][spike] FLUSH #483 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #442 (idle 230) state=active
+[sllink][spike] FLUSH #484 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #443 (idle 231) state=active
+[sllink][spike] FLUSH #485 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #444 (idle 232) state=active
+[sllink][spike] FLUSH #486 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+objc[94193]: Weak reference loaded from 0x16f855c48 contains 0xa5c4107e0 which is not in the weak references table
+[sllink] timer tick #445 (idle 233) state=active
+[sllink][spike] FLUSH #487 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #446 (idle 234) state=active
+[sllink][spike] FLUSH #488 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #447 (idle 235) state=active
+[sllink][spike] FLUSH #489 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #448 (idle 236) state=active
+[sllink][spike] FLUSH #490 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #449 (idle 237) state=active
+[sllink][spike] FLUSH #491 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #450 (idle 238) state=active
+[sllink][spike] FLUSH #492 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #451 (idle 239) state=active
+[sllink][spike] FLUSH #493 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #452 (idle 240) state=active
+[sllink][spike] FLUSH #494 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] paint queued (6 msgs) mode=zoom "A50 Flute"
+[sllink][spike] FLUSH #495 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #453 (idle 240) state=active
+[sllink][spike] FLUSH #496 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #454 (idle 240) state=active
+[sllink][spike] FLUSH #497 regionId=zname1 bytes=34 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #455 (idle 240) state=active
+[sllink][spike] FLUSH #498 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #456 (idle 240) state=active
+[sllink][spike] FLUSH #499 regionId=zpos bytes=30 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #457 (idle 240) state=active
+[sllink][spike] FLUSH #500 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #458 (idle 241) state=active
+[sllink][spike] FLUSH #501 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #459 (idle 242) state=active
+[sllink][spike] FLUSH #502 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A18 Flutes" (23 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink] update queued (2 msgs) mode=zoom "A18 Flutes"
+[sllink][spike] FLUSH #503 regionId=zname1 bytes=35 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #460 (idle 242) state=active
+[sllink][spike] FLUSH #504 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #461 (idle 243) state=active
+[sllink][spike] FLUSH #505 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #462 (idle 244) state=active
+[sllink][spike] FLUSH #506 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "Joseph key2" (1 rows in set) concert="Joseph key2" set=""
+[sllink] update queued (4 msgs) mode=zoom "Joseph key2"
+[sllink][spike] FLUSH #507 regionId=zset bytes=25 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A18 Flutes" (23 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink][spike] coalesced regionId=zname1 (queue depth now 4)
+[sllink][spike] coalesced regionId=zpos (queue depth now 4)
+[sllink] update queued (5 msgs) mode=zoom "A18 Flutes"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #463 (idle 244) state=active
+[sllink][spike] FLUSH #508 regionId=zname1 bytes=35 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #464 (idle 244) state=active
+[sllink][spike] FLUSH #509 regionId=zpos bytes=29 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #465 (idle 244) state=active
+[sllink][spike] FLUSH #510 regionId=none bytes=36 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #466 (idle 244) state=active
+[sllink][spike] FLUSH #511 regionId=zset bytes=37 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #467 (idle 244) state=active
+[sllink][spike] FLUSH #512 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "Joseph key2" (1 rows in set) concert="Joseph key2" set=""
+[sllink] update queued (4 msgs) mode=zoom "Joseph key2"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A18 Flutes" (23 rows in set) concert="Joseph key2" set="-- Sounds --"
+[sllink][spike] coalesced regionId=zset (queue depth now 4)
+[sllink][spike] coalesced regionId=zname1 (queue depth now 4)
+[sllink][spike] coalesced regionId=zpos (queue depth now 4)
+[sllink] update queued (5 msgs) mode=zoom "A18 Flutes"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #468 (idle 244) state=active
+[sllink][spike] FLUSH #513 regionId=zset bytes=37 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #469 (idle 244) state=active
+[sllink][spike] FLUSH #514 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #470 (idle 244) state=active
+[sllink][spike] FLUSH #515 regionId=zpos bytes=29 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #471 (idle 244) state=active
+[sllink][spike] FLUSH #516 regionId=none bytes=36 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #472 (idle 244) state=active
+[sllink][spike] FLUSH #517 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #473 (idle 245) state=active
+[sllink][spike] FLUSH #518 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "m.23 A32 Reedy patch" (2 rows in set) concert="Joseph key2" set="11. Poor, poor pharaoh / Song of the king"
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] update queued (5 msgs) mode=zoom "m.23 A32 Reedy patch"
+[sllink][spike] FLUSH #519 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #474 (idle 245) state=active
+[sllink][spike] FLUSH #520 regionId=zname1 bytes=39 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #475 (idle 245) state=active
+[sllink][spike] FLUSH #521 regionId=zname2 bytes=30 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #476 (idle 245) state=active
+[sllink][spike] FLUSH #522 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #477 (idle 245) state=active
+[sllink][spike] FLUSH #523 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "A18 Flutes" (3 rows in set) concert="Joseph key2" set="11. Poor, poor pharaoh / Song of the king"
+[sllink] update queued (4 msgs) mode=zoom "A18 Flutes"
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #478 (idle 245) state=active
+[sllink][spike] FLUSH #524 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #479 (idle 245) state=active
+[sllink][spike] FLUSH #525 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #480 (idle 245) state=active
+[sllink][spike] FLUSH #526 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #481 (idle 245) state=active
+[sllink][spike] FLUSH #527 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #482 (idle 246) state=active
+[sllink][spike] FLUSH #528 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #483 (idle 247) state=active
+[sllink][spike] FLUSH #529 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #484 (idle 248) state=active
+[sllink][spike] FLUSH #530 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #485 (idle 249) state=active
+[sllink][spike] FLUSH #531 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+objc[94193]: Weak reference loaded from 0x16f855c48 contains 0xa5c75edc0 which is not in the weak references table
+[sllink] timer tick #486 (idle 250) state=active
+[sllink][spike] FLUSH #532 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #487 (idle 251) state=active
+[sllink][spike] FLUSH #533 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #488 (idle 252) state=active
+[sllink][spike] FLUSH #534 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #489 (idle 253) state=active
+[sllink][spike] FLUSH #535 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #490 (idle 254) state=active
+[sllink][spike] FLUSH #536 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #491 (idle 255) state=active
+[sllink][spike] FLUSH #537 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] paint queued (6 msgs) mode=zoom "A18 Flutes"
+[sllink][spike] FLUSH #538 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #492 (idle 255) state=active
+[sllink][spike] FLUSH #539 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #493 (idle 255) state=active
+[sllink][spike] FLUSH #540 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #494 (idle 255) state=active
+[sllink][spike] FLUSH #541 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #495 (idle 255) state=active
+[sllink][spike] FLUSH #542 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #496 (idle 255) state=active
+[sllink][spike] FLUSH #543 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #497 (idle 256) state=active
+[sllink][spike] FLUSH #544 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #498 (idle 257) state=active
+[sllink][spike] FLUSH #545 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #499 (idle 258) state=active
+[sllink][spike] FLUSH #546 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #500 (idle 259) state=active
+[sllink][spike] FLUSH #547 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #501 (idle 260) state=active
+[sllink][spike] FLUSH #548 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #502 (idle 261) state=active
+[sllink][spike] FLUSH #549 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #503 (idle 262) state=active
+[sllink][spike] FLUSH #550 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #504 (idle 263) state=active
+[sllink][spike] FLUSH #551 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #505 (idle 264) state=active
+[sllink][spike] FLUSH #552 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #506 (idle 265) state=active
+[sllink][spike] FLUSH #553 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] paint queued (6 msgs) mode=zoom "A18 Flutes"
+[sllink][spike] FLUSH #554 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #507 (idle 265) state=active
+[sllink][spike] FLUSH #555 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #508 (idle 265) state=active
+[sllink][spike] FLUSH #556 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #509 (idle 265) state=active
+[sllink][spike] FLUSH #557 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #510 (idle 265) state=active
+[sllink][spike] FLUSH #558 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #511 (idle 265) state=active
+[sllink][spike] FLUSH #559 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #512 (idle 266) state=active
+[sllink][spike] FLUSH #560 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #513 (idle 267) state=active
+[sllink][spike] FLUSH #561 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #514 (idle 268) state=active
+[sllink][spike] FLUSH #562 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #515 (idle 269) state=active
+[sllink][spike] FLUSH #563 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #516 (idle 270) state=active
+[sllink][spike] FLUSH #564 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #517 (idle 271) state=active
+[sllink][spike] FLUSH #565 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 00 01 F7
+[sllink] <- LOGIN - session active
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] paint queued (6 msgs) mode=zoom "A18 Flutes"
+[sllink][spike] FLUSH #566 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #518 (idle 271) state=active
+[sllink][spike] FLUSH #567 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #519 (idle 271) state=active
+[sllink][spike] FLUSH #568 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #520 (idle 271) state=active
+[sllink][spike] FLUSH #569 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #521 (idle 271) state=active
+[sllink][spike] FLUSH #570 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #522 (idle 271) state=active
+[sllink][spike] FLUSH #571 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #523 (idle 272) state=active
+[sllink][spike] FLUSH #572 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #524 (idle 273) state=active
+[sllink][spike] FLUSH #573 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #525 (idle 274) state=active
+[sllink][spike] FLUSH #574 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #526 (idle 275) state=active
+[sllink][spike] FLUSH #575 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #527 (idle 276) state=active
+[sllink][spike] FLUSH #576 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #528 (idle 277) state=active
+[sllink][spike] FLUSH #577 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #529 (idle 278) state=active
+[sllink][spike] FLUSH #578 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #530 (idle 279) state=active
+[sllink][spike] FLUSH #579 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #531 (idle 280) state=active
+[sllink][spike] FLUSH #580 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #532 (idle 281) state=active
+[sllink][spike] FLUSH #581 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] paint queued (6 msgs) mode=zoom "A18 Flutes"
+[sllink][spike] FLUSH #582 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #533 (idle 281) state=active
+[sllink][spike] FLUSH #583 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #534 (idle 281) state=active
+[sllink][spike] FLUSH #584 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #535 (idle 281) state=active
+[sllink][spike] FLUSH #585 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #536 (idle 281) state=active
+[sllink][spike] FLUSH #586 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #537 (idle 281) state=active
+[sllink][spike] FLUSH #587 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #538 (idle 282) state=active
+[sllink][spike] FLUSH #588 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #539 (idle 283) state=active
+[sllink][spike] FLUSH #589 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #540 (idle 284) state=active
+[sllink][spike] FLUSH #590 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #541 (idle 285) state=active
+[sllink][spike] FLUSH #591 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #542 (idle 286) state=active
+[sllink][spike] FLUSH #592 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #543 (idle 287) state=active
+[sllink][spike] FLUSH #593 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #544 (idle 288) state=active
+[sllink][spike] FLUSH #594 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #545 (idle 289) state=active
+[sllink][spike] FLUSH #595 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #546 (idle 290) state=active
+[sllink][spike] FLUSH #596 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #547 (idle 291) state=active
+[sllink][spike] FLUSH #597 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] paint queued (6 msgs) mode=zoom "A18 Flutes"
+[sllink][spike] FLUSH #598 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #548 (idle 291) state=active
+[sllink][spike] FLUSH #599 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #549 (idle 291) state=active
+[sllink][spike] FLUSH #600 regionId=zname1 bytes=35 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #550 (idle 291) state=active
+[sllink][spike] FLUSH #601 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #551 (idle 291) state=active
+[sllink][spike] FLUSH #602 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #552 (idle 291) state=active
+[sllink][spike] FLUSH #603 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #553 (idle 292) state=active
+[sllink][spike] FLUSH #604 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #554 (idle 293) state=active
+[sllink][spike] FLUSH #605 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #555 (idle 294) state=active
+[sllink][spike] FLUSH #606 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #556 (idle 295) state=active
+[sllink][spike] FLUSH #607 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #557 (idle 296) state=active
+[sllink][spike] FLUSH #608 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #558 (idle 297) state=active
+[sllink][spike] FLUSH #609 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #559 (idle 298) state=active
+[sllink][spike] FLUSH #610 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] controller_select_patch: "m.31 A18 Flutes" (3 rows in set) concert="Joseph key2" set="11. Poor, poor pharaoh / Song of the king"
+[sllink] update queued (2 msgs) mode=zoom "m.31 A18 Flutes"
+[sllink][spike] FLUSH #611 regionId=zname1 bytes=40 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #560 (idle 298) state=active
+[sllink][spike] FLUSH #612 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #561 (idle 299) state=active
+[sllink][spike] FLUSH #613 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #562 (idle 300) state=active
+[sllink][spike] FLUSH #614 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #563 (idle 301) state=active
+[sllink][spike] FLUSH #615 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #564 (idle 302) state=active
+[sllink][spike] FLUSH #616 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #565 (idle 303) state=active
+[sllink][spike] FLUSH #617 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #566 (idle 304) state=active
+[sllink][spike] FLUSH #618 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #567 (idle 305) state=active
+[sllink][spike] FLUSH #619 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #568 (idle 306) state=active
+[sllink][spike] FLUSH #620 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #569 (idle 307) state=active
+[sllink][spike] FLUSH #621 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #570 (idle 308) state=active
+[sllink][spike] FLUSH #622 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] paint queued (6 msgs) mode=zoom "m.31 A18 Flutes"
+[sllink][spike] FLUSH #623 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #571 (idle 308) state=active
+[sllink][spike] FLUSH #624 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #572 (idle 308) state=active
+[sllink][spike] FLUSH #625 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #573 (idle 308) state=active
+[sllink][spike] FLUSH #626 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #574 (idle 308) state=active
+[sllink][spike] FLUSH #627 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #575 (idle 308) state=active
+[sllink][spike] FLUSH #628 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #576 (idle 309) state=active
+[sllink][spike] FLUSH #629 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #577 (idle 310) state=active
+[sllink][spike] FLUSH #630 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #578 (idle 311) state=active
+[sllink][spike] FLUSH #631 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #579 (idle 312) state=active
+[sllink][spike] FLUSH #632 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #580 (idle 313) state=active
+[sllink][spike] FLUSH #633 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #581 (idle 314) state=active
+[sllink][spike] FLUSH #634 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #582 (idle 315) state=active
+[sllink][spike] FLUSH #635 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #583 (idle 316) state=active
+[sllink][spike] FLUSH #636 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #584 (idle 317) state=active
+[sllink][spike] FLUSH #637 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #585 (idle 318) state=active
+[sllink][spike] FLUSH #638 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] paint queued (6 msgs) mode=zoom "m.31 A18 Flutes"
+[sllink][spike] FLUSH #639 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #586 (idle 318) state=active
+[sllink][spike] FLUSH #640 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #587 (idle 318) state=active
+[sllink][spike] FLUSH #641 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #588 (idle 318) state=active
+[sllink][spike] FLUSH #642 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #589 (idle 318) state=active
+[sllink][spike] FLUSH #643 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #590 (idle 318) state=active
+[sllink][spike] FLUSH #644 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #591 (idle 319) state=active
+[sllink][spike] FLUSH #645 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #592 (idle 320) state=active
+[sllink][spike] FLUSH #646 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 00 01 F7
+[sllink] <- LOGIN - session active
+[sllink] msg_write_text: clamping "11. Poor, poor pharaoh / Song of the king" (41 chars) to 37 chars - transport limit (see TEXT_STRING_CAP), not a visual-truncation change; Max Width still does its own "..." truncation on screen.
+[sllink] paint queued (6 msgs) mode=zoom "m.31 A18 Flutes"
+[sllink][spike] FLUSH #647 regionId=zcnc bytes=36 queueDepthAfter=5
+[sllink] timer tick #593 (idle 320) state=active
+[sllink][spike] FLUSH #648 regionId=zset bytes=62 queueDepthAfter=4
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #594 (idle 320) state=active
+[sllink][spike] FLUSH #649 regionId=zname1 bytes=40 queueDepthAfter=3
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #595 (idle 320) state=active
+[sllink][spike] FLUSH #650 regionId=zname2 bytes=25 queueDepthAfter=2
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #596 (idle 320) state=active
+[sllink][spike] FLUSH #651 regionId=zpos bytes=28 queueDepthAfter=1
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #597 (idle 320) state=active
+[sllink][spike] FLUSH #652 regionId=none bytes=36 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #598 (idle 321) state=active
+[sllink][spike] FLUSH #653 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
+[sllink] timer tick #599 (idle 322) state=active
+[sllink][spike] FLUSH #654 regionId=none bytes=10 queueDepthAfter=0
+[sllink] <- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 7F 03 01 F7
