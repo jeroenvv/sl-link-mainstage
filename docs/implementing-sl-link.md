@@ -150,6 +150,16 @@ ALIGN: `0x00` left, `0x01` centre, `0x02` right. SIZE: `0x00` small (21 px), `0x
 appends `...` itself. Do not pre-truncate strings by character count — you will cut correct text
 short and still not control the pixel result. `0` means "print it all".
 
+**...but Max Width truncation is unreliable at `SIZE_BIG`.** Confirmed 2026-08-20: a long patch name
+at `SIZE_BIG` with `maxWidth = 304` rendered as a *single letter* followed by an ellipsis. At big
+size, pass `maxWidth = 0` and control the length in your own code instead — wrapping across two
+lines works well. The advice above still holds at `SIZE_SMALL`.
+
+**The text background fills the whole Max Width box, not just the glyph run.** Confirmed twice on
+hardware: an empty string drawn with a coloured background still painted a visible full-width bar,
+and a calibration screen's bands spanned the full screen width. This is what makes inverse-video
+highlighting cost one message per row, with no backing rectangle needed.
+
 **Text is opaque.** Write Text "will completely overwrite any existing content on the screen pixels
 within the area where the text is printed". Two consequences worth designing around:
 

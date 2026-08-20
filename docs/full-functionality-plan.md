@@ -172,7 +172,21 @@ declared as `items` and mapped, by hand in MainStage if necessary.
 **Spike:** on a joystick press, return `{midi={0xBF,0x00,set, 0xBF,0x20,patch, 0xCF,0x00}}` with no
 `outport`, and see whether MainStage switches patch.
 
-### Q2. Do SL88 button/encoder SysEx messages reach the script? (blocks Phases 2, 4, 5)
+### Q2. Do SL88 button/encoder SysEx messages reach the script? — ANSWERED 2026-08-20: YES
+
+Confirmed on hardware. Buttons (`ItemType 0x01`) and Encoders (`0x03`) both arrive at
+`controller_midi_in`. BIDs seen: `0x00`-`0x07`, `0x10`, `0x11`-`0x15`, in both SHORT and LONG.
+Encoder speed sensitivity confirmed live (`delta=8` observed). **Q7 is answered at the same time: the
+physical Zoom button is BID `0x10`**, which the spec calls Home — the working assumption was right.
+
+The fallback route in Q2's second half is **not available**: the SL88's buttons emit **no ordinary
+channel-voice MIDI**. That negative rests on a *proven* observation path — the modulation wheel
+produced 311 CC messages through the same logging that stayed silent across every button press in two
+separate runs. So inbound substitution (Q1a), not declared `items`, is the route for Phase 2.
+
+The original question and its reasoning follow.
+
+### Q2 (original). Do SL88 button/encoder SysEx messages reach the script?
 
 Everything so far only proves *query replies* arrive. The SL88 sends Button (`ItemType 0x01`) and
 Encoder (`0x03`) SL Link messages while a host is logged in, but that has never been observed from Lua.
@@ -298,16 +312,29 @@ restore should use.
 smaller and should be safer, but that is an assumption — verify a large rect fill does not race the
 same way before relying on it, and keep erase rects as small as the layout allows.
 
-
-
 - Keep the whole patch list from `controller_select_patch` (it already provides `patchlist` with
   `.IsPatch`, `.PatchIndex`, `.SetIndex`, `.Label`).
 - Model: current set index, highlight index, scroll offset.
-- Render a window of N rows (start with N = 6, small text, ~22 px apart) plus a header showing the set
-  name. Highlight = inverted foreground/background on that row.
 - Per-row memoization: keep the last string+colour drawn per row id and skip unchanged rows.
 - **Acceptance:** the list matches MainStage, and changing patch in MainStage moves the highlight,
   redrawing at most two rows.
+
+**Resolved layout** (implemented in `config.lua`, superseding the original "N = 6 rows, ~22 px apart"
+sketch):
+
+- **Header, both modes' top region.** Two lines, `SIZE_SMALL`: the concert name dim grey
+  (`120,120,120` on black) at `y = 2`, left-aligned; below it at `y = 25`, the set name in blue
+  (`110,170,230` on black), left-aligned, sharing the row with an `n/N` position counter in the same
+  blue, right-aligned against the right margin.
+- **List mode rows.** `ROW_COUNT = 7` rows at `x = 8`, `maxWidth = 304`, starting at `ROW_Y0 = 52` and
+  spaced `ROW_PITCH = 27` px apart. Each row is one of four colour states (fg/bg, `SIZE_SMALL`,
+  left-aligned): `ROW_NORMAL` grey-on-black (`150,150,150`/`0,0,0`), `ROW_ACTIVE` amber-on-black
+  (`255,170,40`/`0,0,0`) for the playing patch, `ROW_CURSOR` inverted black-on-white
+  (`0,0,0`/`255,255,255`) for the browse cursor, and `ROW_CURSOR_ACTIVE` black-on-amber
+  (`0,0,0`/`255,170,40`) when cursor and active patch coincide.
+- **Zoom mode.** All four lines centred (`ALIGN_CENTER`) at `x = 8`, `maxWidth = 304`: concert (dim
+  grey) at `y = 12`, set name (blue) at `y = 40`, patch name at `SIZE_BIG`/white at `y = 102`, and the
+  `n/N` counter (dim grey) at `y = 172`.
 
 ### Phase 2 — Navigation and selection
 
