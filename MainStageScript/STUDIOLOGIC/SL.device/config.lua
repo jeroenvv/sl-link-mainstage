@@ -21,9 +21,15 @@
 --     MainStage reports the right one as controller_midi_in's portName.
 --  2. One message per flush, <= FLUSH_BUDGET bytes. Over MainStage's ceiling
 --     (~78-87) the ENTIRE returned array is dropped, not just the overflow.
---  3. Never send Clear Screen. It races with the draws that follow it and
---     loses a line - a different one each run. Write Text overwrites the
---     pixels it covers, so redrawing is self-cleaning.
+--  3. Never send Clear Screen INSIDE AN ORDINARY REPAINT. It used to race
+--     with the draws that follow it and lose a line - a different one each
+--     run - but that was the display-pacing bug displayFlushReady fixed (see
+--     its declaration), not a property of Clear Screen itself. Write Text
+--     overwrites the pixels it covers, so redrawing is self-cleaning, which
+--     is still why ordinary repaints never need one. The one deliberate
+--     exception, dated 2026-08-21, is set_display_mode's mode switch (see
+--     that function's comment) - queued alone, never bundled with a Write
+--     Text, paired with its own settle guard.
 --  4. Never truncate strings. Max Width truncates visually in pixels and
 --     appends '...' itself.
 --  5. Display messages must be paced to at most ONE per timer tick. The
@@ -205,6 +211,18 @@ reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
 -- that has nothing to do with it.
 displayFlushReady = true
 
+-- CLEAR SCREEN SETTLE GUARD (2026-08-21, see set_display_mode's comment for
+-- why Clear Screen is sent there at all). A full-screen clear plausibly takes
+-- the panel longer to paint than an ordinary text line, and FLUSH_SOON_MS
+-- dropping to 50ms (see that constant) leaves even less margin than before.
+-- Set to 1 by flush_pending() the moment it emits a Clear Screen; decremented
+-- by controller_timer_trigger, which withholds that tick's displayFlushReady
+-- grant while this is nonzero - so the draw that follows a clear gets roughly
+-- two tick periods of quiet instead of one. Protocol messages and the
+-- trailing Identification Query are never gated by displayFlushReady at all,
+-- so the session clock keeps running through the settle regardless.
+displaySettleTicks = 0
+
 -- Counts every display message queue_message() handles (append OR coalesced
 -- replace-in-place). update_screen()/paint_screen() used to detect "did this
 -- paint queue anything real" by comparing #pendingMessages before/after -
@@ -298,9 +316,42 @@ WRITE_TEXT_OVERHEAD = 25
 -- happened on every inbound SL frame (~2ms round trips), far faster than
 -- this value. Now that flush_pending() gates display messages behind
 -- displayFlushReady (set once per timer tick), this is genuinely the pace a
--- repaint drains at: one display message every FLUSH_SOON_MS. Left at 100 in
--- this change - retuning it is a separate, later experiment.
-FLUSH_SOON_MS = 100
+-- repaint drains at: one display message every FLUSH_SOON_MS.
+--
+-- RETUNED 2026-08-21: lowered from 100 to 50 to cut patch-change latency - a
+-- hardware report found switching patches could take up to two seconds,
+-- which combined with the 3s keepalive cadence to reach the SL88's ~5s host
+-- timeout and drop the session (see flush_pending's DEFECT B FIX for the
+-- other half of that fix). 100 was left in place when DEFECT A was fixed
+-- specifically because retuning it was deferred to a later, deliberate
+-- experiment - it was never itself measured as a floor, just an untested
+-- holdover.
+--
+-- SWEEP PLAN, one value at a time, each verified on hardware before moving
+-- on: 50 (current) -> 35 -> 25. Change only this one constant per hardware
+-- run (see test-mainstage-script's "one variable per run" rule) and read
+-- /tmp/lua.log's FLUSH/tick lines (both now carry the tick number and queue
+-- depth - see their print statements) to confirm every expected region still
+-- renders. 100 is the last KNOWN-GOOD value - if display messages start
+-- going missing (a row or zoom region never appears, or a shorter name
+-- leaves a stale tail) on any step of the sweep, that step went one too far:
+-- revert to the previous value in the list, and if 50 itself already loses
+-- messages, revert all the way to 100.
+--
+-- Reducing a captured hardware log to a per-message interval table (note:
+-- /tmp/lua.log itself has no per-line timestamps - restart-mainstage.sh
+-- redirects stdout raw - so capture it through a timestamping filter first,
+-- e.g. `... | while IFS= read -r l; do printf '%s %s\n' "$(date
+-- '+%H:%M:%S.%3N')" "$l"; done > /tmp/lua.log`, or pipe through moreutils'
+-- `ts '%H:%M:.S'` if installed):
+--   grep -E '\[sllink\] (FLUSH|timer tick)' /tmp/lua.log | \
+--     awk '{ts=$1; if (p!="") printf "%s -> %s  %s\n", p, ts, $0; p=ts}'
+-- prints each FLUSH/tick line paired with the timestamp delta since the
+-- previous one - the `tick=`/`pending=`/`queueDepthAfter=` fields already in
+-- each line then tell you how many ticks and how much queue depth changed
+-- per interval, without needing a Lua-side clock (there isn't one - `os` is
+-- absent in this environment).
+FLUSH_SOON_MS = 50
 
 -- `regionId`, when given, is stashed as a NAMED field on the message table
 -- (Lua's `#`/ipairs only see the integer-keyed byte sequence, so this rides
@@ -380,15 +431,62 @@ function flush_pending(includeQuery)
 	-- displayFlushReady is true, and doing so clears it. A non-display,
 	-- protocol message at the front of the queue (identification, keepalive,
 	-- logout) is never gated - it dequeues exactly as before, every flush.
+	--
+	-- DEFECT B FIX (established on hardware 2026-08-21): the above only ever
+	-- looked at pendingMessages[1]. During a repaint drain, a keepalive queued
+	-- BEHIND a display message sat stuck there until the whole display
+	-- backlog cleared, one message every FLUSH_SOON_MS -
+	-- controller_timer_trigger's "protocol messages dequeue every flush
+	-- regardless" comment was only true once a protocol message actually
+	-- reached the head of the queue. Combined with the 3s keepalive cadence,
+	-- a slow repaint could miss the SL88's ~5s host timeout and drop the
+	-- session mid-repaint.
+	--
+	-- Fix: if the head message can't go out this flush (it is IT_DISPLAY and
+	-- displayFlushReady is false), scan forward for the FIRST protocol
+	-- message (itemType ~= IT_DISPLAY) and let it jump the queue instead,
+	-- removed from its own position with everything else left untouched.
+	-- Display messages never reorder relative to each other - only a
+	-- protocol message can jump ahead of ones still waiting on
+	-- displayFlushReady. Still at most one queued message per flush, still
+	-- paired with the query below.
 	if #pendingMessages > 0 then
-		local m = pendingMessages[1]
-		local isDisplay = (m[8] == IT_DISPLAY)
-		if (not isDisplay or displayFlushReady) and #m + reserve <= FLUSH_BUDGET then
-			table.remove(pendingMessages, 1)
+		local head = pendingMessages[1]
+		local headIsDisplay = (head[8] == IT_DISPLAY)
+		local index, m = nil, nil
+		if not headIsDisplay or displayFlushReady then
+			index, m = 1, head
+		else
+			for i = 2, #pendingMessages do
+				if pendingMessages[i][8] ~= IT_DISPLAY then
+					index, m = i, pendingMessages[i]
+					break
+				end
+			end
+		end
+
+		if m ~= nil and #m + reserve <= FLUSH_BUDGET then
+			local isDisplay = (m[8] == IT_DISPLAY)
+			table.remove(pendingMessages, index)
 			for i = 1, #m do out[#out + 1] = m[i] end
-			if isDisplay then displayFlushReady = false end
+			if isDisplay then
+				displayFlushReady = false
+				-- CLEAR SCREEN SETTLE GUARD: see displaySettleTicks'
+				-- declaration. A Clear Screen going out earns the next
+				-- draw an extra tick of quiet on top of the ordinary
+				-- one-per-tick pacing.
+				if m[9] == DISP_CLEAR_SCREEN then displaySettleTicks = 1 end
+			end
 			flushCounter = flushCounter + 1
+			-- CADENCE INSTRUMENTATION (2026-08-21): `tick=` ties this FLUSH to
+			-- controller_timer_trigger's tick print (the tick counter is a
+			-- plain global, incremented there) so a captured log can be
+			-- reduced to "tick N emitted region R, depth D" even though
+			-- flushes can also happen off-tick (inbound-frame flushes in
+			-- controller_midi_in, controller_select_patch) - a FLUSH whose
+			-- tick= repeats the previous FLUSH's is exactly one of those.
 			print('[sllink] FLUSH #' .. flushCounter ..
+			      ' tick=' .. timerTicks ..
 			      ' regionId=' .. tostring(m.regionId or 'none') ..
 			      ' bytes=' .. #m ..
 			      ' queueDepthAfter=' .. #pendingMessages)
@@ -622,27 +720,32 @@ ROW_MAXW = 304
 -- font).
 BIG_MAX_CHARS = 27
 
--- Same idea, for SIZE_MEDIUM text on the zoom screen (zset/znext - see that
--- constant's comment above for why its geometry is an estimate). SIZE_MEDIUM
--- is smaller than SIZE_BIG, so more characters fit in the same width; also
--- unmeasured, retune the same way as BIG_MAX_CHARS.
+-- Same idea, for SIZE_MEDIUM text on the zoom screen. Only zset uses this now
+-- (see that constant's comment above for why its geometry is an estimate) -
+-- znext moved to SIZE_SMALL + trusted Max Width (see ZSET_TRUST_MAXWIDTH
+-- below) on 2026-08-21 to cut it from 2 queued messages to 1, since it no
+-- longer needs character-count truncation at all. SIZE_MEDIUM is smaller than
+-- SIZE_BIG, so more characters fit in the same width; also unmeasured, retune
+-- the same way as BIG_MAX_CHARS.
 MEDIUM_MAX_CHARS = 36
 
--- truncate_text() cuts zname/zset/znext to exactly these character counts
--- (when ZSET_ZNEXT_TRUST_MAXWIDTH is false - see that flag below) before
--- they are drawn (see draw_text_with_erase() below for how the vacated band
--- is cleared). Assert the budget relationship rather than assuming it:
--- TEXT_STRING_CAP is msg_write_text's hard transport clamp (FLUSH_BUDGET
--- minus wire overhead - see TEXT_STRING_CAP's comment), and if either
--- MAX_CHARS constant is ever retuned past it, msg_write_text would silently
--- re-truncate the already-truncated string, losing truncate_text()'s own
--- "..." and cutting mid-word.
+-- truncate_text() cuts zname/zset to exactly these character counts (when
+-- ZSET_TRUST_MAXWIDTH is false, for zset - see that flag below; zname always
+-- truncates itself) before they are drawn (see draw_text_with_erase() below
+-- for how the vacated band is cleared). znext no longer calls truncate_text()
+-- at all - see MEDIUM_MAX_CHARS's comment above. Assert the budget
+-- relationship rather than assuming it: TEXT_STRING_CAP is msg_write_text's
+-- hard transport clamp (FLUSH_BUDGET minus wire overhead - see
+-- TEXT_STRING_CAP's comment), and if either MAX_CHARS constant is ever
+-- retuned past it, msg_write_text would silently re-truncate the
+-- already-truncated string, losing truncate_text()'s own "..." and cutting
+-- mid-word.
 assert(BIG_MAX_CHARS <= TEXT_STRING_CAP,
        'BIG_MAX_CHARS must fit within TEXT_STRING_CAP or zname draws would be re-truncated on the wire')
 assert(MEDIUM_MAX_CHARS <= TEXT_STRING_CAP,
-       'MEDIUM_MAX_CHARS must fit within TEXT_STRING_CAP or zset/znext draws would be re-truncated on the wire')
+       'MEDIUM_MAX_CHARS must fit within TEXT_STRING_CAP or zset draws would be re-truncated on the wire')
 
--- SCROLL-OFF MARGIN (vim's `scrolloff`): the window shifts once the cursor
+-- SCROLL-OFF MARGIN (vim's `scrolloff`): a scroll TRIGGERS once the cursor
 -- comes within SCROLL_MARGIN rows of an edge, so at least this many rows of
 -- context stay visible beyond it - Jeroen's requirement that at least one
 -- patch AFTER the current one is always on screen, so you can see what you
@@ -652,29 +755,104 @@ assert(MEDIUM_MAX_CHARS <= TEXT_STRING_CAP,
 -- A margin of 2 guarantees a real patch is visible even at a set boundary -
 -- see the design doc's worked example. Asserted below rather than assumed:
 -- SCROLL_MARGIN must stay under half the window or this rule and the final
--- clamp fight each other.
+-- clamp fight each other. What happens ONCE triggered is PAGE_OVERLAP's and
+-- clamp_scroll's concern, not this constant's - see both below.
 SCROLL_MARGIN = 2
 assert(SCROLL_MARGIN < ROW_COUNT / 2,
        'SCROLL_MARGIN must be less than ROW_COUNT / 2 or the margin and the final clamp fight each other')
 
+-- PAGE JUMP (2026-08-21, replacing one-row edge-triggered scrolling - see
+-- clamp_scroll's comment for the measured cost and why it was abandoned).
+--
+-- How many rows of the OLD window survive, unmoved, as the new window's own
+-- leading rows (scrolling forward) or trailing rows (scrolling backward) -
+-- some visual overlap so the eye has something familiar to re-anchor on when
+-- the screen jumps, rather than every row changing at once with nothing to
+-- orient by.
+--
+-- NOT an independently chosen 1-2 rows, even though that was the first
+-- instinct: the cursor's landing position after a jump is NOT a free choice
+-- once SCROLL_MARGIN and ROW_COUNT are fixed - see clamp_scroll's comment.
+-- Landing the cursor right at the edge it jumped TO (the smallest possible
+-- overlap) puts it back inside the OPPOSITE margin's trigger zone, and a
+-- harness sweep caught this concretely: five page jumps fired back to back,
+-- because a forward jump that lands at row 0 is, by definition, within
+-- SCROLL_MARGIN of the TOP edge, so the very next step re-triggers a
+-- BACKWARD jump, which lands at the last row - within SCROLL_MARGIN of the
+-- BOTTOM edge - re-triggering forward again. That oscillation is a worse
+-- version of the exact bug this change exists to fix, not a smaller overlap.
+-- The only landing spot that is safe from BOTH margins at once is
+-- SCROLL_MARGIN rows in from the edge just crossed, which forces
+-- PAGE_OVERLAP = 2 * SCROLL_MARGIN (4 rows here, not 1-2) - derived, not
+-- picked. See the design doc for the full derivation and the harness trace
+-- that caught the oscillating version.
+PAGE_OVERLAP = 2 * SCROLL_MARGIN
+assert(PAGE_OVERLAP < ROW_COUNT,
+       'PAGE_OVERLAP must be less than ROW_COUNT or a jump does not move the window at all')
+
 -- Keeps scrollOffset such that cursorIndex is always inside the visible
 -- window, with SCROLL_MARGIN rows of context beyond it wherever the list
--- itself allows - edge-triggered, NOT re-centring: the window moves the
--- minimum amount needed to honour the margin, because a scroll costs a full
--- ROW_COUNT-row repaint where an in-window cursor move costs 2 messages (see
--- the design doc's redraw cost table). The final clamp is what makes the
--- ends behave: near the top or bottom of the list the margin cannot be
--- maintained, so the offset pins at its limit and the cursor moves into the
--- margin instead - standard scrolloff behaviour, and it must never re-centre.
+-- itself allows.
+--
+-- ONE-ROW SHIFT, ABANDONED (2026-08-21, hardware report: list-mode patch
+-- changes took up to ~2s and could drop the session). The original policy
+-- here moved scrollOffset the MINIMUM amount needed to restore the margin -
+-- and a hardware-report-driven audit (see docs/, and the harness this
+-- function is tested against) found that minimum is USUALLY one row, and
+-- landing the cursor with the minimum shift ALWAYS puts it exactly
+-- SCROLL_MARGIN rows from the far edge (nowhere else it could land and still
+-- satisfy the margin) - one row short of retriggering. During ordinary
+-- monotonic browsing (advancing one patch at a time, the realistic gig
+-- pattern) that meant EVERY SINGLE STEP once past the first couple of moves
+-- re-triggered another one-row scroll, and a scroll costs a full
+-- ROW_COUNT-row repaint (see the design doc's redraw cost table) where an
+-- in-window cursor move costs 2 messages - so nearly every patch change was
+-- paying for a full-window redraw it didn't need to.
+--
+-- PAGE JUMP, now: once triggered, the window jumps by (ROW_COUNT -
+-- PAGE_OVERLAP) rows in the direction of travel, landing the cursor
+-- SCROLL_MARGIN rows in from the edge it just crossed - the FIRST safe row
+-- (scrolling forward: row SCROLL_MARGIN) or the LAST safe row (scrolling
+-- backward: row ROW_COUNT-1-SCROLL_MARGIN). That is the landing spot with
+-- maximum runway in the direction of travel while staying clear of BOTH
+-- margins at once (see PAGE_OVERLAP's comment for why the naive "land right
+-- at the edge" version oscillates). With ROW_COUNT=8 and SCROLL_MARGIN=2
+-- that is 4 safe steps before the next trigger - i.e. roughly one jump every
+-- five advances, not one every single advance.
+--
+-- The cursor's landing row is computed directly from cursorIndex, not as an
+-- offset from the OLD scrollOffset, so this is correct for a jump of any
+-- size (a single patch step, or the much bigger cursorIndex jump a set
+-- change or full repaint can produce) without a separate case for either.
+-- Still edge-triggered, NOT re-centring on every move - only a trigger
+-- crossing SCROLL_MARGIN causes any of this; an in-window move still costs
+-- nothing here (scrollOffset untouched, the cheap 2-message case).
+--
+-- The final clamp is what makes the list's own ends behave: near the top or
+-- bottom, the landing guarantee cannot always be honoured (there may not be
+-- another full page beyond it), so the offset pins at its limit and the
+-- cursor moves further into the window instead - same principle as the old
+-- scrolloff clamp, just with a page-sized jump instead of a one-row one.
+-- This is also what keeps the LAST page a full ROW_COUNT-row window rather
+-- than a short one: scrollOffset can never exceed #listRows - ROW_COUNT, so
+-- the window only ever shrinks by never existing (a list shorter than
+-- ROW_COUNT), never by trailing off with blank rows at the end of a jump.
+--
 -- Standalone rather than inlined into controller_select_patch so Phase 2's
 -- joystick-driven cursor movement can call it too instead of re-deriving the
 -- same clamp arithmetic.
 function clamp_scroll()
 	local m = SCROLL_MARGIN
 	if cursorIndex - m < scrollOffset then
-		scrollOffset = cursorIndex - m
+		-- Triggered scrolling BACKWARD: land SCROLL_MARGIN rows in from the
+		-- window's LAST row - symmetric with the forward branch below, and
+		-- the one landing spot that is safe from both margins (see
+		-- PAGE_OVERLAP's comment).
+		scrollOffset = cursorIndex - (ROW_COUNT - 1 - m)
 	elseif cursorIndex + m >= scrollOffset + ROW_COUNT then
-		scrollOffset = cursorIndex + m - ROW_COUNT + 1
+		-- Triggered scrolling FORWARD: land SCROLL_MARGIN rows in from the
+		-- window's FIRST row.
+		scrollOffset = cursorIndex - m
 	end
 	local maxOffset = math.max(0, #listRows - ROW_COUNT)
 	if scrollOffset > maxOffset then scrollOffset = maxOffset end
@@ -868,21 +1046,35 @@ function draw_text_with_erase(id, text, x, y, align, size, fr, fg, fb, eraseX, e
 	queue_message(msg_write_text(text, x, y, 0, align, size, fr, fg, fb, 0, 0, 0), id .. ':text')
 end
 
--- SAFE default: false, i.e. zset/znext keep using draw_text_with_erase()
--- (maxWidth=0, explicit erase rect) exactly like zname. Max Width truncation
--- is only CONFIRMED broken at SIZE_BIG (see BIG_MAX_CHARS's comment) - it
--- has never been tested at SIZE_MEDIUM, which is what zset/znext use. If a
--- hardware check confirms it truncates correctly at SIZE_MEDIUM too, flip
--- this to true: zset/znext then draw with draw_text() at a real, non-zero
--- maxWidth (self-clearing, like every list row - see draw_list_row()), no
--- erase rect, no truncate_text() call (the device does its own pixel-exact
--- "..." truncation, same as list rows), halving their cost from 2 messages
--- to 1 and removing the ~100ms blank-band flicker on every set/next change.
--- WHAT TO LOOK FOR on hardware after flipping it: a long set name or NEXT
--- line should truncate cleanly with a trailing "..." (not a single letter,
--- which is the SIZE_BIG failure mode) and a shorter name replacing a longer
--- one must not leave a stale tail. Flip back immediately if either happens.
-ZSET_ZNEXT_TRUST_MAXWIDTH = false
+-- Governs zset ONLY (renamed from ZSET_ZNEXT_TRUST_MAXWIDTH on 2026-08-21,
+-- when znext moved off this flag entirely - see below). SAFE default: false,
+-- i.e. zset keeps using draw_text_with_erase() (maxWidth=0, explicit erase
+-- rect) exactly like zname. Max Width truncation is only CONFIRMED broken at
+-- SIZE_BIG (see BIG_MAX_CHARS's comment) - it has never been tested at
+-- SIZE_MEDIUM, which is what zset uses. If a hardware check confirms it
+-- truncates correctly at SIZE_MEDIUM too, flip this to true: zset then draws
+-- with draw_text() at a real, non-zero maxWidth (self-clearing, like every
+-- list row - see draw_list_row()), no erase rect, no truncate_text() call
+-- (the device does its own pixel-exact "..." truncation, same as list rows),
+-- halving its cost from 2 messages to 1 and removing the ~100ms blank-band
+-- flicker on every set change. WHAT TO LOOK FOR on hardware after flipping
+-- it: a long set name should truncate cleanly with a trailing "..." (not a
+-- single letter, which is the SIZE_BIG failure mode) and a shorter name
+-- replacing a longer one must not leave a stale tail. Flip back immediately
+-- if either happens.
+--
+-- znext DELIBERATELY moved off this flag on 2026-08-21 (hardware report: the
+-- NEXT line reads as too visually prominent, and every zoom-screen patch
+-- change was paying for a second queued message it did not need). It now
+-- always draws SIZE_SMALL through the ordinary self-clearing draw_text() path
+-- - no truncate_text() call, no erase rect - trusting Max Width
+-- unconditionally rather than gating it behind a flag: Max Width truncation
+-- is only CONFIRMED broken at SIZE_BIG (see BIG_MAX_CHARS's comment above),
+-- and every list row already trusts it at SIZE_SMALL without incident, which
+-- is why SIZE_SMALL is the one regime where trusting it needs no hardware
+-- check first. This drops znext from 2 queued messages to 1 on every patch
+-- change.
+ZSET_TRUST_MAXWIDTH = false
 
 -- "NEXT" line for the zoom screen: the next listRows entry after the ACTIVE
 -- patch with isPatch true, skipping set headers - i.e. what you are about to
@@ -916,17 +1108,21 @@ end
 --
 -- zname always truncates itself via truncate_text() and draws through
 -- draw_text_with_erase() (maxWidth=0) - Max Width truncation is CONFIRMED
--- broken at SIZE_BIG, so there is no flag for it. zset/znext do the same
--- UNLESS ZSET_ZNEXT_TRUST_MAXWIDTH is flipped on (see that flag above), in
--- which case they draw self-clearing at a real maxWidth like list rows.
+-- broken at SIZE_BIG, so there is no flag for it. zset does the same UNLESS
+-- ZSET_TRUST_MAXWIDTH is flipped on (see that flag above), in which case it
+-- draws self-clearing at a real maxWidth like list rows. znext (2026-08-21)
+-- always draws SIZE_SMALL, self-clearing, at a real maxWidth, unconditionally
+-- - see ZSET_TRUST_MAXWIDTH's comment for why it no longer shares zset's flag.
 -- Revised layout (design doc): zcnc y=12, zset y=44, zname y=100, znext
--- y=170, zpos y=210 - bands 12-33 / 44-71 / 100-133 / 170-197 / 210-231, all
--- non-overlapping. Retune together with ROW_Y0-style constants if the
--- layout ever moves again.
+-- y=170, zpos y=210 - bands 12-33 / 44-71 / 100-133 / 170-191 / 210-231, all
+-- non-overlapping (znext's band shrank from SIZE_MEDIUM's ~27px to
+-- SIZE_SMALL's 21px on 2026-08-21, still clear of zname above and zpos
+-- below). Retune together with ROW_Y0-style constants if the layout ever
+-- moves again.
 function paint_zoom_screen()
 	draw_text('zcnc', currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 
-	if ZSET_ZNEXT_TRUST_MAXWIDTH then
+	if ZSET_TRUST_MAXWIDTH then
 		draw_text('zset', setName, 8, 44, SCREEN_WIDTH - 16, ALIGN_CENTER, SIZE_MEDIUM,
 			110, 170, 230, 0, 0, 0)
 	else
@@ -939,15 +1135,13 @@ function paint_zoom_screen()
 		8, 100, ALIGN_CENTER, SIZE_BIG, 255, 255, 255,
 		0, 100, SCREEN_WIDTH, 33)
 
-	local nextText = next_line_text()
-	if ZSET_ZNEXT_TRUST_MAXWIDTH then
-		draw_text('znext', nextText, 8, 170, SCREEN_WIDTH - 16, ALIGN_CENTER, SIZE_MEDIUM,
-			80, 200, 120, 0, 0, 0)
-	else
-		draw_text_with_erase('znext', truncate_text(nextText, MEDIUM_MAX_CHARS),
-			8, 170, ALIGN_CENTER, SIZE_MEDIUM, 80, 200, 120,
-			0, 170, SCREEN_WIDTH, 27)
-	end
+	-- SIZE_SMALL + trusted Max Width, unconditionally - no flag, no
+	-- truncate_text(), no erase rect. See ZSET_TRUST_MAXWIDTH's comment for
+	-- why znext no longer shares zset's gated path: SIZE_SMALL is the one
+	-- regime list rows already trust Max Width in, so it needs no hardware
+	-- check first. One queued message instead of two.
+	draw_text('znext', next_line_text(), 8, 170, SCREEN_WIDTH - 16, ALIGN_CENTER, SIZE_SMALL,
+		80, 200, 120, 0, 0, 0)
 
 	-- n/N is the cursor's position in the flat listRows (headers included),
 	-- not a per-set patch count - the flat list has no per-set count left to
@@ -1146,20 +1340,46 @@ function paint_screen()
 end
 
 -- Mode switching. Wired to the Zoom button (BID_ZOOM, confirmed on hardware -
--- see handle_zoom_button). Clear Screen stays banned, so the erase is a
--- single full-screen black rect, which is the only message in its flush and
--- therefore already has ~100ms of quiet after it structurally, unlike the old
--- Clear Screen failure which was bundled into a repaint.
+-- see handle_zoom_button).
+--
+-- CLEAR SCREEN EXPERIMENT (2026-08-21): this is now the ONE place in the
+-- file that sends Clear Screen - see the file-header rule 3 for why it stays
+-- banned everywhere else. HARDWARE REPORT: the previous full-screen black
+-- msg_draw_rect left visible text remnants of the outgoing screen after a
+-- mode switch - either the SL88 ignores/drops a rect that large, or paints
+-- it too slowly for the repaint that follows not to race it. Clear Screen's
+-- original ban came from a since-superseded finding (one text line missing
+-- per repaint, later understood to be the display-pacing bug
+-- displayFlushReady fixed - see that flag's declaration), so this is the
+-- deliberate re-test now that the pacing bug is fixed, not a reversal of the
+-- ban itself. Queued as its own discrete message with no regionId - never
+-- coalesced, never bundled into an array with a Write Text, since the old
+-- failure mode was always a clear bundled with drawing - and paired with a
+-- SETTLE guard (see displaySettleTicks) since a full-screen clear plausibly
+-- takes longer to paint than a text line. FALLBACK if remnants or dropped
+-- lines return on hardware: revert to the full-screen black
+-- msg_draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0) this replaced.
 function set_display_mode(mode)
 	if mode ~= 'list' and mode ~= 'zoom' then return end
 	displayMode = mode
 	drop_queued_display()
 	invalidate_all()
-	queue_message(msg_draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0))
+	queue_message(msg_clear_screen(0, 0, 0))
+	local before = queuedDisplayOps
 	if mode == 'zoom' then
 		paint_zoom_screen() -- redundant with the full-screen erase above, but each name draw erases its own band anyway
 	else
 		paint_list_screen()
+	end
+	-- AUDIT FIX (2026-08-21): this repaint had no trailing sacrificial
+	-- redraw, unlike paint_screen/update_screen - meaning the LAST message of
+	-- a mode switch (zpos in zoom, or the last visible row in list) was
+	-- exposed to the established "final flush of a repaint is silently
+	-- dropped" hardware finding (see queue_sacrificial_redraw's comment).
+	-- Same gate those two callers use: only queue it if this call actually
+	-- queued real content.
+	if queuedDisplayOps > before then
+		queue_sacrificial_redraw()
 	end
 	screenDirty = false
 	lastPaintedPatch = patchName
@@ -1462,11 +1682,33 @@ function controller_timer_trigger()
 	-- If nothing is queued this tick simply arrives and leaves unconsumed -
 	-- harmless, and means the next thing queued gets to go out immediately
 	-- rather than waiting for a tick it had nothing to do with.
-	displayFlushReady = true
+	--
+	-- CLEAR SCREEN SETTLE GUARD (2026-08-21, see displaySettleTicks'
+	-- declaration and set_display_mode's comment): withhold this tick's
+	-- grant while a Clear Screen is still settling, so the draw that follows
+	-- one gets roughly two tick periods of quiet instead of one. Protocol
+	-- messages and the trailing Identification Query are unaffected - they
+	-- are never gated by displayFlushReady in the first place (see
+	-- flush_pending's comment) - so the session clock keeps running through
+	-- the settle regardless.
+	if displaySettleTicks > 0 then
+		displaySettleTicks = displaySettleTicks - 1
+	else
+		displayFlushReady = true
+	end
 	-- Only ticks that arrive at the full keepalive cadence count towards the
 	-- periodic refresh; fast drain ticks must not.
-	if not has_pending() then idleTicks = idleTicks + 1 end
-	print('[sllink] timer tick #' .. timerTicks .. ' (idle ' .. idleTicks .. ') state=' .. state)
+	local draining = has_pending()
+	if not draining then idleTicks = idleTicks + 1 end
+	-- CADENCE INSTRUMENTATION (2026-08-21): pending/draining here, plus this
+	-- tick's number, is what lets a captured hardware log (LUA_DEBUG ->
+	-- /tmp/lua.log, timestamped at capture time - see the FLUSH_SOON_MS sweep
+	-- comment below for the reduction one-liner) be read as "N drain ticks
+	-- elapsed while M messages went out": pair this line's tick number against
+	-- the `tick=` field the FLUSH print (below, in flush_pending) now carries.
+	-- No new print statements - this is the existing tick line, extended.
+	print('[sllink] timer tick #' .. timerTicks .. ' (idle ' .. idleTicks .. ') state=' .. state ..
+	      ' pending=' .. #pendingMessages .. ' draining=' .. tostring(draining))
 
 	-- Keepalive UNCONDITIONALLY once we have sent an Identification Request.
 	--
@@ -1515,23 +1757,28 @@ function controller_timer_trigger()
 		-- This is safe to do unconditionally because send_keepalive() queues
 		-- a PROTOCOL message (itemType IT_SYSTEM, regionId nil), and
 		-- flush_pending never gates non-display messages behind
-		-- displayFlushReady - they dequeue every flush regardless (see
-		-- flush_pending's comment). So a keepalive never waits for, or
-		-- consumes, the one-display-message-per-tick permit a Write Text
-		-- needs - it neither competes with the repaint's own pacing nor
-		-- risks reintroducing the bundled-drop finding above (it is queued
-		-- as its own discrete message, never appended into the same array as
-		-- a Write Text).
+		-- displayFlushReady - they dequeue every flush regardless, jumping
+		-- ahead of any display backlog sitting in front of them if necessary
+		-- (see flush_pending's DEFECT B FIX comment: it scans past a gated
+		-- display message at the head to find the first protocol message,
+		-- rather than only ever looking at the head). So a keepalive never
+		-- waits for, or consumes, the one-display-message-per-tick permit a
+		-- Write Text needs - it neither competes with the repaint's own
+		-- pacing nor risks reintroducing the bundled-drop finding above (it
+		-- is queued as its own discrete message, never appended into the
+		-- same array as a Write Text).
 		--
 		-- has_keepalive_queued() guards against PILE-UP: protocol messages
 		-- are deliberately never coalesced by queue_message (two
 		-- Identification Queries must both survive - see queue_message's
 		-- comment), so without this guard a keepalive that is queued but not
-		-- yet flushed (because flush_pending only ever inspects
-		-- pendingMessages[1], and display messages queued ahead of it are
-		-- still draining) would get ANOTHER one appended behind it on every
-		-- subsequent tick, growing without bound for as long as the display
-		-- queue stays slow to drain.
+		-- yet flushed would get ANOTHER one appended behind it on every
+		-- subsequent tick, growing without bound. flush_pending's scan-
+		-- forward fix now lets a queued keepalive jump ahead of a display
+		-- backlog and go out on the very next flush rather than waiting for
+		-- the whole backlog to drain, but it still emits at most one queued
+		-- message per flush - this guard is what stops a rarer same-tick or
+		-- budget-miss race from ever growing the queue.
 		if not has_keepalive_queued() then
 			send_keepalive()
 		end

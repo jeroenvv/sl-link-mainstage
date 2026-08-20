@@ -66,19 +66,14 @@ Recorded here because each looked like a dead end at the time:
 
 ## Awaiting hardware verification (deployed, never seen running)
 
-Commit `3625399` is installed but has **not** been checked against the keyboard. Everything below is
-offline-verified only (157 harness assertions), so treat it as unproven:
+Commit `3625399` was verified on hardware and reported three problems: the zoom screen's NEXT line was too prominent, a list-mode patch change took ~2s, and a mode switch left remnants of the previous screen. The changes below address those and are **offline-verified only** (82 harness assertions, `luac -p` clean) — none has been seen running:
 
-- **The continuous list screen** — 8 rows at 26 px pitch is a tighter density than anything
-  previously deployed. If it looks cramped, `ROW_COUNT`/`ROW_PITCH` are the dials.
-- **The Zoom button** (BID `0x10`) toggling list ↔ zoom. Newly wired; never pressed in anger. Its
-  LONG press forces a full repaint — an unprompted design choice, easily changed.
-- **The `NEXT` line** on the zoom screen, including the `NEXT SONG` form at a song boundary.
-- **The scroll-off margin of 2** actually keeping the next patch visible across a set boundary.
-- **`ZSET_ZNEXT_TRUST_MAXWIDTH`** (currently `false`). Flipping it to `true` would let the set and
-  `NEXT` lines self-clear and drop their erase rects — but only if Max Width truncation behaves at
-  `SIZE_MEDIUM`, which is untested. It is confirmed broken at `SIZE_BIG`. The flag's comment says
-  what to look for.
+- **`znext` at SIZE_SMALL**, drawn self-clearing at Max Width like the list rows instead of erase-rect + text. Costs one message instead of two. Max Width truncation is confirmed broken at SIZE_BIG; this trusts it at SIZE_SMALL, which is the regime the list rows already rely on.
+- **Protocol messages now jump a display backlog in `flush_pending`.** This is the session-drop fix: the function only ever inspected `pendingMessages[1]`, so a keepalive queued mid-repaint waited for the whole backlog to drain, which on top of the 3s cadence reached the SL88's ~5s host timeout.
+- **`FLUSH_SOON_MS` 100 → 50.** Sweep 35 then 25 if repaints still lag; 100 is the last known-good fallback. Reported latency (~2s for a ~10-message repaint) suggests the real pace was ~200ms per message, so it is not yet established that MainStage honours a 50ms one-shot at all — measure the tick cadence from the timestamped LUA_DEBUG lines before sweeping further.
+- **Clear Screen, in exactly one place.** `set_display_mode()` now sends a real Clear Screen instead of a full-screen black rect, which was leaving remnants. The project-wide ban stands everywhere else; its original evidence was the pacing bug `displayFlushReady` fixed. A `displaySettleTicks` guard withholds one extra tick's display permit after a clear so the next draw cannot race the panel, without ever delaying the keepalive or the Identification Query.
+- **Page-jump scrolling.** Edge-triggered one-row scrolling made nearly every patch advance repaint all 8 rows; the window now jumps by `ROW_COUNT - PAGE_OVERLAP` and lands the cursor clear of the margin. Measured over a 20-step sweep: 75% of steps cost 3 messages, 25% cost 9.
+- **A missing sacrificial redraw in `set_display_mode()`**, which left its last message exposed to the known last-message-in-a-flush drop.
 
 ## Open issues
 
