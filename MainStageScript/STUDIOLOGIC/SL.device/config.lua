@@ -33,6 +33,22 @@
 --     FLUSH_SOON_MS looks like it paces this but does not. The SL88 silently
 --     drops a display message that arrives while it is still painting the
 --     previous one. See displayFlushReady.
+--  6. Never call settriggertimer unconditionally from a handler that runs on
+--     EVERY inbound MIDI event. controller_midi_in calls rearm_timer() for
+--     every note on/off, not just SL frames, and settriggertimer is a
+--     ONE-SHOT: each call cancels and restarts whatever is already pending.
+--     While the user plays, notes arrive far faster than the timer period,
+--     so an ungated rearm_timer() pushes the deadline back forever and
+--     controller_timer_trigger NEVER FIRES - no tick means no keepalive,
+--     and the SL88 drops a host that goes quiet for ~5s, deselecting it and
+--     discarding its draws. This is why the display dropped out WHILE
+--     PLAYING and recovered once playing stopped. Fails completely
+--     silently - nothing errors, nothing logs, the app just vanishes from
+--     the APP list - which is why it is called out here rather than left to
+--     be rediscovered. Fix: gate every settriggertimer call behind a
+--     `timerPending` flag so only the first call arms it; the one-shot
+--     firing (controller_timer_trigger) is what clears the flag again. See
+--     rearm_timer() and timerPending's declaration.
 -- =========================================================================
 
 -- MARK: - Protocol constants (mirror SLLinkProtocol.swift exactly)
@@ -118,6 +134,27 @@ STATE_REIDENTIFY_WAIT = 'reidentify_wait' -- rejected; waiting out REIDENTIFY_WA
 state = STATE_IDLE
 instanceID = SL_INSTANCE_START
 pendingMessages = {}
+
+-- NOTES-STARVE-THE-CLOCK FIX (established on hardware 2026-08-20, rule 6 in
+-- the banner above): true whenever a settriggertimer one-shot is currently
+-- outstanding. controller_midi_in calls rearm_timer() on EVERY inbound MIDI
+-- event, including every note on/off - while the user plays, notes arrive
+-- far faster than the timer period, so an ungated settriggertimer() call
+-- there just keeps cancelling and restarting the pending timer, and
+-- controller_timer_trigger never fires. No tick means no keepalive Device
+-- Notification, and the SL88 drops a host that goes quiet for ~5s - the
+-- display dropping out WHILE PLAYING and recovering once playing stopped.
+--
+-- rearm_timer() now only calls settriggertimer when this is false, and sets
+-- it true when it does. controller_timer_trigger() clears it at its own
+-- start (the one-shot has just fired, so nothing is outstanding any more).
+-- Every OTHER direct settriggertimer call must keep this flag honest too -
+-- see controller_initialize, controller_timer_trigger's own top-of-function
+-- call (which is a documented no-op on hardware - see the SESSION CLOCK
+-- note above controller_midi_in - so it deliberately does NOT set this
+-- true), and handle_identification_rejected's REIDENTIFY_WAIT_MS arm (which
+-- genuinely does arm a timer, so it does set this true).
+timerPending = false
 
 -- Retries left for the CURRENT instanceID - see handle_identification_rejected.
 -- Reset to MAX_SAME_ID_RETRIES whenever a FRESH instanceID is adopted
@@ -1133,6 +1170,12 @@ function handle_identification_rejected(reason)
 		-- STATE_REIDENTIFY_WAIT guard, which is what stops that overwrite from
 		-- happening on every subsequent inbound frame during the wait).
 		settriggertimer(REIDENTIFY_WAIT_MS)
+		-- This call genuinely arms a fresh one-shot (unlike
+		-- controller_timer_trigger's own top-of-function call - see
+		-- timerPending's declaration), so timerPending must reflect that: keeps
+		-- rearm_timer's gating honest once the wait ends and normal inbound
+		-- traffic resumes calling it.
+		timerPending = true
 		print('[sllink][spike] re-identify retry ' ..
 		      (MAX_SAME_ID_RETRIES - reidentifyRetriesLeft) .. '/' .. MAX_SAME_ID_RETRIES ..
 		      ' as (' .. string.format('%02X %02X', SL_HOST_ID, instanceID) .. ')')
@@ -1180,6 +1223,21 @@ end
 
 function send_keepalive()
 	queue_message(msg_system(SYS_DEVICE_NOTIFICATION))
+end
+
+-- True if a Device Notification is already queued and not yet flushed. See
+-- controller_timer_trigger's unconditional-keepalive comment for why this
+-- guard exists: protocol messages are never coalesced by queue_message, so
+-- calling send_keepalive() on every tick without this check would pile up a
+-- duplicate behind an already-queued-but-undrained keepalive.
+function has_keepalive_queued()
+	for i = 1, #pendingMessages do
+		local m = pendingMessages[i]
+		if m[8] == IT_SYSTEM and m[9] == SYS_DEVICE_NOTIFICATION then
+			return true
+		end
+	end
+	return false
 end
 
 -- MARK: - Inbound decoding
@@ -1283,6 +1341,12 @@ end
 
 function controller_initialize(applicationName, deviceNewlyDetected)
 	settriggertimer(KEEPALIVE_MS)
+	-- This is the very first arm for a fresh script instance - nothing was
+	-- outstanding before it, and this call genuinely arms a timer (unlike
+	-- controller_timer_trigger's own top-of-function call), so timerPending
+	-- must say so or the first rearm_timer() from inbound traffic would
+	-- wrongly re-arm on top of it.
+	timerPending = true
 	state = STATE_IDLE
 	instanceID = SL_INSTANCE_START
 	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
@@ -1326,6 +1390,16 @@ end
 timerTicks = 0
 
 function controller_timer_trigger()
+	-- The one-shot has just fired, so nothing is outstanding any more - clear
+	-- this BEFORE the settriggertimer call below, which (per the SESSION
+	-- CLOCK note further down, established on hardware) does NOT actually
+	-- re-arm anything when called from inside this function. Leaving
+	-- timerPending false here is what is factually correct AND what lets the
+	-- real re-arm - rearm_timer(), from the next inbound frame, almost always
+	-- the reply to the Identification Query this function's own return
+	-- flushes - go ahead instead of being gated out by a flag claiming a
+	-- timer is already pending when none actually is.
+	timerPending = false
 	settriggertimer(KEEPALIVE_MS)
 	timerTicks = timerTicks + 1
 
@@ -1363,21 +1437,50 @@ function controller_timer_trigger()
 		-- to the send_keepalive() branch below would be wrong here: it would
 		-- announce the still-rejected instanceID instead of retrying it.
 		start_identification()
-	elseif not has_pending() then
-		-- Only send the keepalive when no display work is queued.
+	else
+		-- SECOND FIX, same hardware session as rule 6 (2026-08-20): send the
+		-- keepalive UNCONDITIONALLY on every keepalive-cadence tick, even
+		-- while display work is still queued.
 		--
-		-- Bundling a System Device Notification (00/00) into the same array as
-		-- a Write Text makes the SL88 discard the drawing: measured repeatedly,
-		-- a repaint drained as
+		-- This used to be gated on `not has_pending()`, on the theory that
+		-- bundling a System Device Notification (00/00) into the same array
+		-- as a Write Text makes the SL88 discard the drawing - measured
+		-- repeatedly, a repaint drained as
 		--     F1 [clear, text]            -> rendered
 		--     F2 [text, query 7F/03]      -> rendered
 		--     F3 [text, keepalive 00/00]  -> NOT rendered
-		-- and swapping the draw order moved the failure to whichever text
-		-- landed in that last keepalive-bearing flush. The Identification Query
-		-- rides along with display messages perfectly happily, and it is what
-		-- actually drives the session clock, so deferring the keepalive until
-		-- the queue is empty costs nothing.
-		send_keepalive()
+		-- That finding is still true and still matters, but gating the
+		-- keepalive on an EMPTY queue was the wrong fix for it: a display
+		-- message paces at one per tick (displayFlushReady), so a multi-
+		-- message repaint can leave has_pending() true for several ticks in a
+		-- row - and for every one of those ticks, no keepalive went out
+		-- either. That is a second, independent route to the exact same ~5s
+		-- APP-list timeout rule 6 fixes: a mid-repaint session could starve
+		-- the keepalive without a single note being played.
+		--
+		-- This is safe to do unconditionally because send_keepalive() queues
+		-- a PROTOCOL message (itemType IT_SYSTEM, regionId nil), and
+		-- flush_pending never gates non-display messages behind
+		-- displayFlushReady - they dequeue every flush regardless (see
+		-- flush_pending's comment). So a keepalive never waits for, or
+		-- consumes, the one-display-message-per-tick permit a Write Text
+		-- needs - it neither competes with the repaint's own pacing nor
+		-- risks reintroducing the bundled-drop finding above (it is queued
+		-- as its own discrete message, never appended into the same array as
+		-- a Write Text).
+		--
+		-- has_keepalive_queued() guards against PILE-UP: protocol messages
+		-- are deliberately never coalesced by queue_message (two
+		-- Identification Queries must both survive - see queue_message's
+		-- comment), so without this guard a keepalive that is queued but not
+		-- yet flushed (because flush_pending only ever inspects
+		-- pendingMessages[1], and display messages queued ahead of it are
+		-- still draining) would get ANOTHER one appended behind it on every
+		-- subsequent tick, growing without bound for as long as the display
+		-- queue stays slow to drain.
+		if not has_keepalive_queued() then
+			send_keepalive()
+		end
 	end
 
 	if screenDirty then
@@ -1424,6 +1527,27 @@ end
 -- Re-arms the one-shot timer. Called at the END of controller_midi_in, after
 -- any queued output has been drained, so the interval reflects what is still
 -- outstanding rather than what was outstanding on entry.
+--
+-- NOTES-STARVE-THE-CLOCK FIX (rule 6 in the banner, established on hardware
+-- 2026-08-20): controller_midi_in calls this on EVERY inbound MIDI event,
+-- including every note on/off - not just SL frames. settriggertimer is a
+-- ONE-SHOT: each call cancels and restarts whatever is already pending.
+-- While the user plays, notes arrive far faster than the timer period, so an
+-- unconditional settriggertimer() call here just kept pushing the deadline
+-- back forever and controller_timer_trigger never fired - no tick, no
+-- keepalive, and the SL88 drops a host that goes quiet for ~5s. That
+-- explained the display dropping out WHILE PLAYING and recovering the
+-- moment playing stopped.
+--
+-- Fix: only actually call settriggertimer when timerPending is false, i.e.
+-- no one-shot is currently outstanding, and set it true when this does arm
+-- one. A note arriving while a timer is already pending now leaves it alone
+-- and passes straight through untouched (see controller_midi_in) - the
+-- first inbound frame after a tick fires (in practice almost always the
+-- Identification Query's reply, which arrives within ~2ms of the tick - see
+-- the SESSION CLOCK note below) is what gets to choose the next interval,
+-- exactly as before; only the REPEATED re-arming on every subsequent frame
+-- is gone.
 function rearm_timer()
 	if state == STATE_REIDENTIFY_WAIT then
 		-- CRITICAL: rearm_timer() runs on EVERY inbound frame. The rejection
@@ -1435,11 +1559,17 @@ function rearm_timer()
 		-- happen. Leave the pending timer alone until the wait state ends.
 		return
 	end
+	if timerPending then
+		-- A one-shot is already outstanding; it will fire on its own. This is
+		-- the notes-starve-the-clock fix - see this function's comment above.
+		return
+	end
 	if has_pending() then
 		settriggertimer(FLUSH_SOON_MS) -- still draining a repaint; come back soon
 	else
 		settriggertimer(KEEPALIVE_MS)
 	end
+	timerPending = true
 end
 
 function controller_midi_in(midiEvent, portName)
