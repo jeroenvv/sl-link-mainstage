@@ -159,6 +159,18 @@ at `SIZE_BIG` with `maxWidth = 304` rendered as a *single letter* followed by an
 size, pass `maxWidth = 0` and control the length in your own code instead — wrapping across two
 lines works well. The advice above still holds at `SIZE_SMALL`.
 
+**The SLMK2 font is proportional — do not "fix" `maxWidth = 0` by padding to a character count.**
+With `maxWidth = 0`, Write Text's opaque background box is only as wide as the glyphs it actually
+draws (see the next point), so a shorter string can leave the tail of a longer previous string on
+screen. Padding every string out to a constant *character* count looks like a fix but fails for two
+independent reasons, both confirmed on hardware: the font is proportional, so N characters of space
+are pixel-narrower than N characters of the letters they replaced, and still leave a stale tail; and
+padding is symmetric in characters, not pixels, so it also throws off `ALIGN_CENTER`'s actual
+centring. The correct fix is an explicit erase: draw a black `Draw Rectangle` over the full text
+band, on a separate message/tick before the text, sized independently of the string's glyph width.
+This costs one extra message (and a brief visible blank band, at whatever your pacing is) per string
+change — accept it as the price of `maxWidth = 0`.
+
 **The text background fills the whole Max Width box, not just the glyph run.** Confirmed twice on
 hardware: an empty string drawn with a coloured background still painted a visible full-width bar,
 and a calibration screen's bands spanned the full screen width. This is what makes inverse-video

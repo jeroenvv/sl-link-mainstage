@@ -618,18 +618,18 @@ BIG_MAX_CHARS = 27
 -- unmeasured, retune the same way as BIG_MAX_CHARS.
 MEDIUM_MAX_CHARS = 36
 
--- pad_centered() (see its definition below) pads truncated names out to
--- exactly these character counts before they are drawn. Assert the budget
--- relationship rather than assuming it: TEXT_STRING_CAP is msg_write_text's
--- hard transport clamp (FLUSH_BUDGET minus wire overhead - see
--- TEXT_STRING_CAP's comment), and if either MAX_CHARS constant is ever
--- retuned past it, padding a short name out to MAX_CHARS would build a
--- string msg_write_text then silently re-truncates, undoing the padding and
--- reopening the stale-tail bug this exists to fix.
+-- truncate_text() cuts zname/zset to exactly these character counts before
+-- they are drawn (see draw_text_with_erase() below for how the vacated band
+-- is cleared). Assert the budget relationship rather than assuming it:
+-- TEXT_STRING_CAP is msg_write_text's hard transport clamp (FLUSH_BUDGET
+-- minus wire overhead - see TEXT_STRING_CAP's comment), and if either
+-- MAX_CHARS constant is ever retuned past it, msg_write_text would silently
+-- re-truncate the already-truncated string, losing truncate_text()'s own
+-- "..." and cutting mid-word.
 assert(BIG_MAX_CHARS <= TEXT_STRING_CAP,
-       'BIG_MAX_CHARS must fit within TEXT_STRING_CAP or padded zname draws would be re-truncated')
+       'BIG_MAX_CHARS must fit within TEXT_STRING_CAP or zname draws would be re-truncated on the wire')
 assert(MEDIUM_MAX_CHARS <= TEXT_STRING_CAP,
-       'MEDIUM_MAX_CHARS must fit within TEXT_STRING_CAP or padded zset draws would be re-truncated')
+       'MEDIUM_MAX_CHARS must fit within TEXT_STRING_CAP or zset draws would be re-truncated on the wire')
 
 -- TEMPORARY SPIKE INSTRUMENTATION - remove once row geometry is settled.
 --
@@ -836,35 +836,53 @@ end
 -- maxWidth=0 that box is only as wide as the glyphs actually drawn, so a
 -- shorter string can't overwrite what a longer one painted before it.
 --
--- FIX: pad the (already truncate_text()-truncated) string with spaces out to
--- a CONSTANT character count - BIG_MAX_CHARS or MEDIUM_MAX_CHARS - before
--- drawing. That makes the background box a constant width on EVERY draw, so
--- it always covers what the previous, longer string painted: this is what
--- restores the self-clearing property that was lost by being forced onto
--- maxWidth=0. Both callers are ALIGN_CENTER, so the padding is split
--- symmetrically (extra space on the right when the total is odd, matching
--- how truncate_text right-anchors its own "..." suffix) so the visible text
--- stays centred rather than drifting to one side.
+-- FIRST FIX TRIED, AND REJECTED - do not reintroduce it: padding the
+-- (already truncate_text()'d) string with spaces out to a CONSTANT character
+-- count (BIG_MAX_CHARS/MEDIUM_MAX_CHARS) before drawing, on the theory that a
+-- constant character count makes the background box a constant width. Failed
+-- on hardware for two independent reasons, both confirmed by eye:
+--   1. The SLMK2 font is PROPORTIONAL. N characters of space are
+--      pixel-narrower than N characters of the letters they replaced, so a
+--      shorter name still left a stale tail - "m.23 A32 Ready patch" ->
+--      "m.31 A18 Flutes" left "tch" on screen.
+--   2. Padding is symmetric in CHARACTERS, not pixels, so it also broke
+--      ALIGN_CENTER's actual centring - the visible glyphs no longer sat
+--      centred in the box.
 --
--- DO NOT "simplify" this padding away - without it, this exact bug comes
--- back the next time a longer name is followed by a shorter one.
+-- REAL FIX: draw an explicit black msg_draw_rect over the full band BEFORE
+-- the text, sized independently of the string's glyph width, so it clears
+-- the whole line regardless of what any previous string painted - see
+-- draw_text_with_erase() below.
+
+-- Draws `text` preceded by an explicit black erase rect spanning its full
+-- band, sized independently of the string's glyph width - the real fix for
+-- the stale-tail/off-centre bug in the comment above. Memoized as ONE region
+-- under `id`, using the same id..':rect'/id..':text' coalescing-key split as
+-- draw_row's ROW_NEEDS_BACKING_RECT branch (base_region_id() already knows
+-- how to unwind it for drop_queued_display), so an unchanged name queues
+-- NOTHING and a changed name always queues both halves together, in order.
+-- bg is always black to match the erase rect's fill.
 --
--- UNVERIFIED ON HARDWARE: this assumes the SLMK2 paints the background box
--- for leading/trailing SPACE characters rather than trimming them before
--- measuring it. If that turns out to be false, the fallback is a black
--- msg_draw_rect over the line's band before each name draw (see
--- paint_zoom_screen's znameErase for the existing pattern) - costlier, since
--- it is one extra message per update and, at the current
--- one-message-per-tick pacing (FLUSH_SOON_MS), a visible ~100ms flicker -
--- which is why padding is being tried first.
-function pad_centered(text, width)
-	text = text or ''
-	assert(#text <= width, 'pad_centered: text (' .. #text .. ' chars) longer than width (' ..
-	       width .. ') - caller must truncate_text() first')
-	local padTotal = width - #text
-	local padLeft = math.floor(padTotal / 2)
-	local padRight = padTotal - padLeft
-	return string.rep(' ', padLeft) .. text .. string.rep(' ', padRight)
+-- The rect and text are two SEPARATE queue_message() calls and therefore two
+-- separate flushes under flush_pending's one-display-message-per-tick pacing
+-- (see FLUSH_SOON_MS/displayFlushReady) - do NOT try to bundle them into one
+-- flush to save the flicker. Two display messages back-to-back in one flush
+-- is exactly the pattern that dropped alternating rows on hardware (rule 5
+-- in the FIVE RULES banner at the top of this file), and they would not fit
+-- anyway: a 21-byte rect plus a max-length Write Text (25 + up to
+-- BIG_MAX_CHARS chars) plus the Identification Query flush_pending always
+-- reserves room for exceeds FLUSH_BUDGET on its own.
+--
+-- COST, accepted: one extra message and, at FLUSH_SOON_MS, a ~100ms visible
+-- blank band per name change. This is the price of maxWidth=0, itself
+-- required because Max Width truncation is broken at SIZE_BIG (see
+-- BIG_MAX_CHARS's comment).
+function draw_text_with_erase(id, text, x, y, align, size, fr, fg, fb, eraseX, eraseY, eraseW, eraseH)
+	local t = { text, fr, fg, fb }
+	if tuple_equal(drawn[id], t, #t) then return end
+	drawn[id] = t
+	queue_message(msg_draw_rect(eraseX, eraseY, eraseW, eraseH, 0, 0, 0), id .. ':rect')
+	queue_message(msg_write_text(text, x, y, 0, align, size, fr, fg, fb, 0, 0, 0), id .. ':text')
 end
 
 -- Draws the zoom screen's current model, memoized per region. Shows the
@@ -879,42 +897,22 @@ end
 -- Width truncation, which is unreliable at SIZE_BIG - see BIG_MAX_CHARS's
 -- comment.
 --
--- `fullRepaint` is true only when called from paint_screen()'s FULL repaint
--- (not update_screen()'s ordinary content-driven redraw) - see the
--- znameErase draw_rect call below and its comment for why.
---
--- zname/zset are both truncate_text()'d THEN pad_centered()'d to a constant
--- character count before drawing - see pad_centered()'s comment for why the
--- padding is required (maxWidth=0's background box only covers the glyphs
--- actually drawn, so a shorter name would otherwise leave the previous
--- longer name's tail on screen).
-function paint_zoom_screen(fullRepaint)
+-- zname/zset are both truncate_text()'d THEN drawn through
+-- draw_text_with_erase() - see that function's comment for why an explicit
+-- erase rect, not padding, is what makes a shorter name fully overwrite a
+-- longer one's tail. Band geometry (checked against the neighbouring lines,
+-- none overlap): zset's erase is y=40-75 versus zcnc's y=12-33 above and
+-- zname's erase y=106-147 below; zname's erase is y=106-147 versus zpos's
+-- y=180-201 below. Retune together with ROW_Y0-style constants if the
+-- surrounding layout ever moves.
+function paint_zoom_screen()
 	draw_text('zcnc', currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
-	draw_text('zset', pad_centered(truncate_text(setName, MEDIUM_MAX_CHARS), MEDIUM_MAX_CHARS),
-		8, 44, 0, ALIGN_CENTER, SIZE_MEDIUM, 110, 170, 230, 0, 0, 0)
-
-	if fullRepaint then
-		-- One-time erase of the band the OLD two-line patch name used to
-		-- occupy (roughly y=124-157 for zname2), which the new single-line
-		-- layout below does not fully repaint over. Without this, a keyboard
-		-- still running the previous two-line build shows stale leftover
-		-- text here until the SL88's next full clear.
-		--
-		-- A large fill was historically suspected of racing the draws that
-		-- follow it (see paint_screen's "NO Clear Screen" comment above,
-		-- which dropped a full-screen Clear Screen for exactly this reason).
-		-- This is safe here only because of the one-display-message-per-timer-
-		-- tick pacing (see FLUSH_SOON_MS/flush_pending): this rect gets its
-		-- own tick, so the name draw that follows it is guaranteed to land on
-		-- a LATER tick, never bundled into the same flush. Do not add this
-		-- rect to update_screen() - an ordinary patch change must stay cheap,
-		-- and it would run on every such change instead of once per full
-		-- repaint.
-		draw_rect('znameErase', 0, 80, SCREEN_WIDTH, 100, 0, 0, 0)
-	end
-
-	draw_text('zname', pad_centered(truncate_text(patchName, BIG_MAX_CHARS), BIG_MAX_CHARS),
-		8, 110, 0, ALIGN_CENTER, SIZE_BIG, 255, 255, 255, 0, 0, 0)
+	draw_text_with_erase('zset', truncate_text(setName, MEDIUM_MAX_CHARS),
+		8, 44, ALIGN_CENTER, SIZE_MEDIUM, 110, 170, 230,
+		0, 40, SCREEN_WIDTH, 35)
+	draw_text_with_erase('zname', truncate_text(patchName, BIG_MAX_CHARS),
+		8, 110, ALIGN_CENTER, SIZE_BIG, 255, 255, 255,
+		0, 106, SCREEN_WIDTH, 41)
 	local n = #patchRows > 0 and (cursorIndex + 1) or 0
 	draw_text('zpos', n .. '/' .. #patchRows, 8, 180, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 end
@@ -945,7 +943,7 @@ end
 function update_screen()
 	local before = queuedDisplayOps
 	if displayMode == 'zoom' then
-		paint_zoom_screen() -- fullRepaint omitted: an ordinary update must stay cheap
+		paint_zoom_screen()
 	else
 		paint_list_screen()
 	end
@@ -1078,9 +1076,20 @@ function paint_screen()
 	-- within the area where the text is printed" (docs/display-messages.md), so
 	-- redrawing the same regions is self-cleaning.
 
+	-- No longer carries a znameErase step (a black rect over y=80-180, queued
+	-- only from this FULL-repaint path). That rect existed to catch stale
+	-- pixels left by a since-reverted TWO-LINE patch-name layout's second
+	-- line (roughly y=124-157) - a build no longer in this codebase.
+	-- draw_text_with_erase() (see paint_zoom_screen()) now erases zname's own
+	-- band on EVERY draw, full repaint or ordinary update alike, so the
+	-- current single-line layout never needs a separate one-time pass. If a
+	-- keyboard is still showing residue from that old two-line build, one
+	-- manual full-screen clear (e.g. cycle set_display_mode, which paints a
+	-- 0,0-320,240 black rect) clears it for good; that is a one-off migration
+	-- concern, not something worth carrying as permanent code.
 	local before = queuedDisplayOps
 	if displayMode == 'zoom' then
-		paint_zoom_screen(true) -- fullRepaint: erase the vacated name band, see that arg's comment
+		paint_zoom_screen()
 	else
 		paint_list_screen()
 	end
@@ -1111,7 +1120,7 @@ function set_display_mode(mode)
 	invalidate_all()
 	queue_message(msg_draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0))
 	if mode == 'zoom' then
-		paint_zoom_screen() -- fullRepaint omitted: the erase rect above already covers the name band
+		paint_zoom_screen() -- redundant with the full-screen erase above, but each name draw erases its own band anyway
 	else
 		paint_list_screen()
 	end

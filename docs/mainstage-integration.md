@@ -111,14 +111,22 @@ Recorded here because each looked like a dead end at the time:
   stale registration should expire and the identity can be reclaimed instead of a new app being
   created. Deriving the instance byte from something stable per interface (the `portName` passed to
   `controller_midi_in`) would additionally stop the two instances colliding with each other.
-- **`BIG_MAX_CHARS = 20` / `MEDIUM_MAX_CHARS = 26` are eye-calibrated estimates, not measured.** The
+- **`BIG_MAX_CHARS = 27` / `MEDIUM_MAX_CHARS = 36` are eye-calibrated estimates, not measured.** The
   zoom screen's patch name (`SIZE_BIG`) and set name (`SIZE_MEDIUM`) are truncated to these counts in
   the script rather than relying on the SL88's own Max Width truncation, which is confirmed broken at
-  `SIZE_BIG`. Both are then padded with spaces out to that same constant count (`pad_centered()`) so
-  a shorter name's background box still covers whatever a longer name painted before it — required
-  because Write Text's opaque background at `maxWidth = 0` only fills the glyphs actually drawn, not
-  a fixed-width box; without the padding a shorter name leaves the old one's tail on screen. Neither
-  constant has been calibrated against the real pixel width.
+  `SIZE_BIG`. Neither constant has been calibrated against the real pixel width.
+
+  A shorter name replacing a longer one used to leave the old name's tail on screen — Write Text's
+  opaque background at `maxWidth = 0` (required because Max Width truncation is broken at `SIZE_BIG`)
+  only fills the glyphs actually drawn, not a fixed-width box. The first fix tried was padding every
+  draw with spaces out to a constant character count (`pad_centered()`), so the background box would
+  be a constant width. **This failed on hardware for two reasons and was removed**: the SLMK2 font is
+  **proportional**, so N characters of space are pixel-narrower than N characters of the letters they
+  replaced and still left a stale tail; and padding is symmetric in characters, not pixels, so it also
+  broke `ALIGN_CENTER`'s actual centring. The real fix is `draw_text_with_erase()`: an explicit black
+  `msg_draw_rect` over the full band, queued on a separate timer tick before each name's text, sized
+  independently of glyph width. Cost: one extra message and a ~100 ms visible blank band per name
+  change, accepted as the price of `maxWidth = 0`.
 - **The multi-row patch list is parked**, pending pacing calibration — a seven-row repaint costs
   ~0.7 s at one message per tick. The single-patch (zoom) screen is the working display.
 
