@@ -74,6 +74,12 @@ DISP_DRAW_RECT = 0x02
 
 -- Text align / size
 ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT = 0x00, 0x01, 0x02
+-- SIZE_MEDIUM (0x01) is UNDOCUMENTED - the spec (docs/display-messages.md)
+-- only gives pixel heights for small (21px) and big (33px). Assumed ~27px by
+-- interpolation, but that is unverified: the zoom screen geometry below that
+-- positions text around SIZE_MEDIUM rests on this estimate, not a
+-- measurement. Recalibrate the y coordinates around 'zset' in
+-- paint_zoom_screen() on hardware if the real glyph height differs.
 SIZE_SMALL, SIZE_MEDIUM, SIZE_BIG = 0x00, 0x01, 0x02
 
 -- The keyboard drops a host that goes quiet for ~5s; the app uses 3s.
@@ -553,15 +559,40 @@ ROW_MAXW = 304
 -- maxWidth=304 rendered as a SINGLE LETTER followed by "...". The SL88's own
 -- Max Width truncation is evidently unreliable at big size, so the zoom
 -- screen no longer relies on it (maxWidth=0, "print it all" per
--- docs/implementing-sl-link.md) and instead wraps the name across two lines
--- itself - see wrap_two_lines() and paint_zoom_screen().
+-- docs/implementing-sl-link.md) and instead truncates the string itself -
+-- see truncate_text() and paint_zoom_screen().
 --
--- PROVISIONAL - this is an estimate, not a measurement: nothing here reads
--- actual glyph widths, so it is a guess at how many SIZE_BIG characters fit
--- in the zoom screen's width before the real thing gets recalibrated on
--- hardware. If a two-line name still overflows visually (or has room to
--- spare), retune this single constant - nothing else needs to change.
-BIG_CHARS_PER_LINE = 20
+-- FOUND ON HARDWARE (2026-08-20): wrapping the name across two lines (the
+-- approach this constant originally served) instead left STALE TEXT on the
+-- second line - a shorter name replacing a longer one did not fully
+-- overwrite the old line's glyphs. Reverted to one truncated line.
+--
+-- HARDWARE-CALIBRATED BY EYE, not measured: nothing here reads actual glyph
+-- widths. 20 is the count already confirmed to fit - "C05 Brassy Trombones"
+-- (20 characters) renders in full at SIZE_BIG across the zoom screen's
+-- width. Retune by eye against a name a couple of characters either side of
+-- this constant if the geometry below changes (screen width, X margins,
+-- font).
+BIG_MAX_CHARS = 20
+
+-- Same idea, for the zoom screen's set name at SIZE_MEDIUM (see that
+-- constant's comment above for why its geometry is an estimate). SIZE_MEDIUM
+-- is smaller than SIZE_BIG, so more characters fit in the same width; also
+-- unmeasured, retune the same way as BIG_MAX_CHARS.
+MEDIUM_MAX_CHARS = 26
+
+-- pad_centered() (see its definition below) pads truncated names out to
+-- exactly these character counts before they are drawn. Assert the budget
+-- relationship rather than assuming it: TEXT_STRING_CAP is msg_write_text's
+-- hard transport clamp (FLUSH_BUDGET minus wire overhead - see
+-- TEXT_STRING_CAP's comment), and if either MAX_CHARS constant is ever
+-- retuned past it, padding a short name out to MAX_CHARS would build a
+-- string msg_write_text then silently re-truncates, undoing the padding and
+-- reopening the stale-tail bug this exists to fix.
+assert(BIG_MAX_CHARS <= TEXT_STRING_CAP,
+       'BIG_MAX_CHARS must fit within TEXT_STRING_CAP or padded zname draws would be re-truncated')
+assert(MEDIUM_MAX_CHARS <= TEXT_STRING_CAP,
+       'MEDIUM_MAX_CHARS must fit within TEXT_STRING_CAP or padded zset draws would be re-truncated')
 
 -- TEMPORARY SPIKE INSTRUMENTATION - remove once row geometry is settled.
 --
@@ -745,66 +776,110 @@ function paint_list_screen()
 	end
 end
 
--- Wraps `text` across at most two lines for the zoom screen's SIZE_BIG patch
--- name (see BIG_CHARS_PER_LINE above for why maxWidth=0 pushed this wrap into
--- the script instead of leaving it to the SL88). Prefers a word boundary:
--- breaks at the LAST space at or before charsPerLine, so "Grand Piano Warm"
--- breaks after "Piano" rather than mid-word. A single word with no space in
--- that range is hard-split at exactly charsPerLine rather than overflowing
--- the line. Anything left over after two lines is dropped, not wrapped to a
--- third - the zoom screen has room for exactly two.
---
--- Returns line2 = '' (never nil) when the whole name fits on line 1, so the
--- caller always has a real string to draw into the second region - drawing
--- an explicit empty string is what clears a STALE line 2 left over from a
--- previous, longer name; skipping the draw would leave it on screen (see
--- draw_text's memoization comment - a caller-side "don't bother" skip and a
--- content-driven memoization skip look identical from here, but only the
--- latter is safe).
-function wrap_two_lines(text, charsPerLine)
+-- Truncates `text` to at most `maxChars` characters, cutting to
+-- maxChars - 3 and appending "..." (plain ASCII full stops - the SLMK2 font
+-- only covers 0x20-0x80, see append_text) when it doesn't fit. Used instead
+-- of the SL88's own Max Width truncation, which is confirmed broken at
+-- SIZE_BIG (see BIG_MAX_CHARS's comment above) - both the patch name and the
+-- set name are truncated here in the script and drawn with maxWidth=0.
+function truncate_text(text, maxChars)
 	text = text or ''
-	if #text <= charsPerLine then
-		return text, ''
+	if #text <= maxChars then
+		return text
 	end
+	return text:sub(1, maxChars - 3) .. '...'
+end
 
-	local breakAt = nil
-	for i = charsPerLine, 1, -1 do
-		if text:sub(i, i) == ' ' then
-			breakAt = i
-			break
-		end
-	end
-
-	local line1, rest
-	if breakAt then
-		line1 = text:sub(1, breakAt - 1)
-		rest = text:sub(breakAt + 1)
-	else
-		-- No space at or before the limit: one word longer than charsPerLine.
-		-- Hard-split it rather than letting it overflow the line.
-		line1 = text:sub(1, charsPerLine)
-		rest = text:sub(charsPerLine + 1)
-	end
-	-- Whatever doesn't fit on line 2 is dropped - no third line.
-	local line2 = rest:sub(1, charsPerLine)
-	return line1, line2
+-- FOUND ON HARDWARE (2026-08-20): a new patch name shorter than the old one
+-- left the old name's tail on screen. CAUSE: Write Text's opaque background
+-- fills the MAX WIDTH BOX, not the glyph run. zname/zset draw with
+-- maxWidth=0 ("print it all" per docs/implementing-sl-link.md) because Max
+-- Width truncation is confirmed broken at SIZE_BIG - see BIG_MAX_CHARS's
+-- comment, and it is not trusted for SIZE_MEDIUM either - but with
+-- maxWidth=0 that box is only as wide as the glyphs actually drawn, so a
+-- shorter string can't overwrite what a longer one painted before it.
+--
+-- FIX: pad the (already truncate_text()-truncated) string with spaces out to
+-- a CONSTANT character count - BIG_MAX_CHARS or MEDIUM_MAX_CHARS - before
+-- drawing. That makes the background box a constant width on EVERY draw, so
+-- it always covers what the previous, longer string painted: this is what
+-- restores the self-clearing property that was lost by being forced onto
+-- maxWidth=0. Both callers are ALIGN_CENTER, so the padding is split
+-- symmetrically (extra space on the right when the total is odd, matching
+-- how truncate_text right-anchors its own "..." suffix) so the visible text
+-- stays centred rather than drifting to one side.
+--
+-- DO NOT "simplify" this padding away - without it, this exact bug comes
+-- back the next time a longer name is followed by a shorter one.
+--
+-- UNVERIFIED ON HARDWARE: this assumes the SLMK2 paints the background box
+-- for leading/trailing SPACE characters rather than trimming them before
+-- measuring it. If that turns out to be false, the fallback is a black
+-- msg_draw_rect over the line's band before each name draw (see
+-- paint_zoom_screen's znameErase for the existing pattern) - costlier, since
+-- it is one extra message per update and, at the current
+-- one-message-per-tick pacing (FLUSH_SOON_MS), a visible ~100ms flicker -
+-- which is why padding is being tried first.
+function pad_centered(text, width)
+	text = text or ''
+	assert(#text <= width, 'pad_centered: text (' .. #text .. ' chars) longer than width (' ..
+	       width .. ') - caller must truncate_text() first')
+	local padTotal = width - #text
+	local padLeft = math.floor(padTotal / 2)
+	local padRight = padTotal - padLeft
+	return string.rep(' ', padLeft) .. text .. string.rep(' ', padRight)
 end
 
 -- Draws the zoom screen's current model, memoized per region. Shows the
--- ACTIVE patch, not the cursor - "what am I playing right now". The patch
--- name is wrapped across zname1/zname2 (see wrap_two_lines) rather than
--- relying on the SL88's own Max Width truncation, which is unreliable at
--- SIZE_BIG (see BIG_CHARS_PER_LINE's comment) - both are drawn with
--- maxWidth=0 ("print it all", docs/implementing-sl-link.md) so nothing
--- double-truncates.
-function paint_zoom_screen()
+-- ACTIVE patch, not the cursor - "what am I playing right now".
+--
+-- REVERTED (2026-08-20) from a two-line wrapped patch name back to one
+-- truncated line: on hardware, the multi-line repaint left stale text on the
+-- second line when a shorter name replaced a longer one (see BIG_MAX_CHARS's
+-- comment). Both the patch name and the set name are truncated in the
+-- script via truncate_text() and drawn with maxWidth=0 ("print it all", per
+-- docs/implementing-sl-link.md) rather than relying on the SL88's own Max
+-- Width truncation, which is unreliable at SIZE_BIG - see BIG_MAX_CHARS's
+-- comment.
+--
+-- `fullRepaint` is true only when called from paint_screen()'s FULL repaint
+-- (not update_screen()'s ordinary content-driven redraw) - see the
+-- znameErase draw_rect call below and its comment for why.
+--
+-- zname/zset are both truncate_text()'d THEN pad_centered()'d to a constant
+-- character count before drawing - see pad_centered()'s comment for why the
+-- padding is required (maxWidth=0's background box only covers the glyphs
+-- actually drawn, so a shorter name would otherwise leave the previous
+-- longer name's tail on screen).
+function paint_zoom_screen(fullRepaint)
 	draw_text('zcnc', currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
-	draw_text('zset', setName, 8, 40, 304, ALIGN_CENTER, SIZE_SMALL, 110, 170, 230, 0, 0, 0)
-	local nameLine1, nameLine2 = wrap_two_lines(patchName, BIG_CHARS_PER_LINE)
-	draw_text('zname1', nameLine1, 8, 86, 0, ALIGN_CENTER, SIZE_BIG, 255, 255, 255, 0, 0, 0)
-	draw_text('zname2', nameLine2, 8, 124, 0, ALIGN_CENTER, SIZE_BIG, 255, 255, 255, 0, 0, 0)
+	draw_text('zset', pad_centered(truncate_text(setName, MEDIUM_MAX_CHARS), MEDIUM_MAX_CHARS),
+		8, 44, 0, ALIGN_CENTER, SIZE_MEDIUM, 110, 170, 230, 0, 0, 0)
+
+	if fullRepaint then
+		-- One-time erase of the band the OLD two-line patch name used to
+		-- occupy (roughly y=124-157 for zname2), which the new single-line
+		-- layout below does not fully repaint over. Without this, a keyboard
+		-- still running the previous two-line build shows stale leftover
+		-- text here until the SL88's next full clear.
+		--
+		-- A large fill was historically suspected of racing the draws that
+		-- follow it (see paint_screen's "NO Clear Screen" comment above,
+		-- which dropped a full-screen Clear Screen for exactly this reason).
+		-- This is safe here only because of the one-display-message-per-timer-
+		-- tick pacing (see FLUSH_SOON_MS/flush_pending): this rect gets its
+		-- own tick, so the name draw that follows it is guaranteed to land on
+		-- a LATER tick, never bundled into the same flush. Do not add this
+		-- rect to update_screen() - an ordinary patch change must stay cheap,
+		-- and it would run on every such change instead of once per full
+		-- repaint.
+		draw_rect('znameErase', 0, 80, SCREEN_WIDTH, 100, 0, 0, 0)
+	end
+
+	draw_text('zname', pad_centered(truncate_text(patchName, BIG_MAX_CHARS), BIG_MAX_CHARS),
+		8, 110, 0, ALIGN_CENTER, SIZE_BIG, 255, 255, 255, 0, 0, 0)
 	local n = #patchRows > 0 and (cursorIndex + 1) or 0
-	draw_text('zpos', n .. '/' .. #patchRows, 8, 176, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
+	draw_text('zpos', n .. '/' .. #patchRows, 8, 180, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 end
 
 -- Ordinary content-driven redraw: draws the current model, memoized per
@@ -833,7 +908,7 @@ end
 function update_screen()
 	local before = queuedDisplayOps
 	if displayMode == 'zoom' then
-		paint_zoom_screen()
+		paint_zoom_screen() -- fullRepaint omitted: an ordinary update must stay cheap
 	else
 		paint_list_screen()
 	end
@@ -968,7 +1043,7 @@ function paint_screen()
 
 	local before = queuedDisplayOps
 	if displayMode == 'zoom' then
-		paint_zoom_screen()
+		paint_zoom_screen(true) -- fullRepaint: erase the vacated name band, see that arg's comment
 	else
 		paint_list_screen()
 	end
@@ -999,7 +1074,7 @@ function set_display_mode(mode)
 	invalidate_all()
 	queue_message(msg_draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0))
 	if mode == 'zoom' then
-		paint_zoom_screen()
+		paint_zoom_screen() -- fullRepaint omitted: the erase rect above already covers the name band
 	else
 		paint_list_screen()
 	end

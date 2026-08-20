@@ -100,8 +100,14 @@ Recorded here because each looked like a dead end at the time:
   stale registration should expire and the identity can be reclaimed instead of a new app being
   created. Deriving the instance byte from something stable per interface (the `portName` passed to
   `controller_midi_in`) would additionally stop the two instances colliding with each other.
-- **`BIG_CHARS_PER_LINE = 16` is an untested estimate.** The two-line patch name wraps at that count;
-  it has not been calibrated against the real pixel width at `SIZE_BIG`.
+- **`BIG_MAX_CHARS = 20` / `MEDIUM_MAX_CHARS = 26` are eye-calibrated estimates, not measured.** The
+  zoom screen's patch name (`SIZE_BIG`) and set name (`SIZE_MEDIUM`) are truncated to these counts in
+  the script rather than relying on the SL88's own Max Width truncation, which is confirmed broken at
+  `SIZE_BIG`. Both are then padded with spaces out to that same constant count (`pad_centered()`) so
+  a shorter name's background box still covers whatever a longer name painted before it — required
+  because Write Text's opaque background at `maxWidth = 0` only fills the glyphs actually drawn, not
+  a fixed-width box; without the padding a shorter name leaves the old one's tail on screen. Neither
+  constant has been calibrated against the real pixel width.
 - **The multi-row patch list is parked**, pending pacing calibration — a seven-row repaint costs
   ~0.7 s at one message per tick. The single-patch (zoom) screen is the working display.
 
