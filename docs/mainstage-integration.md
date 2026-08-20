@@ -66,11 +66,21 @@ Recorded here because each looked like a dead end at the time:
 
 ## Open issues
 
-- **The session drops after some time and must be re-picked from the SL88's APP list.** Observed
-  2026-08-20, not yet diagnosed. First suspects, in order: MainStage loads the script **once per
-  USB-MIDI interface**, so two instances currently identify with the *same* DeviceID (`03 6D`) and
-  contend; and the keepalive path under the new display pacing has not been watched over a long idle
-  period. Needs a long-running capture with timestamps before theorising further.
+- **The session drops after some time and must be re-picked from the SL88's APP list.** DIAGNOSED
+  2026-08-20 — it is *not* a keepalive or timeout problem. MainStage tears the script down and
+  re-initialises it mid-session (4 finalize/initialize cycles in one run, while `state=active`). Each
+  re-init resets `instanceID` to `SL_INSTANCE_START` (`0x6D`), but the SL88 still holds the previous
+  incarnation's registration under `0x6D` because **no logout is sent on teardown** — a script can
+  only transmit by returning MIDI from a callback, and `controller_finalize` has no return path. The
+  keyboard therefore answers `IDENTIFICATION REJECTED (reason 00)`, the script bumps to `0x6E`, and
+  re-registers **as a different app**, which is why the user's APP-list selection is lost. Two script
+  instances (one per USB-MIDI interface) both starting at `0x6D` compound it.
+
+  Untested fix to try first: on rejection, **retry the same instance ID after a pause of more than
+  5 s** rather than immediately bumping. The SL88 drops a host that goes silent for ~5 s, so the
+  stale registration should expire and the identity can be reclaimed instead of a new app being
+  created. Deriving the instance byte from something stable per interface (the `portName` passed to
+  `controller_midi_in`) would additionally stop the two instances colliding with each other.
 - **`BIG_CHARS_PER_LINE = 16` is an untested estimate.** The two-line patch name wraps at that count;
   it has not been calibrated against the real pixel width at `SIZE_BIG`.
 - **The multi-row patch list is parked**, pending pacing calibration — a seven-row repaint costs
