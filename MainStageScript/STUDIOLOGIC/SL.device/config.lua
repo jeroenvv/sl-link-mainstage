@@ -610,7 +610,7 @@ ROW_MAXW = 304
 -- width. Retune by eye against a name a couple of characters either side of
 -- this constant if the geometry below changes (screen width, X margins,
 -- font).
-BIG_MAX_CHARS = 25
+BIG_MAX_CHARS = 27
 
 -- Same idea, for the zoom screen's set name at SIZE_MEDIUM (see that
 -- constant's comment above for why its geometry is an estimate). SIZE_MEDIUM
