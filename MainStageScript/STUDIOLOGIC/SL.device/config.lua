@@ -63,10 +63,17 @@ SL_INSTANCE_START = 0x6D -- first instance byte tried; bumped on rejection
 
 -- Item types
 IT_SYSTEM = 0x00
-IT_BUTTON = 0x01 -- spike instrumentation only (Q2/Q7, docs/full-functionality-plan.md); not otherwise handled
-IT_ENCODER = 0x03 -- spike instrumentation only (Q2), see above
+IT_BUTTON = 0x01 -- handled for BID_ZOOM (see handle_zoom_button); other BIDs are logged only
+IT_ENCODER = 0x03 -- logged only; not otherwise handled
 IT_DISPLAY = 0x04
 IT_IDENTIFICATION = 0x7F
+
+-- Button IDs (only what this script wires up so far)
+BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
+
+-- Button press-event byte, e[9] of an IT_BUTTON frame
+PRESS_SHORT = 0x01
+PRESS_LONG = 0x02
 
 -- Identification functions
 ID_REQUEST = 0x00
@@ -174,11 +181,11 @@ reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
 -- CONSEQUENCE, confirmed on hardware: the SL88 cannot paint that fast and
 -- silently drops a display message that arrives while it is still painting
 -- the previous one. A 7-row calibration screen (one saturated colour per
--- row, DIAG_ROW_EXTENT) rendered rows 0/2/4/6 and left 1/3/5 black - every
--- SECOND message lost, not a geometry bug (which would leave only the last
--- row visible). A 3-region zoom update (zset/zname/zpos, flushed back to
--- back as FLUSH #148/#149/#150) reliably lost the MIDDLE one - the patch
--- name, the one thing this screen exists to show.
+-- row, since-removed diagnostic-only screen) rendered rows 0/2/4/6 and left
+-- 1/3/5 black - every SECOND message lost, not a geometry bug (which would
+-- leave only the last row visible). A 3-region zoom update (zset/zname/zpos,
+-- flushed back to back as FLUSH #148/#149/#150) reliably lost the MIDDLE
+-- one - the patch name, the one thing this screen exists to show.
 --
 -- Set TRUE once per timer tick, by controller_timer_trigger. flush_pending()
 -- may dequeue and emit a display message (itemType IT_DISPLAY - this
@@ -208,17 +215,13 @@ queuedDisplayOps = 0
 -- What MainStage has loaded (from controller_select_patch), and the model for
 -- both display modes below. currentConcert already existed before this
 -- feature and is reused rather than adding a parallel concertName.
--- 'zoom' is the only active mode for now. A 7-row calibration screen (each
--- row a full-width Write Text, one message per ~100ms flush) showed rows
--- 0/2/4/6 painted and rows 1/3/5 BLACK - never painted, full width, so every
--- SECOND display message is being lost in transmission, not geometry (a
--- geometry bug would leave only the last row visible). Leading theory: the
--- SL88 drops a message that arrives while it is still painting the previous
--- one, the same shape as this file's "Clear Screen races the draws that
--- follow it" finding. The list screen's per-flush cadence is exactly the
--- shape that would trip this, so it stays parked - not deleted, see
--- paint_list_screen() - until that alternating-loss finding is understood.
-displayMode = 'zoom' -- or 'list' (parked - see comment above)
+-- The alternating-message-loss finding that used to keep 'list' parked
+-- (a 7-row calibration screen showed rows 0/2/4/6 painted and 1/3/5 BLACK)
+-- turned out to be the display-pacing bug fixed by displayFlushReady below,
+-- not anything about the list screen itself - see docs/ for the record.
+-- 'zoom' stays the default (unchanged on load/restart); the Zoom button
+-- (BID_ZOOM, see handle_zoom_button) toggles to 'list' and back.
+displayMode = 'zoom' -- or 'list'
 
 activeSetIndex = 0
 activePatchIndex = 0
@@ -226,15 +229,22 @@ currentConcert = ''
 setName = ''
 patchName = ''
 
--- The set being browsed and the row the cursor sits on. Phase 2 moves these
--- independently of the active patch (joystick navigation); Phase 1 has no
--- wired input for that, so controller_select_patch simply keeps them tracking
--- whatever MainStage just loaded.
-browseSetIndex = 0
+-- cursorIndex is an index into listRows (0-based, matching the pattern used
+-- throughout this file: listRows[cursorIndex + 1] is the Lua-array entry).
+-- Phase 2 moves it independently of the active patch (joystick navigation);
+-- Phase 1 has no wired input for that, so controller_select_patch simply
+-- keeps it tracking whatever MainStage just loaded - see
+-- find_active_row_index().
 cursorIndex = 0
 scrollOffset = 0
 
-patchRows = {} -- { {label=..., setIndex=..., patchIndex=...}, ... } for browseSetIndex
+-- The flat, interleaved patchlist, normalised: { label, isPatch, setIndex,
+-- patchIndex }, in the SAME order MainStage's own patchlist array uses - this
+-- order IS the continuous list (sets and patches interleaved exactly as
+-- MainStage displays them), so it is built with ipairs(), not pairs(), in
+-- controller_select_patch: order is not just cosmetic here the way it was
+-- for the old per-set filter.
+listRows = {}
 
 screenDirty = false
 
@@ -325,8 +335,6 @@ function queue_message(msg, regionId)
 		for i = 1, #pendingMessages do
 			if pendingMessages[i].regionId == regionId then
 				pendingMessages[i] = msg
-				print('[sllink][spike] coalesced regionId=' .. tostring(regionId) ..
-				      ' (queue depth now ' .. #pendingMessages .. ')')
 				return
 			end
 		end
@@ -380,7 +388,7 @@ function flush_pending(includeQuery)
 			for i = 1, #m do out[#out + 1] = m[i] end
 			if isDisplay then displayFlushReady = false end
 			flushCounter = flushCounter + 1
-			print('[sllink][spike] FLUSH #' .. flushCounter ..
+			print('[sllink] FLUSH #' .. flushCounter ..
 			      ' regionId=' .. tostring(m.regionId or 'none') ..
 			      ' bytes=' .. #m ..
 			      ' queueDepthAfter=' .. #pendingMessages)
@@ -534,7 +542,8 @@ end
 -- moment only the bottom layer changes and the top layer is skipped as unchanged; the device
 -- has no concept of layers, it paints strictly in message order. Use invalidate(ids) to force
 -- every id sharing an unavoidable overlap to be resent together as one unit - see
--- ROW_NEEDS_BACKING_RECT below for the one place this project needs that escape hatch.
+-- draw_text_with_erase() below for the one place this project needs that escape hatch (the
+-- zoom screen's zset/zname/znext, which must draw at maxWidth=0 and so cannot self-clear).
 
 drawn = {}
 
@@ -586,18 +595,19 @@ SCREEN_HEIGHT = 240
 TEXT_X = 8
 TEXT_MAXW = SCREEN_WIDTH - (2 * TEXT_X)
 
-ROW_COUNT = 7
-ROW_Y0 = 52
-ROW_PITCH = 27
+ROW_COUNT = 8
+ROW_Y0 = 30
+ROW_PITCH = 26
 ROW_X = 8
 ROW_MAXW = 304
 
 -- FOUND ON HARDWARE (2026-08-19): a long patch name at SIZE_BIG with
 -- maxWidth=304 rendered as a SINGLE LETTER followed by "...". The SL88's own
 -- Max Width truncation is evidently unreliable at big size, so the zoom
--- screen no longer relies on it (maxWidth=0, "print it all" per
--- docs/implementing-sl-link.md) and instead truncates the string itself -
--- see truncate_text() and paint_zoom_screen().
+-- screen's patch name still truncates itself (see truncate_text() and
+-- paint_zoom_screen()) rather than relying on it. CONFIRMED WORKING at
+-- SIZE_SMALL since - see the design doc's settled-facts table - which is why
+-- every list row below uses a real, non-zero maxWidth instead.
 --
 -- FOUND ON HARDWARE (2026-08-20): wrapping the name across two lines (the
 -- approach this constant originally served) instead left STALE TEXT on the
@@ -612,13 +622,14 @@ ROW_MAXW = 304
 -- font).
 BIG_MAX_CHARS = 27
 
--- Same idea, for the zoom screen's set name at SIZE_MEDIUM (see that
+-- Same idea, for SIZE_MEDIUM text on the zoom screen (zset/znext - see that
 -- constant's comment above for why its geometry is an estimate). SIZE_MEDIUM
 -- is smaller than SIZE_BIG, so more characters fit in the same width; also
 -- unmeasured, retune the same way as BIG_MAX_CHARS.
 MEDIUM_MAX_CHARS = 36
 
--- truncate_text() cuts zname/zset to exactly these character counts before
+-- truncate_text() cuts zname/zset/znext to exactly these character counts
+-- (when ZSET_ZNEXT_TRUST_MAXWIDTH is false - see that flag below) before
 -- they are drawn (see draw_text_with_erase() below for how the vacated band
 -- is cleared). Assert the budget relationship rather than assuming it:
 -- TEXT_STRING_CAP is msg_write_text's hard transport clamp (FLUSH_BUDGET
@@ -629,157 +640,146 @@ MEDIUM_MAX_CHARS = 36
 assert(BIG_MAX_CHARS <= TEXT_STRING_CAP,
        'BIG_MAX_CHARS must fit within TEXT_STRING_CAP or zname draws would be re-truncated on the wire')
 assert(MEDIUM_MAX_CHARS <= TEXT_STRING_CAP,
-       'MEDIUM_MAX_CHARS must fit within TEXT_STRING_CAP or zset draws would be re-truncated on the wire')
+       'MEDIUM_MAX_CHARS must fit within TEXT_STRING_CAP or zset/znext draws would be re-truncated on the wire')
 
--- TEMPORARY SPIKE INSTRUMENTATION - remove once row geometry is settled.
---
--- Hypothesis under test: Write Text paints an OPAQUE background box TALLER
--- than ROW_PITCH (27px), so each row's background erases the row drawn
--- above it - matching the hardware symptoms of a full repaint showing
--- mostly-black rows, a selected row "appearing" because nothing draws after
--- it to erase it, and stale text surviving a set switch until a row is
--- selected. When true, paint_list_screen() paints a calibration screen of 7
--- saturated, distinctly-coloured rows instead of the real list, so the
--- actual painted extent of each Write Text box is visible on the physical
--- screen. See paint_diag_row_extent() below.
-DIAG_ROW_EXTENT = false
+-- SCROLL-OFF MARGIN (vim's `scrolloff`): the window shifts once the cursor
+-- comes within SCROLL_MARGIN rows of an edge, so at least this many rows of
+-- context stay visible beyond it - Jeroen's requirement that at least one
+-- patch AFTER the current one is always on screen, so you can see what you
+-- are changing to. 2, not 1: set headers occupy rows in a continuous list,
+-- so a margin of 1 could leave the single visible row below the current
+-- patch a set header - telling you the song ended but not what plays next.
+-- A margin of 2 guarantees a real patch is visible even at a set boundary -
+-- see the design doc's worked example. Asserted below rather than assumed:
+-- SCROLL_MARGIN must stay under half the window or this rule and the final
+-- clamp fight each other.
+SCROLL_MARGIN = 2
+assert(SCROLL_MARGIN < ROW_COUNT / 2,
+       'SCROLL_MARGIN must be less than ROW_COUNT / 2 or the margin and the final clamp fight each other')
 
--- FOUND ON HARDWARE: controller_select_patch used to set cursorIndex without
--- ever touching scrollOffset, which stayed 0 forever - so on any set with
--- more than ROW_COUNT patches, selecting patch 8+ left the highlight off the
--- visible window entirely (nothing on screen looked selected). Keeps
--- scrollOffset such that cursorIndex is always inside the visible window
--- [scrollOffset, scrollOffset + ROW_COUNT). Edge-triggered, NOT re-centring:
--- the window moves the minimum amount needed to keep the cursor in view,
--- because a scroll costs a full ROW_COUNT-row repaint where an in-window
--- cursor move costs 2 messages (docs/full-functionality-plan.md Phase 1).
+-- Keeps scrollOffset such that cursorIndex is always inside the visible
+-- window, with SCROLL_MARGIN rows of context beyond it wherever the list
+-- itself allows - edge-triggered, NOT re-centring: the window moves the
+-- minimum amount needed to honour the margin, because a scroll costs a full
+-- ROW_COUNT-row repaint where an in-window cursor move costs 2 messages (see
+-- the design doc's redraw cost table). The final clamp is what makes the
+-- ends behave: near the top or bottom of the list the margin cannot be
+-- maintained, so the offset pins at its limit and the cursor moves into the
+-- margin instead - standard scrolloff behaviour, and it must never re-centre.
 -- Standalone rather than inlined into controller_select_patch so Phase 2's
 -- joystick-driven cursor movement can call it too instead of re-deriving the
 -- same clamp arithmetic.
 function clamp_scroll()
-	if cursorIndex < scrollOffset then
-		scrollOffset = cursorIndex
-	elseif cursorIndex >= scrollOffset + ROW_COUNT then
-		scrollOffset = cursorIndex - ROW_COUNT + 1
+	local m = SCROLL_MARGIN
+	if cursorIndex - m < scrollOffset then
+		scrollOffset = cursorIndex - m
+	elseif cursorIndex + m >= scrollOffset + ROW_COUNT then
+		scrollOffset = cursorIndex + m - ROW_COUNT + 1
 	end
-	local maxOffset = math.max(0, #patchRows - ROW_COUNT)
+	local maxOffset = math.max(0, #listRows - ROW_COUNT)
 	if scrollOffset > maxOffset then scrollOffset = maxOffset end
 	if scrollOffset < 0 then scrollOffset = 0 end
 end
 
-ROW_NORMAL = 0
-ROW_ACTIVE = 1
-ROW_CURSOR = 2
-ROW_CURSOR_ACTIVE = 3
+-- Three row states - deliberately fewer than the old four, because the
+-- cursor is no longer a colour state at all (see draw_list_row()'s "> "
+-- marker below): only what KIND of row it is, and whether it is the active
+-- patch, affects colour now. { fr, fg, fb, br, bg, bb } per state - the
+-- design doc's colour table. All channel values even (the wire format is
+-- 7-bit per channel and halves these, dropping the low bit - odd values
+-- silently round), except the conventional 255 used for "fully saturated"
+-- throughout this file, which rounds to the same 127 as 254 so costs nothing.
+ROW_HEADER = 0
+ROW_PATCH  = 1
+ROW_ACTIVE = 2
 
--- { fr, fg, fb, br, bg, bb } per row state - SLLinkDisplay.swift's design table.
 ROW_COLORS = {
-	[ROW_NORMAL]        = { 150, 150, 150,   0,   0,   0 },
-	[ROW_ACTIVE]         = { 255, 170,  40,   0,   0,   0 },
-	[ROW_CURSOR]          = {   0,   0,   0, 255, 255, 255 },
-	[ROW_CURSOR_ACTIVE]   = {   0,   0,   0, 255, 170,  40 },
+	[ROW_HEADER] = { 110, 170, 230,   0,   0,   0 }, -- blue on black: structure, not a patch
+	[ROW_PATCH]  = { 150, 150, 150,   0,   0,   0 }, -- grey on black: recessive, the bulk of the list
+	[ROW_ACTIVE] = {   0,   0,   0, 255, 170,  40 }, -- black on amber: unmistakable at distance
 }
 
--- UNVERIFIED on hardware: whether Write Text's background fills the WHOLE Max
--- Width x line-height box, or only the glyph run. If only the glyphs, an
--- inverted row would show a white/amber bar only as wide as the text instead
--- of a full bar. Default false (rely on the fill). Flip this after the
--- hardware probe in the design doc ("the one thing this design depends on")
--- if the fill turns out to only track glyphs.
-ROW_NEEDS_BACKING_RECT = false
-
--- Single entry point for row drawing so ROW_NEEDS_BACKING_RECT is honoured in
--- exactly one place. `label` is passed in rather than looked up from
--- patchRows here, because the caller is responsible for scrollOffset.
-function draw_row(i, label, state)
+-- Draws list row `i` (0-based, within the visible window) for `row` - one of
+-- the flat, normalised listRows entries, or nil past the end of the list.
+-- `isCursor` controls only the "> "/"  " marker column, never the colour:
+-- active state and cursor state are deliberately on separate channels (see
+-- the design doc), so there is no combined case to special-case here - a row
+-- that is both simply gets ROW_ACTIVE's colours with a "> " prefix, which
+-- reads correctly with nothing extra written for it.
+--
+-- Every row - including a past-the-end blank one - draws at the SAME x and
+-- maxWidth (ROW_X, ROW_MAXW), confirmed on hardware to make Write Text's
+-- background fill the whole box (see the design doc's settled-facts table),
+-- so every row is self-clearing: no erase rect, ever, on this screen.
+-- Indentation is two literal leading spaces in the string, placed AFTER the
+-- marker column, never a change to x - that is what keeps every row's
+-- background box identical (so highlight bars line up) and the ">" pinned
+-- to one character position regardless of row kind.
+function draw_list_row(i, row, isCursor)
 	local y = ROW_Y0 + ROW_PITCH * i
-	local c = ROW_COLORS[state]
-	local fr, frg, frb, brr, brg, brb = c[1], c[2], c[3], c[4], c[5], c[6]
 	local id = 'row' .. i
 
-	if ROW_NEEDS_BACKING_RECT then
-		-- Fallback if the probe finds the text background does NOT fill the
-		-- whole box: paint a backing rect first, then the text on top. The
-		-- rect and text now overlap by construction, so per the non-overlap
-		-- rule above they are memoized and resent as ONE unit under a single
-		-- id - draw_rect/draw_text alone would let one half go stale relative
-		-- to the other, so this checks a combined tuple by hand instead of
-		-- calling them.
-		-- Both messages share the drawn[] memo under the same `id`: they are
-		-- one unit under the non-overlap rule, so dropping either one
-		-- (drop_queued_display) must invalidate drawn[id] for both, not just
-		-- whichever one happened to be discarded - see base_region_id().
-		--
-		-- But queue_message's regionId is now also a COALESCING key, and the
-		-- rect and text must coalesce INDEPENDENTLY of each other - keying
-		-- both under plain `id` would let a second draw's text replace the
-		-- first draw's rect in the queue, silently losing the rect half. So
-		-- they get distinct internal keys derived from `id` (id..':rect',
-		-- id..':text'): each coalesces only against its own kind, while both
-		-- still resolve back to the same logical region for the memo and for
-		-- drop_queued_display (base_region_id strips the suffix).
-		local t = { label, fr, frg, frb, brr, brg, brb }
-		if tuple_equal(drawn[id], t, #t) then return end
-		drawn[id] = t
-		queue_message(msg_draw_rect(0, y - 1, SCREEN_WIDTH, 25, brr, brg, brb), id .. ':rect')
-		queue_message(msg_write_text(label, ROW_X, y, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
-			fr, frg, frb, brr, brg, brb), id .. ':text')
-	else
-		draw_text(id, label, ROW_X, y, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
-			fr, frg, frb, brr, brg, brb)
+	if row == nil then
+		local c = ROW_COLORS[ROW_PATCH]
+		draw_text(id, '', ROW_X, y, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL, c[1], c[2], c[3], c[4], c[5], c[6])
+		return
 	end
+
+	local isActive = row.isPatch and row.setIndex == activeSetIndex and row.patchIndex == activePatchIndex
+	local state = ROW_PATCH
+	if isActive then state = ROW_ACTIVE
+	elseif not row.isPatch then state = ROW_HEADER
+	end
+	local c = ROW_COLORS[state]
+	local marker = isCursor and '> ' or '  '
+	local indent = row.isPatch and '  ' or ''
+	draw_text(id, marker .. indent .. row.label, ROW_X, y, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
+		c[1], c[2], c[3], c[4], c[5], c[6])
 end
 
--- Two-line header: concert (dim, outermost context, changes least often) over
--- set name + position counter. ALIGN_RIGHT (0x02, docs/implementing-sl-link.md)
--- right-aligns hdrpos inside its narrow box against the right margin.
-function draw_header()
-	draw_text('hdrcnc', currentConcert, 8, 2, 304, ALIGN_LEFT, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
-	draw_text('hdrset', setName, 8, 25, 232, ALIGN_LEFT, SIZE_SMALL, 110, 170, 230, 0, 0, 0)
-	local n = #patchRows > 0 and (cursorIndex + 1) or 0
-	draw_text('hdrpos', n .. '/' .. #patchRows, 248, 25, 64, ALIGN_RIGHT, SIZE_SMALL,
-		110, 170, 230, 0, 0, 0)
+-- Finds the flat, 0-based listRows index of the currently ACTIVE patch (the
+-- one MainStage has loaded - activeSetIndex/activePatchIndex), or 0 if none
+-- matches (e.g. before the first real patch selection). Used both to keep
+-- cursorIndex tracking the active patch in Phase 1 (controller_select_patch)
+-- and to find where the NEXT patch search should start (next_line_text()).
+function find_active_row_index()
+	for i = 1, #listRows do
+		local row = listRows[i]
+		if row.isPatch and row.setIndex == activeSetIndex and row.patchIndex == activePatchIndex then
+			return i - 1
+		end
+	end
+	return 0
 end
 
--- TEMPORARY SPIKE INSTRUMENTATION - see DIAG_ROW_EXTENT above; remove this
--- table and paint_diag_row_extent() together once the measurement is done.
---
--- One distinct, saturated background colour per row (8-bit RGB; append_rgb
--- halves to the wire's 7-bit-per-channel form) so the actual painted extent
--- of each row's Write Text box is visible on hardware even where it
--- oversteps ROW_PITCH into a neighbour.
-DIAG_ROW_COLORS = {
-	{ 255,   0,   0 }, -- red
-	{   0, 180,   0 }, -- green
-	{   0,  80, 255 }, -- blue
-	{ 220, 220,   0 }, -- yellow
-	{ 255,   0, 255 }, -- magenta
-	{   0, 200, 200 }, -- cyan
-	{ 255, 255, 255 }, -- white
-}
-
--- TEMPORARY SPIKE INSTRUMENTATION - see DIAG_ROW_EXTENT above.
---
--- Deliberately bypasses per-region memoization (drawn[]) and coalescing:
--- every row is queued UNCONDITIONALLY, every call, via a direct
--- queue_message(msg_write_text(...)) with no regionId, so nothing is ever
--- skipped as "unchanged" and nothing coalesces two calls together - the
--- colours themselves are the measurement, so every call must actually hit
--- the wire. Rows are queued strictly top to bottom (row 0 first), matching
--- the real code's draw order, because the overwrite behaviour under test
--- depends on that order. queuedDisplayOps is bumped by hand for each row
--- since queue_message only counts regionId'd calls - this is what makes
--- paint_screen()/update_screen()'s "did this queue anything real" check
--- (queuedDisplayOps > before) fire so the trailing sacrificial redraw still
--- runs for this path too.
-function paint_diag_row_extent()
-	for i = 0, ROW_COUNT - 1 do
-		local y = ROW_Y0 + ROW_PITCH * i
-		local c = DIAG_ROW_COLORS[(i % #DIAG_ROW_COLORS) + 1]
-		queue_message(msg_write_text(i .. ' y=' .. y, ROW_X, y, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
-			0, 0, 0, c[1], c[2], c[3]))
-		queuedDisplayOps = queuedDisplayOps + 1
+-- Finds the label of the nearest set header at or before cursorIndex, for
+-- the context bar. Phase 1's cursor always sits on a patch row (it tracks
+-- the active patch - see controller_select_patch), so this always finds a
+-- real header unless the list itself is empty.
+function cursor_set_label()
+	for i = cursorIndex + 1, 1, -1 do
+		local row = listRows[i]
+		if row and not row.isPatch then return row.label end
 	end
+	return ''
+end
+
+-- "concert - set": the context bar's content. A plain ASCII hyphen, not the
+-- design doc's "·" - the SLMK2 font only covers 0x20-0x80 (see
+-- append_text), so a middle dot would render as two spaces.
+function ctx_text()
+	return currentConcert .. ' - ' .. cursor_set_label()
+end
+
+-- The context bar: y=2, dim grey, replacing the old per-set header. In a
+-- continuous list you routinely scroll past a set header and lose track of
+-- which set you are in - this shows it in one line, and redraws only when
+-- its CONTENT changes, for free, via the same per-region memoization every
+-- other draw uses here (which is exactly "only when the cursor crosses into
+-- a different set", since that is the only thing that can change
+-- cursor_set_label()'s result while browsing within a set).
+function draw_ctx()
+	draw_text('ctx', ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 end
 
 -- Draws the list screen's current model, memoized per region - repeat calls
@@ -788,28 +788,11 @@ end
 -- queue_sacrificial_redraw() (see that function for why it now covers both
 -- paths).
 function paint_list_screen()
-	draw_header()
-	if DIAG_ROW_EXTENT then
-		-- TEMPORARY: see DIAG_ROW_EXTENT above. Header still paints normally
-		-- (memoized, as always) so the calibration run also shows whether the
-		-- first row's box eats into it; only the rows themselves are replaced
-		-- by the unconditional calibration paint.
-		paint_diag_row_extent()
-		return
-	end
+	draw_ctx()
 	for i = 0, ROW_COUNT - 1 do
-		local row = patchRows[scrollOffset + i + 1]
-		local label = row and row.label or ''
-		local state = ROW_NORMAL
-		if row ~= nil then
-			local isActive = (row.setIndex == activeSetIndex and row.patchIndex == activePatchIndex)
-			local isCursor = (scrollOffset + i == cursorIndex)
-			if isCursor and isActive then state = ROW_CURSOR_ACTIVE
-			elseif isCursor then state = ROW_CURSOR
-			elseif isActive then state = ROW_ACTIVE
-			end
-		end
-		draw_row(i, label, state)
+		local row = listRows[scrollOffset + i + 1]
+		local isCursor = (scrollOffset + i == cursorIndex)
+		draw_list_row(i, row, isCursor)
 	end
 end
 
@@ -857,11 +840,11 @@ end
 -- Draws `text` preceded by an explicit black erase rect spanning its full
 -- band, sized independently of the string's glyph width - the real fix for
 -- the stale-tail/off-centre bug in the comment above. Memoized as ONE region
--- under `id`, using the same id..':rect'/id..':text' coalescing-key split as
--- draw_row's ROW_NEEDS_BACKING_RECT branch (base_region_id() already knows
--- how to unwind it for drop_queued_display), so an unchanged name queues
--- NOTHING and a changed name always queues both halves together, in order.
--- bg is always black to match the erase rect's fill.
+-- under `id`, using an id..':rect'/id..':text' coalescing-key split
+-- (base_region_id() already knows how to unwind it for drop_queued_display),
+-- so an unchanged name queues NOTHING and a changed name always queues both
+-- halves together, in order. bg is always black to match the erase rect's
+-- fill.
 --
 -- The rect and text are two SEPARATE queue_message() calls and therefore two
 -- separate flushes under flush_pending's one-display-message-per-tick pacing
@@ -885,36 +868,92 @@ function draw_text_with_erase(id, text, x, y, align, size, fr, fg, fb, eraseX, e
 	queue_message(msg_write_text(text, x, y, 0, align, size, fr, fg, fb, 0, 0, 0), id .. ':text')
 end
 
+-- SAFE default: false, i.e. zset/znext keep using draw_text_with_erase()
+-- (maxWidth=0, explicit erase rect) exactly like zname. Max Width truncation
+-- is only CONFIRMED broken at SIZE_BIG (see BIG_MAX_CHARS's comment) - it
+-- has never been tested at SIZE_MEDIUM, which is what zset/znext use. If a
+-- hardware check confirms it truncates correctly at SIZE_MEDIUM too, flip
+-- this to true: zset/znext then draw with draw_text() at a real, non-zero
+-- maxWidth (self-clearing, like every list row - see draw_list_row()), no
+-- erase rect, no truncate_text() call (the device does its own pixel-exact
+-- "..." truncation, same as list rows), halving their cost from 2 messages
+-- to 1 and removing the ~100ms blank-band flicker on every set/next change.
+-- WHAT TO LOOK FOR on hardware after flipping it: a long set name or NEXT
+-- line should truncate cleanly with a trailing "..." (not a single letter,
+-- which is the SIZE_BIG failure mode) and a shorter name replacing a longer
+-- one must not leave a stale tail. Flip back immediately if either happens.
+ZSET_ZNEXT_TRUST_MAXWIDTH = false
+
+-- "NEXT" line for the zoom screen: the next listRows entry after the ACTIVE
+-- patch with isPatch true, skipping set headers - i.e. what you are about to
+-- change to. The prompt word itself carries whether that patch starts a new
+-- song (rather than trying to also fit the set's name on the line), since a
+-- song boundary matters more mid-performance than the destination set's
+-- name. Returns the no-next form at the end of the concert.
+function next_line_text()
+	local activeIndex = find_active_row_index()
+	for i = activeIndex + 2, #listRows do
+		local row = listRows[i]
+		if row.isPatch then
+			local word = (row.setIndex ~= activeSetIndex) and 'NEXT SONG' or 'NEXT'
+			return word .. '  ' .. row.label
+		end
+	end
+	-- End of the concert: no next patch. An em dash isn't in the SLMK2 font
+	-- range (append_text clamps anything outside 0x20-0x80 to a space), so
+	-- this uses a plain ASCII substitute instead of the design doc's "—".
+	return 'NEXT  --'
+end
+
 -- Draws the zoom screen's current model, memoized per region. Shows the
--- ACTIVE patch, not the cursor - "what am I playing right now".
+-- ACTIVE patch, not the cursor - "what am I playing right now" - plus, on
+-- znext, what you are about to change to.
 --
 -- REVERTED (2026-08-20) from a two-line wrapped patch name back to one
 -- truncated line: on hardware, the multi-line repaint left stale text on the
 -- second line when a shorter name replaced a longer one (see BIG_MAX_CHARS's
--- comment). Both the patch name and the set name are truncated in the
--- script via truncate_text() and drawn with maxWidth=0 ("print it all", per
--- docs/implementing-sl-link.md) rather than relying on the SL88's own Max
--- Width truncation, which is unreliable at SIZE_BIG - see BIG_MAX_CHARS's
--- comment.
+-- comment).
 --
--- zname/zset are both truncate_text()'d THEN drawn through
--- draw_text_with_erase() - see that function's comment for why an explicit
--- erase rect, not padding, is what makes a shorter name fully overwrite a
--- longer one's tail. Band geometry (checked against the neighbouring lines,
--- none overlap): zset's erase is y=40-75 versus zcnc's y=12-33 above and
--- zname's erase y=106-147 below; zname's erase is y=106-147 versus zpos's
--- y=180-201 below. Retune together with ROW_Y0-style constants if the
--- surrounding layout ever moves.
+-- zname always truncates itself via truncate_text() and draws through
+-- draw_text_with_erase() (maxWidth=0) - Max Width truncation is CONFIRMED
+-- broken at SIZE_BIG, so there is no flag for it. zset/znext do the same
+-- UNLESS ZSET_ZNEXT_TRUST_MAXWIDTH is flipped on (see that flag above), in
+-- which case they draw self-clearing at a real maxWidth like list rows.
+-- Revised layout (design doc): zcnc y=12, zset y=44, zname y=100, znext
+-- y=170, zpos y=210 - bands 12-33 / 44-71 / 100-133 / 170-197 / 210-231, all
+-- non-overlapping. Retune together with ROW_Y0-style constants if the
+-- layout ever moves again.
 function paint_zoom_screen()
 	draw_text('zcnc', currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
-	draw_text_with_erase('zset', truncate_text(setName, MEDIUM_MAX_CHARS),
-		8, 44, ALIGN_CENTER, SIZE_MEDIUM, 110, 170, 230,
-		0, 40, SCREEN_WIDTH, 35)
+
+	if ZSET_ZNEXT_TRUST_MAXWIDTH then
+		draw_text('zset', setName, 8, 44, SCREEN_WIDTH - 16, ALIGN_CENTER, SIZE_MEDIUM,
+			110, 170, 230, 0, 0, 0)
+	else
+		draw_text_with_erase('zset', truncate_text(setName, MEDIUM_MAX_CHARS),
+			8, 44, ALIGN_CENTER, SIZE_MEDIUM, 110, 170, 230,
+			0, 44, SCREEN_WIDTH, 27)
+	end
+
 	draw_text_with_erase('zname', truncate_text(patchName, BIG_MAX_CHARS),
-		8, 110, ALIGN_CENTER, SIZE_BIG, 255, 255, 255,
-		0, 106, SCREEN_WIDTH, 41)
-	local n = #patchRows > 0 and (cursorIndex + 1) or 0
-	draw_text('zpos', n .. '/' .. #patchRows, 8, 180, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
+		8, 100, ALIGN_CENTER, SIZE_BIG, 255, 255, 255,
+		0, 100, SCREEN_WIDTH, 33)
+
+	local nextText = next_line_text()
+	if ZSET_ZNEXT_TRUST_MAXWIDTH then
+		draw_text('znext', nextText, 8, 170, SCREEN_WIDTH - 16, ALIGN_CENTER, SIZE_MEDIUM,
+			80, 200, 120, 0, 0, 0)
+	else
+		draw_text_with_erase('znext', truncate_text(nextText, MEDIUM_MAX_CHARS),
+			8, 170, ALIGN_CENTER, SIZE_MEDIUM, 80, 200, 120,
+			0, 170, SCREEN_WIDTH, 27)
+	end
+
+	-- n/N is the cursor's position in the flat listRows (headers included),
+	-- not a per-set patch count - the flat list has no per-set count left to
+	-- show now that patchRows no longer exists.
+	local n = #listRows > 0 and (cursorIndex + 1) or 0
+	draw_text('zpos', n .. '/' .. #listRows, 8, 210, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 end
 
 -- Ordinary content-driven redraw: draws the current model, memoized per
@@ -1028,22 +1067,22 @@ end
 --
 -- Builds and queues the message DIRECTLY, bypassing draw_text(), and with NO
 -- regionId - not an oversight, a requirement now that queue_message()
--- coalesces by regionId. The real hdrcnc/zcnc draw almost always sits
--- earlier in this exact same paint's queue (draw_header/paint_zoom_screen run
--- first); routing this through draw_text('hdrcnc', ...) would hand it that
--- SAME regionId and coalesce it into that earlier entry instead of appending
--- a distinct trailing message - collapsing the one thing this mechanism
--- exists to guarantee (a disposable duplicate strictly AFTER everything real)
--- back into whatever position the real draw happened to queue at. A nil
--- regionId always appends (see queue_message), which is exactly "trailing".
--- No memo bookkeeping needed here either: drawn['hdrcnc']/['zcnc'] already
--- holds the correct content from the real draw this call is shadowing.
+-- coalesces by regionId. The real ctx/zcnc draw almost always sits earlier
+-- in this exact same paint's queue (draw_ctx/paint_zoom_screen run first);
+-- routing this through draw_text('ctx', ...) would hand it that SAME
+-- regionId and coalesce it into that earlier entry instead of appending a
+-- distinct trailing message - collapsing the one thing this mechanism exists
+-- to guarantee (a disposable duplicate strictly AFTER everything real) back
+-- into whatever position the real draw happened to queue at. A nil regionId
+-- always appends (see queue_message), which is exactly "trailing". No memo
+-- bookkeeping needed here either: drawn['ctx']/['zcnc'] already holds the
+-- correct content from the real draw this call is shadowing.
 function queue_sacrificial_redraw()
 	if displayMode == 'zoom' then
 		queue_message(msg_write_text(currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL,
 			120, 120, 120, 0, 0, 0))
 	else
-		queue_message(msg_write_text(currentConcert, 8, 2, 304, ALIGN_LEFT, SIZE_SMALL,
+		queue_message(msg_write_text(ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
 			120, 120, 120, 0, 0, 0))
 	end
 end
@@ -1106,13 +1145,11 @@ function paint_screen()
 	      ' "' .. patchName .. '"')
 end
 
--- Mode switching. Not wired to the Zoom button yet - its BID is unconfirmed
--- (full-functionality-plan.md Q7) - so this is only reachable from the
--- harness or a future callback. Clear Screen stays banned, so the erase is a
+-- Mode switching. Wired to the Zoom button (BID_ZOOM, confirmed on hardware -
+-- see handle_zoom_button). Clear Screen stays banned, so the erase is a
 -- single full-screen black rect, which is the only message in its flush and
 -- therefore already has ~100ms of quiet after it structurally, unlike the old
--- Clear Screen failure which was bundled into a repaint. Verify on hardware
--- anyway before wiring a button to this.
+-- Clear Screen failure which was bundled into a repaint.
 function set_display_mode(mode)
 	if mode ~= 'list' and mode ~= 'zoom' then return end
 	displayMode = mode
@@ -1185,7 +1222,7 @@ function handle_identification_rejected(reason)
 		-- rearm_timer's gating honest once the wait ends and normal inbound
 		-- traffic resumes calling it.
 		timerPending = true
-		print('[sllink][spike] re-identify retry ' ..
+		print('[sllink] re-identify retry ' ..
 		      (MAX_SAME_ID_RETRIES - reidentifyRetriesLeft) .. '/' .. MAX_SAME_ID_RETRIES ..
 		      ' as (' .. string.format('%02X %02X', SL_HOST_ID, instanceID) .. ')')
 		return
@@ -1194,7 +1231,7 @@ function handle_identification_rejected(reason)
 	instanceID = instanceID + 1
 	if instanceID > 0x7E then instanceID = 0x10 end
 	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
-	print('[sllink][spike] bumping instance to ' ..
+	print('[sllink] bumping instance to ' ..
 	      string.format('%02X %02X', SL_HOST_ID, instanceID) .. ' after ' ..
 	      MAX_SAME_ID_RETRIES .. ' failed retries')
 	start_identification()
@@ -1286,20 +1323,6 @@ function handle_sl_frame(e)
 				if state == STATE_IDENTIFYING or state == STATE_LISTED then
 					state = STATE_ACTIVE
 				end
-				-- SPIKE INSTRUMENTATION (remove once the self-heal is fixed).
-				-- The self-heal repaint below never fires on hardware, yet the
-				-- same path reproduces correctly in the offline harness. This
-				-- line is UNCONDITIONAL and sits BEFORE the guard, so the log
-				-- shows whether the branch is even reached and, if so, which
-				-- condition is false. Without it a missing repaint cannot be
-				-- told apart from a branch that never ran.
-				print('[sllink][spike] selfheal patch="' .. tostring(patchName) ..
-				      '" pending=' .. tostring(has_pending()) ..
-				      ' idle=' .. tostring(idleTicks) ..
-				      ' lastPaint=' .. tostring(lastPaintTick) ..
-				      ' stale=' .. tostring(lastPaintedPatch ~= patchName) ..
-				      ' due=' .. tostring((idleTicks - lastPaintTick) >= REPAINT_EVERY_IDLE_TICKS))
-
 				if patchName ~= '' and not has_pending() then
 					local stale = (lastPaintedPatch ~= patchName)
 					local due = (idleTicks - lastPaintTick) >= REPAINT_EVERY_IDLE_TICKS
@@ -1325,24 +1348,46 @@ function handle_sl_frame(e)
 		elseif func == SYS_LOGOUT_REQUEST then
 			handle_logout_request()
 		end
-	else
-		-- SPIKE INSTRUMENTATION (Q2/Q7, docs/full-functionality-plan.md) - remove
-		-- or gate once the spike answers whether Button/Encoder frames reach us
-		-- at all, and which BID the Zoom button sends. Everything else that
-		-- reaches here previously fell through in total silence.
-		if itemType == IT_BUTTON then
-			local pressKind = (e[9] == 0x01 and 'SHORT') or (e[9] == 0x02 and 'LONG') or tostring(e[9])
-			print('[sllink][spike] <- BUTTON bid=' .. string.format('0x%02X', e[8])
-				.. ' event=' .. pressKind .. ' frame=' .. dump_event(e))
-		elseif itemType == IT_ENCODER then
-			local delta = e[9] - 0x40
-			print('[sllink][spike] <- ENCODER eid=' .. string.format('0x%02X', e[8])
-				.. ' tick=' .. string.format('0x%02X', e[9])
-				.. ' delta=' .. tostring(delta) .. ' frame=' .. dump_event(e))
+	elseif itemType == IT_BUTTON then
+		local bid = func
+		local pressKind = e[9]
+		if bid == BID_ZOOM then
+			handle_zoom_button(pressKind)
 		else
-			print('[sllink][spike] <- unhandled itemType=' .. string.format('0x%02X', itemType)
-				.. ' frame=' .. dump_event(e))
+			local kind = (pressKind == PRESS_SHORT and 'SHORT') or (pressKind == PRESS_LONG and 'LONG')
+				or tostring(pressKind)
+			print('[sllink] <- BUTTON bid=' .. string.format('0x%02X', bid)
+				.. ' event=' .. kind .. ' (unhandled) frame=' .. dump_event(e))
 		end
+	elseif itemType == IT_ENCODER then
+		local eid = func
+		local delta = e[9] - 0x40
+		print('[sllink] <- ENCODER eid=' .. string.format('0x%02X', eid)
+			.. ' tick=' .. string.format('0x%02X', e[9])
+			.. ' delta=' .. tostring(delta) .. ' (unhandled) frame=' .. dump_event(e))
+	else
+		print('[sllink] <- unhandled itemType=' .. string.format('0x%02X', itemType)
+			.. ' frame=' .. dump_event(e))
+	end
+end
+
+-- SHORT toggles the display mode; LONG forces a full repaint of whichever
+-- mode is currently showing. LONG must never be silently dropped - the
+-- project rule (see CLAUDE.md's demo-screen interaction model: LONG_PRESSION
+-- is confirmed delivered on real hardware, and every button case must give
+-- it a distinct effect or run the same action as SHORT) - so it gets its
+-- own, always-safe effect: a manual on-demand version of the periodic
+-- self-heal repaint above (paint_screen() after invalidate_all()), useful if
+-- the SL88's screen has drifted from what the script thinks it last painted.
+function handle_zoom_button(pressKind)
+	if pressKind == PRESS_LONG then
+		print('[sllink] <- BUTTON zoom LONG - forcing full repaint of mode=' .. displayMode)
+		invalidate_all()
+		paint_screen()
+	else
+		local newMode = (displayMode == 'zoom') and 'list' or 'zoom'
+		print('[sllink] <- BUTTON zoom SHORT - toggling display mode -> ' .. newMode)
+		set_display_mode(newMode)
 	end
 end
 
@@ -1363,8 +1408,8 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	displayMode = 'zoom' -- see the displayMode declaration above for why
 	patchName, setName, currentConcert = '', '', ''
 	activeSetIndex, activePatchIndex = 0, 0
-	browseSetIndex, cursorIndex, scrollOffset = 0, 0, 0
-	patchRows = {}
+	cursorIndex, scrollOffset = 0, 0
+	listRows = {}
 	invalidate_all()
 
 	if applicationName ~= nil and applicationName ~= '' then
@@ -1586,22 +1631,6 @@ function controller_midi_in(midiEvent, portName)
 		print('[sllink] <- SYSEX on port=' .. tostring(portName) .. ': ' .. dump_event(midiEvent))
 	end
 
-	-- SPIKE INSTRUMENTATION (Q2, docs/full-functionality-plan.md) - checking
-	-- whether the SL88's buttons also reach us as plain channel-voice MIDI,
-	-- alongside (or instead of) SL Link SysEx. Remove or gate once answered.
-	-- Deliberately CC/PC only: Note On/Off, pitch bend, aftertouch and clock
-	-- fire continuously while the keyboard is played and would flood the log,
-	-- burying the signal this spike actually needs. Do not widen this to
-	-- other status bytes without re-adding a rate limit.
-	if midiEvent[0] ~= nil and midiEvent[0] >= 0xB0 and midiEvent[0] <= 0xCF then
-		local status = midiEvent[0]
-		local channel = (status % 0x10) + 1 -- 1-based, matches how the UI names channels
-		local kind = (status < 0xC0) and 'CC' or 'PC'
-		print('[sllink][spike] <- ' .. kind .. ' on port=' .. tostring(portName)
-			.. ' ch=' .. tostring(channel)
-			.. ' data=' .. tostring(midiEvent[1]) .. ',' .. tostring(midiEvent[2]))
-	end
-
 	if is_our_sl_frame(midiEvent) then
 		handle_sl_frame(midiEvent)
 		-- Protocol traffic, not music: swallow it, and use the opportunity to
@@ -1628,67 +1657,30 @@ function controller_midi_in(midiEvent, portName)
 	return nil
 end
 
-patchlistDumped = false -- guards the one-time debug dump below, see controller_select_patch
-patchLabelKeyLogged = false -- guards the one-time patch_label() key-resolution log below
-patchFieldKeyLogged = {} -- per-field one-time key-resolution log guard, see patch_field()
-
--- SPIKE INSTRUMENTATION - candidate-key lookups for patchlist entries. Real
--- field names were never confirmed against hardware (the design doc assumed
--- .Label; the code before this used .Name; neither was right, hence the
--- blank orange highlight bar observed on 2026-08-19). These try the
--- plausible spellings in order and self-report which one won, once, so the
--- next hardware round-trip both fixes the bug and answers the question
--- instead of needing a follow-up spike.
+-- Resolves a patchlist entry's label across the plausible field-name
+-- spellings MainStage might use (the design doc assumed .Label; an earlier
+-- version of this code assumed .Name; neither alone was safe to trust).
 function patch_label(entry)
 	local candidates = { 'Label', 'Name', 'label', 'name', 'PatchName', 'patchname' }
 	if type(entry) == 'table' then
 		for _, key in ipairs(candidates) do
 			local v = entry[key]
-			if type(v) == 'string' and v ~= '' then
-				if not patchLabelKeyLogged then
-					patchLabelKeyLogged = true
-					print('[sllink][spike] patch_label: using key "' .. key .. '"')
-				end
-				return v
-			end
+			if type(v) == 'string' and v ~= '' then return v end
 		end
-	end
-	if not patchLabelKeyLogged then
-		patchLabelKeyLogged = true
-		local keys = {}
-		if type(entry) == 'table' then
-			for k in pairs(entry) do keys[#keys + 1] = tostring(k) end
-		end
-		print('[sllink][spike] patch_label: NO candidate key matched (tried ' ..
-		      table.concat(candidates, ', ') .. '), entry keys = { ' ..
-		      table.concat(keys, ', ') .. ' } - falling back to tostring()')
 	end
 	return tostring(entry)
 end
 
--- Same idea for the fields the set/patch filter depends on. Tries the
--- capitalised spelling (per the design doc) then the all-lowercase one;
--- logs which won, once per field name, since if the label key was wrong
--- these may be too - and if they are, the "N rows in set" count downstream
--- is wrong along with them. Returns nil (not false) when neither variant is
+-- Same idea for the fields the list model depends on (IsPatch/SetIndex/
+-- PatchIndex): tries the capitalised spelling (per the design doc) then the
+-- all-lowercase one. Returns nil (not false) when neither variant is
 -- present, so a genuinely-false IsPatch is distinguishable from a missing key.
 function patch_field(entry, field)
 	if type(entry) ~= 'table' then return nil end
 	local candidates = { field, field:lower() }
 	for _, key in ipairs(candidates) do
 		local v = entry[key]
-		if v ~= nil then
-			if not patchFieldKeyLogged[field] then
-				patchFieldKeyLogged[field] = true
-				print('[sllink][spike] patch_field(' .. field .. '): using key "' .. key .. '"')
-			end
-			return v
-		end
-	end
-	if not patchFieldKeyLogged[field] then
-		patchFieldKeyLogged[field] = true
-		print('[sllink][spike] patch_field(' .. field .. '): NEITHER "' .. field ..
-		      '" nor "' .. field:lower() .. '" present')
+		if v ~= nil then return v end
 	end
 	return nil
 end
@@ -1714,49 +1706,6 @@ end
 function controller_select_patch(programchangeNumber, patchname, setname, concertname,
                                  patchlist, currentSetIndex, currentPatchIndex)
 	local p, s, c = patchname or '', setname or '', concertname or ''
-
-	-- SPIKE INSTRUMENTATION - one-time dump of the raw patchlist structure,
-	-- so the field names below (IsPatch/SetIndex/Name/PatchIndex) can be
-	-- confirmed against what MainStage actually sends rather than trusted
-	-- from the docs. Only latches patchlistDumped once we've actually
-	-- dumped a NON-EMPTY list: MainStage's first call happens before the
-	-- concert has loaded, so patchlist is empty/nil then - latching on that
-	-- call burned the one shot without ever printing a real entry (observed
-	-- on hardware 2026-08-19). pcall-guarded so a nil/odd entry can't throw
-	-- and kill the callback outright.
-	if not patchlistDumped then
-		local ok, err = pcall(function()
-			local n = 0
-			if type(patchlist) == 'table' then
-				for _ in pairs(patchlist) do n = n + 1 end
-			end
-			if n == 0 then
-				return -- empty/nil this call; try again next call, don't latch yet
-			end
-			patchlistDumped = true
-			print('[sllink][spike] controller_select_patch: one-time patchlist dump' ..
-			      ' (n=' .. n ..
-			      ' currentSetIndex=' .. tostring(currentSetIndex) ..
-			      ' currentPatchIndex=' .. tostring(currentPatchIndex) .. ')')
-			local shown = 0
-			for k, entry in pairs(patchlist) do
-				shown = shown + 1
-				if shown > 5 then break end
-				print('[sllink][spike]   patchlist[' .. tostring(k) .. '] raw = ' .. tostring(entry))
-				if type(entry) == 'table' then
-					for fk, fv in pairs(entry) do
-						print('[sllink][spike]     ' .. tostring(fk) .. ' (' .. type(fv) ..
-						      ') = ' .. tostring(fv))
-					end
-				else
-					print('[sllink][spike]     (entry is not a table - type=' .. type(entry) .. ')')
-				end
-			end
-		end)
-		if not ok then
-			print('[sllink][spike] controller_select_patch: patchlist dump FAILED: ' .. tostring(err))
-		end
-	end
 
 	-- CRASH-SAFETY GUARD ONLY (not the reverted "refuse non-patch selections"
 	-- behaviour above - see the ARGUMENT HIERARCHY SHIFT comment): MainStage's
@@ -1787,40 +1736,45 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 	patchName, setName, currentConcert = p, s, c
 	activeSetIndex = currentSetIndex or activeSetIndex
 	activePatchIndex = currentPatchIndex or activePatchIndex
-	-- Phase 1 has no independent browsing/cursor input yet (deferred to
-	-- Phase 2's joystick handling) - both simply track the active patch.
-	browseSetIndex = activeSetIndex
-	cursorIndex = activePatchIndex
 
-	-- Field names resolved via patch_label()/patch_field() above rather than
-	-- trusted directly (that's what made the highlight bar blank - see
-	-- those functions' comments). patchIndex falls back to the pairs() key
-	-- when PatchIndex/patchindex is genuinely absent, same as before.
-	patchRows = {}
+	-- Rebuild the flat, interleaved list. ipairs(), NOT pairs(): the visual
+	-- order of the continuous list IS patchlist's own array order (sets and
+	-- patches interleaved as MainStage displays them - see the design doc),
+	-- so this must preserve it, unlike the old per-set filter where scan
+	-- order never mattered. Field names resolved via patch_label()/
+	-- patch_field() above rather than trusted directly (that's what made the
+	-- highlight bar blank on an earlier hardware run - see those functions'
+	-- comments). patchIndex falls back to the array position when
+	-- PatchIndex/patchindex is genuinely absent.
+	listRows = {}
 	if patchlist ~= nil then
-		for i, entry in pairs(patchlist) do
-			local isPatch = patch_field(entry, 'IsPatch')
-			local setIndex = patch_field(entry, 'SetIndex')
-			if type(entry) == 'table' and isPatch and setIndex == browseSetIndex then
+		for i, entry in ipairs(patchlist) do
+			if type(entry) == 'table' then
 				local patchIndex = patch_field(entry, 'PatchIndex')
-				patchRows[#patchRows + 1] = {
+				listRows[#listRows + 1] = {
 					label = patch_label(entry),
-					setIndex = setIndex,
-					patchIndex = patchIndex or i,
+					isPatch = patch_field(entry, 'IsPatch') and true or false,
+					setIndex = patch_field(entry, 'SetIndex'),
+					patchIndex = patchIndex or (i - 1),
 				}
 			end
 		end
 	end
 
+	-- Phase 1 has no independent browsing/cursor input yet (deferred to
+	-- Phase 2's joystick handling) - the cursor simply tracks the active
+	-- patch's position in the flat list.
+	cursorIndex = find_active_row_index()
+
 	-- currentConcert/setName added alongside the existing fields so a blank
 	-- concert line on the SL88 screen can be told apart from a draw failure
 	-- (2026-08-19 hardware run: concert line never appeared, cause unknown).
-	print('[sllink] controller_select_patch: "' .. patchName .. '" (' .. #patchRows .. ' rows in set)' ..
+	print('[sllink] controller_select_patch: "' .. patchName .. '" (' .. #listRows .. ' rows total)' ..
 	      ' concert="' .. currentConcert .. '" set="' .. setName .. '"')
 
 	-- Keep the visible window on the newly-set cursor - must run after
-	-- patchRows is rebuilt above (clamp_scroll's upper bound depends on
-	-- #patchRows) and before the repaint below.
+	-- listRows/cursorIndex are rebuilt above (clamp_scroll's upper bound
+	-- depends on #listRows) and before the repaint below.
 	clamp_scroll()
 
 	if state == STATE_REIDENTIFY_WAIT then
@@ -1828,7 +1782,7 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 		-- (see handle_identification_rejected) - a flush here would send an
 		-- Identification Query under an instanceID the SL88 just rejected,
 		-- which would defeat the wait (see controller_midi_in's comment on the
-		-- same hazard). The bookkeeping above (patchName/patchRows/etc.) still
+		-- same hazard). The bookkeeping above (patchName/listRows/etc.) still
 		-- ran, so once we are re-identified the ID_QUERY self-heal branch in
 		-- handle_sl_frame finds lastPaintedPatch stale and repaints for real.
 		return nil
