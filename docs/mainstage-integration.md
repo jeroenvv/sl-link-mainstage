@@ -64,6 +64,22 @@ Recorded here because each looked like a dead end at the time:
 - **`patchlist` is EMPTY on MainStage's first call**, before the concert has loaded. Any one-time
   introspection of it must wait for a non-empty list or it will burn its one shot on nothing.
 
+## Awaiting hardware verification (deployed, never seen running)
+
+Commit `3625399` is installed but has **not** been checked against the keyboard. Everything below is
+offline-verified only (157 harness assertions), so treat it as unproven:
+
+- **The continuous list screen** — 8 rows at 26 px pitch is a tighter density than anything
+  previously deployed. If it looks cramped, `ROW_COUNT`/`ROW_PITCH` are the dials.
+- **The Zoom button** (BID `0x10`) toggling list ↔ zoom. Newly wired; never pressed in anger. Its
+  LONG press forces a full repaint — an unprompted design choice, easily changed.
+- **The `NEXT` line** on the zoom screen, including the `NEXT SONG` form at a song boundary.
+- **The scroll-off margin of 2** actually keeping the next patch visible across a set boundary.
+- **`ZSET_ZNEXT_TRUST_MAXWIDTH`** (currently `false`). Flipping it to `true` would let the set and
+  `NEXT` lines self-clear and drop their erase rects — but only if Max Width truncation behaves at
+  `SIZE_MEDIUM`, which is untested. It is confirmed broken at `SIZE_BIG`. The flag's comment says
+  what to look for.
+
 ## Open issues
 
 - **THE REAL PROBLEM: the SL88 discards draws from an app that is not selected on its display.**
