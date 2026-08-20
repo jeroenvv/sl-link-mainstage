@@ -66,23 +66,34 @@ Recorded here because each looked like a dead end at the time:
 
 ## Open issues
 
-- **NEXT THING TO FIX: the periodic self-heal repaint is not firing.** Observed 2026-08-20 on a run
-  where the user lost the display twice. In both cases the log shows the session perfectly healthy —
-  `state=active`, the keyboard answering queries with `7F 03 01` (identified), no rejection, no
-  re-identify, no `STANDBY`/`RESTART`/`LOGOUT` — while **70+ consecutive idle ticks pass with no
-  `paint queued` line at all**. The first repaint appears only *after* the user re-selects the app
-  and a `LOGIN` arrives.
+- **THE REAL PROBLEM: the SL88 discards draws from an app that is not selected on its display.**
+  Established 2026-08-20 with unconditional instrumentation on the self-heal branch. An earlier entry
+  here claimed the periodic self-heal repaint "never fires" — **that was wrong**, and was based on
+  sampling an idle window that had not yet reached `REPAINT_EVERY_IDLE_TICKS`. Corrected by
+  measurement:
 
-  So the failure the user experiences as "the connection drops" is really: the SL88 takes our app off
-  its display with **no protocol signal**, and `REPAINT_EVERY_IDLE_TICKS` — the mechanism that exists
-  precisely to recover from that — never runs, so the screen stays blank until the app is re-picked
-  by hand. Find out why the `due` branch in `handle_sl_frame`'s `ID_QUERY` handler is not being
-  reached (suspect the `idleTicks`/`lastPaintTick` bookkeeping, or the `not has_pending()` guard
-  never being true while queries keep the queue busy).
+  During a long drop-out the log shows the self-heal firing **348 times**, exactly every 10 idle
+  ticks, each queueing a full 6-message repaint that is then flushed:
 
-  Note it is **not yet proven** that repainting restores a de-selected app — the keyboard may ignore
-  draws from an app that is not on screen. Establish that first, or the fix may be treating a symptom
-  the hardware will not let us treat.
+  ```
+  selfheal ... idle=3485 lastPaint=3475 stale=false due=true
+  paint queued (6 msgs) mode=zoom "m.62 C00 Brass + Bari"
+  FLUSH #5574 regionId=zcnc bytes=36 queueDepthAfter=5
+  ```
+
+  Throughout, the session stayed `active` and identified (`7F 03 01`), with no rejection,
+  re-identify, `STANDBY`, `RESTART` or `LOGOUT`. The screen stayed blank regardless, and only came
+  back when the user re-selected the app on the keyboard.
+
+  **Therefore redrawing cannot recover a de-selected app** — the hardware throws the draws away. Any
+  fix based on repainting harder or more often is wasted effort, and the self-heal's real (and only)
+  job is recovering from the SL88 wiping its screen *while we remain selected*.
+
+  Still unknown, and where to look next: what causes the de-selection in the first place (it is
+  silent — no protocol signal), and whether anything can get us re-selected without the user
+  touching the keyboard. The one lever not yet tried is re-identifying from scratch mid-session to
+  see whether that restores selection. Login Recall (`00 06`) would be the protocol-sanctioned route
+  but needs a stored device icon, which is currently out of scope.
 
 
 - **The session drops after some time and must be re-picked from the SL88's APP list.** DIAGNOSED

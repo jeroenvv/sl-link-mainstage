@@ -146,6 +146,10 @@ Screen is **320 × 240**, origin top-left, `(319, 239)` bottom-right.
 ALIGN: `0x00` left, `0x01` centre, `0x02` right. SIZE: `0x00` small (21 px), `0x01` medium,
 `0x02` big (33 px).
 
+**Medium (`0x01`) works**, confirmed on hardware 2026-08-20 — it renders visibly larger than small.
+The spec gives no pixel height for it; treat ~27 px as an estimate. `ALIGN_RIGHT` (`0x02`) is also
+confirmed working.
+
 **Max Width does the truncating.** It is a *pixel* width; the SLMK2 truncates the string to fit and
 appends `...` itself. Do not pre-truncate strings by character count — you will cut correct text
 short and still not control the pixel result. `0` means "print it all".

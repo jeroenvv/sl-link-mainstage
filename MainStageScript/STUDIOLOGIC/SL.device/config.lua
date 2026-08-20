@@ -1219,6 +1219,20 @@ function handle_sl_frame(e)
 				if state == STATE_IDENTIFYING or state == STATE_LISTED then
 					state = STATE_ACTIVE
 				end
+				-- SPIKE INSTRUMENTATION (remove once the self-heal is fixed).
+				-- The self-heal repaint below never fires on hardware, yet the
+				-- same path reproduces correctly in the offline harness. This
+				-- line is UNCONDITIONAL and sits BEFORE the guard, so the log
+				-- shows whether the branch is even reached and, if so, which
+				-- condition is false. Without it a missing repaint cannot be
+				-- told apart from a branch that never ran.
+				print('[sllink][spike] selfheal patch="' .. tostring(patchName) ..
+				      '" pending=' .. tostring(has_pending()) ..
+				      ' idle=' .. tostring(idleTicks) ..
+				      ' lastPaint=' .. tostring(lastPaintTick) ..
+				      ' stale=' .. tostring(lastPaintedPatch ~= patchName) ..
+				      ' due=' .. tostring((idleTicks - lastPaintTick) >= REPAINT_EVERY_IDLE_TICKS))
+
 				if patchName ~= '' and not has_pending() then
 					local stale = (lastPaintedPatch ~= patchName)
 					local due = (idleTicks - lastPaintTick) >= REPAINT_EVERY_IDLE_TICKS
