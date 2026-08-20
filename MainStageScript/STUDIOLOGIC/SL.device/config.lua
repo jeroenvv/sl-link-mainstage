@@ -79,6 +79,25 @@ SIZE_SMALL, SIZE_MEDIUM, SIZE_BIG = 0x00, 0x01, 0x02
 -- The keyboard drops a host that goes quiet for ~5s; the app uses 3s.
 KEEPALIVE_MS = 3000
 
+-- docs/mainstage-integration.md "Open issues": MainStage tears the script
+-- down and re-initialises it mid-session, which resets instanceID to
+-- SL_INSTANCE_START - but the SL88 still holds the PREVIOUS incarnation's
+-- registration under that id, because controller_finalize has no return
+-- path to send a Logout Request. Bumping the instance byte immediately on
+-- rejection "solves" it by registering as a DIFFERENT app, which is why the
+-- user's APP-list selection was getting lost. Waiting comfortably longer
+-- than the keyboard's ~5s host timeout (the KEEPALIVE_MS comment above) lets
+-- that stale registration expire on its own, so retrying the SAME id
+-- reclaims our own identity instead.
+REIDENTIFY_WAIT_MS = 6000
+
+-- Retries of the SAME instanceID (each separated by REIDENTIFY_WAIT_MS)
+-- before handle_identification_rejected gives up and falls back to bumping
+-- the instance byte, as before. Bounded so a GENUINE collision - e.g. the
+-- other script instance loaded for the other USB-MIDI interface, which is
+-- actually alive and will keep rejecting us - doesn't wait forever.
+MAX_SAME_ID_RETRIES = 2
+
 APP_NAME = 'MainStage'
 
 -- MARK: - Session state
@@ -88,10 +107,17 @@ STATE_IDENTIFYING = 'identifying'
 STATE_LISTED = 'listed' -- approved, waiting for the user to pick us on the SL88
 STATE_ACTIVE = 'active'
 STATE_STANDBY = 'standby'
+STATE_REIDENTIFY_WAIT = 'reidentify_wait' -- rejected; waiting out REIDENTIFY_WAIT_MS before retrying the same id
 
 state = STATE_IDLE
 instanceID = SL_INSTANCE_START
 pendingMessages = {}
+
+-- Retries left for the CURRENT instanceID - see handle_identification_rejected.
+-- Reset to MAX_SAME_ID_RETRIES whenever a FRESH instanceID is adopted
+-- (controller_initialize, and the bump fallback itself) or an identification
+-- succeeds; decremented on every same-id retry.
+reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
 
 -- DEFECT A FIX (established on hardware 2026-08-19): controller_midi_in calls
 -- flush_pending(true) on every inbound SL frame, and the Identification
@@ -535,7 +561,7 @@ ROW_MAXW = 304
 -- in the zoom screen's width before the real thing gets recalibrated on
 -- hardware. If a two-line name still overflows visually (or has room to
 -- spare), retune this single constant - nothing else needs to change.
-BIG_CHARS_PER_LINE = 16
+BIG_CHARS_PER_LINE = 20
 
 -- TEMPORARY SPIKE INSTRUMENTATION - remove once row geometry is settled.
 --
@@ -995,20 +1021,55 @@ end
 
 function handle_identification_approved()
 	state = STATE_LISTED
+	-- Cleanly cancels any pending reidentify-wait: this instanceID is now
+	-- confirmed good, so a LATER rejection (a fresh re-init down the line)
+	-- should get the full retry budget again, not whatever was left over.
+	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
 	print('[sllink] <- IDENTIFICATION APPROVED as ' ..
 	      string.format('%02X %02X', SL_HOST_ID, instanceID) ..
 	      ' - now in the SL88 APP list; select it there to activate')
 end
 
--- Reason 0x00 = DeviceID taken/reserved. Walk the instance byte forward and
--- try again; this is what lets a second script instance coexist with the
--- first without any source of per-instance entropy.
+-- Reason 0x00 = DeviceID taken/reserved.
+--
+-- docs/mainstage-integration.md "Open issues": on a MainStage-driven
+-- re-init, this rejection usually means the SL88 is still holding OUR OWN
+-- previous incarnation's registration under this same instanceID (no Logout
+-- Request was sent - controller_finalize has no return path). Bumping to a
+-- new id immediately would "solve" the rejection by registering as a
+-- DIFFERENT app, silently losing the user's APP-list selection.
+--
+-- So: wait out REIDENTIFY_WAIT_MS (longer than the keyboard's ~5s host
+-- timeout) for that stale registration to expire, then retry the SAME id -
+-- reclaiming our own identity rather than creating a new one. Only after
+-- MAX_SAME_ID_RETRIES failed retries (by then a genuine collision, e.g. the
+-- OTHER script instance, which is actually alive and keepaliving and will
+-- reject us every time) fall back to bumping the instance byte, as before.
 function handle_identification_rejected(reason)
 	print('[sllink] <- IDENTIFICATION REJECTED (reason ' ..
 	      string.format('%02X', reason or 0) .. ') for instance ' ..
 	      string.format('%02X', instanceID))
+
+	if reidentifyRetriesLeft > 0 then
+		reidentifyRetriesLeft = reidentifyRetriesLeft - 1
+		state = STATE_REIDENTIFY_WAIT
+		-- Not rearm_timer() - this must WIN over the FLUSH_SOON_MS/KEEPALIVE_MS
+		-- that inbound traffic would otherwise re-arm it to (see rearm_timer's
+		-- STATE_REIDENTIFY_WAIT guard, which is what stops that overwrite from
+		-- happening on every subsequent inbound frame during the wait).
+		settriggertimer(REIDENTIFY_WAIT_MS)
+		print('[sllink][spike] re-identify retry ' ..
+		      (MAX_SAME_ID_RETRIES - reidentifyRetriesLeft) .. '/' .. MAX_SAME_ID_RETRIES ..
+		      ' as (' .. string.format('%02X %02X', SL_HOST_ID, instanceID) .. ')')
+		return
+	end
+
 	instanceID = instanceID + 1
 	if instanceID > 0x7E then instanceID = 0x10 end
+	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
+	print('[sllink][spike] bumping instance to ' ..
+	      string.format('%02X %02X', SL_HOST_ID, instanceID) .. ' after ' ..
+	      MAX_SAME_ID_RETRIES .. ' failed retries')
 	start_identification()
 end
 
@@ -1135,6 +1196,7 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	settriggertimer(KEEPALIVE_MS)
 	state = STATE_IDLE
 	instanceID = SL_INSTANCE_START
+	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
 	pendingMessages = {}
 	displayMode = 'zoom' -- see the displayMode declaration above for why
 	patchName, setName, currentConcert = '', '', ''
@@ -1205,6 +1267,13 @@ function controller_timer_trigger()
 	-- it does not.
 	if state == STATE_IDLE then
 		start_identification()
+	elseif state == STATE_REIDENTIFY_WAIT then
+		-- This tick firing at all means REIDENTIFY_WAIT_MS actually elapsed
+		-- (rearm_timer() refuses to shorten it while waiting - see there), so
+		-- this is the retry, not an ordinary keepalive tick. Falling through
+		-- to the send_keepalive() branch below would be wrong here: it would
+		-- announce the still-rejected instanceID instead of retrying it.
+		start_identification()
 	elseif not has_pending() then
 		-- Only send the keepalive when no display work is queued.
 		--
@@ -1267,6 +1336,16 @@ end
 -- any queued output has been drained, so the interval reflects what is still
 -- outstanding rather than what was outstanding on entry.
 function rearm_timer()
+	if state == STATE_REIDENTIFY_WAIT then
+		-- CRITICAL: rearm_timer() runs on EVERY inbound frame. The rejection
+		-- handler sets the one-shot timer to REIDENTIFY_WAIT_MS to wait out the
+		-- SL88's ~5s host timeout (see handle_identification_rejected) - if this
+		-- function touched the timer here too, that wait would be overwritten
+		-- with FLUSH_SOON_MS/KEEPALIVE_MS by the very next inbound frame,
+		-- typically within milliseconds, and the wait would never actually
+		-- happen. Leave the pending timer alone until the wait state ends.
+		return
+	end
 	if has_pending() then
 		settriggertimer(FLUSH_SOON_MS) -- still draining a repaint; come back soon
 	else
@@ -1298,8 +1377,13 @@ function controller_midi_in(midiEvent, portName)
 	if is_our_sl_frame(midiEvent) then
 		handle_sl_frame(midiEvent)
 		-- Protocol traffic, not music: swallow it, and use the opportunity to
-		-- flush whatever the handler queued.
-		local out = flush_pending(true)
+		-- flush whatever the handler queued. Do NOT include the Identification
+		-- Query while state == STATE_REIDENTIFY_WAIT: flush_pending(true)
+		-- appends it unconditionally, and the SL88 would truthfully answer
+		-- "not identified" for an id it just rejected - which the ID_QUERY
+		-- branch in handle_sl_frame treats as licence to re-identify right
+		-- away, defeating the wait handle_identification_rejected just started.
+		local out = flush_pending(state ~= STATE_REIDENTIFY_WAIT)
 		rearm_timer()
 		if out ~= nil then return out end
 		return { midi = {} }
@@ -1510,6 +1594,17 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 	-- patchRows is rebuilt above (clamp_scroll's upper bound depends on
 	-- #patchRows) and before the repaint below.
 	clamp_scroll()
+
+	if state == STATE_REIDENTIFY_WAIT then
+		-- Don't queue or flush anything while waiting to retry identification
+		-- (see handle_identification_rejected) - a flush here would send an
+		-- Identification Query under an instanceID the SL88 just rejected,
+		-- which would defeat the wait (see controller_midi_in's comment on the
+		-- same hazard). The bookkeeping above (patchName/patchRows/etc.) still
+		-- ran, so once we are re-identified the ID_QUERY self-heal branch in
+		-- handle_sl_frame finds lastPaintedPatch stale and repaints for real.
+		return nil
+	end
 
 	-- Draw whenever MainStage says the patch changed, without waiting to be
 	-- sure we are logged in: a LOGIN CONFIRMATION only arrives on a *fresh*
