@@ -94,6 +94,35 @@ Sending it alone without the query was considered and rejected: that flush can o
 tick, where `settriggertimer` is a no-op and the query's reply is the only thing that re-arms the
 session clock — it would trade remnants for a dropout.
 
+## Q1a answered, partly (2026-08-21)
+
+**Inbound substitution works.** Returning `{midi=...}` from `controller_midi_in` with no `outport`
+field does reach MainStage and does change patch — the route the whole of Phase 2 depends on is alive.
+The spike wired joystick main SHORT (BID `0x15`) to inject a Bank Select pair plus a Program Change for
+a hardcoded target.
+
+**But the addressing is ignored.** Every press injected the same target (`set=0 patch=0`,
+"m.1 C07 Broad Strings") and MainStage landed on a different patch each time, advancing by one:
+
+```
+441.403 SPIKE Q1a: injecting set=0 patch=0 "m.1 C07 Broad Strings" (no outport)
+441.404 controller_select_patch: "m.26 C07 Strings"
+457.903 SPIKE Q1a: injecting set=0 patch=0 "m.1 C07 Broad Strings" (no outport)
+457.904 controller_select_patch: "m.54 C07 Strings"
+```
+
+The callback follows the injection by ~1ms every time, so the two are causally linked. What is not yet
+separated: whether our bytes are being misread as "next patch", or whether they are discarded and
+something else about the press advances the patch. The next round must distinguish those before
+permuting the encoding — a discriminator that does not require guessing is to inject WITHOUT the
+Program Change, or with a deliberately invalid bank, and see whether the advance still happens.
+
+Encoding used for round 1: MSB (`0x00`) before LSB (`0x20`), channel 16, Program Change value `0x00`,
+no delay. All four are named constants (`PATCHSEL_CHANNEL`, `PATCHSEL_MSB_FIRST`, `PATCHSEL_PC_VALUE`,
+`PATCHSEL_DELAY_MS`) so each can be permuted one at a time. Apple's VAX77 script — the only shipping
+script that sets `patchselector = true` — emits LSB first, on channel 1, with a `-100` delay element
+before the Program Change, which is the first permutation to try.
+
 ## Still open
 
 - **One session dropout observed** on the zoom screen during the first hardware round (a second

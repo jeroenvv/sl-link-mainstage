@@ -76,6 +76,7 @@ IT_IDENTIFICATION = 0x7F
 
 -- Button IDs (only what this script wires up so far)
 BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
+BID_JOY_MAIN = 0x15 -- joystick main/push button; SPIKE Q1a only (see handle_spike_q1a_joy_main_press)
 
 -- Button press-event byte, e[9] of an IT_BUTTON frame
 PRESS_SHORT = 0x01
@@ -292,6 +293,12 @@ scrollOffset = 0
 -- controller_select_patch: order is not just cosmetic here the way it was
 -- for the old per-set filter.
 listRows = {}
+
+-- SPIKE Q1a (2026-08-21, throwaway - see handle_spike_q1a_joy_main_press): set
+-- for exactly one controller_midi_in round by the Joystick-main-button
+-- handler to the { midi = {...} } table that round must return VERBATIM
+-- (no outport field), then cleared. nil the rest of the time.
+spikeQ1aInjectMidi = nil
 
 screenDirty = false
 
@@ -1763,6 +1770,8 @@ function handle_sl_frame(e)
 		local pressKind = e[9]
 		if bid == BID_ZOOM then
 			handle_zoom_button(pressKind)
+		elseif bid == BID_JOY_MAIN and pressKind == PRESS_SHORT then
+			handle_spike_q1a_joy_main_press()
 		else
 			local kind = (pressKind == PRESS_SHORT and 'SHORT') or (pressKind == PRESS_LONG and 'LONG')
 				or tostring(pressKind)
@@ -1802,6 +1811,106 @@ function handle_zoom_button(pressKind)
 		print('[sllink] <- BUTTON zoom SHORT - toggling display mode -> ' .. newMode)
 		set_display_mode(newMode)
 	end
+end
+
+-- ============================================================================
+-- THROWAWAY SPIKE - Q1a (2026-08-21). Answers ONE question: does returning
+-- { midi = {...} } from controller_midi_in with NO outport field inject MIDI
+-- into MainStage and make it change patch? Wired to the Joystick main button,
+-- SHORT press only, because Phase 2 hasn't built real navigation input yet.
+-- To be replaced by real selection in Step 3 of the Phase 2 plan regardless
+-- of which way this answers - do not build on top of this handler.
+-- ============================================================================
+
+-- Tunable degrees of freedom for the still-UNCONFIRMED patch-select MIDI
+-- encoding. Apple's own shipping VAX77.device script - the only OTHER
+-- MainStage device script that sets patchselector = true - uses a different
+-- encoding (design review, 2026-08-21, against "/Applications/MainStage
+-- 3.7.1.app/Contents/Frameworks/MACore.framework/Versions/A/Resources/MIDI
+-- Device Scripts/Infinite Response/VAX77.device/config.lua"): LSB before MSB,
+-- channel 1 not 16, PC value 0x7F (don't-care) not 0x00, and a -100 (ms delay)
+-- entry ahead of the Program Change "to avoid that CoreMIDI interleaves the
+-- Bank Select events with the SysEx". Caveat: VAX77's bytes go OUTBOUND to its
+-- OWN device, not inbound to MainStage, so that does not falsify the
+-- channel-16 assumption below - it just means it's a guess with a plausible
+-- competing candidate. These constants make a negative hardware round a
+-- ONE-VARIABLE edit instead of a rewrite. If round 1 (the defaults below,
+-- which reproduce this spike's original brief exactly) comes back negative,
+-- flip exactly one at a time, in this order: channel, then byte order, then
+-- PC value, then delay.
+PATCHSEL_CHANNEL   = 0x0F -- 0x0F = channel 16 (round 1); VAX77 uses 0x00 = channel 1
+PATCHSEL_MSB_FIRST = true -- Bank Select MSB (0x00) before LSB (0x20); VAX77 sends LSB first
+PATCHSEL_PC_VALUE  = 0x00 -- Program Change data byte; VAX77 uses 0x7F as a don't-care
+PATCHSEL_DELAY_MS  = 0    -- if >0, insert a -PATCHSEL_DELAY_MS entry before the Program Change
+                           -- (VAX77's -100 anti-interleave delay; a negative number in a midi
+                           -- array is a millisecond delay - confirmed via VAX77's own source)
+
+-- Picks a patch row deliberately NOT equal to the currently active
+-- (activeSetIndex, activePatchIndex), preferring the first patch of a
+-- DIFFERENT set so a successful injection is unmistakable in the log (a
+-- same-set target could be confused with the active patch just being
+-- repainted). Falls back to the first differing patch in listRows if no
+-- other set has one. Returns nil if listRows has no such row at all (e.g.
+-- only one patch loaded).
+function find_spike_q1a_target()
+	local sameSetFallback = nil
+	for i = 1, #listRows do
+		local row = listRows[i]
+		if row.isPatch and not (row.setIndex == activeSetIndex and row.patchIndex == activePatchIndex) then
+			if row.setIndex ~= activeSetIndex then
+				return row
+			elseif sameSetFallback == nil then
+				sameSetFallback = row
+			end
+		end
+	end
+	return sameSetFallback
+end
+
+-- Builds the Bank Select MSB / Bank Select LSB / Program Change byte
+-- sequence from the PATCHSEL_* constants above. Order and channel are
+-- data-driven so a failed hardware round only needs a constant flipped, not
+-- this function rewritten.
+function build_spike_q1a_midi(setIndex, patchIndex)
+	local ccStatus = 0xB0 + PATCHSEL_CHANNEL
+	local pcStatus = 0xC0 + PATCHSEL_CHANNEL
+	local msbBytes = { ccStatus, 0x00, setIndex }
+	local lsbBytes = { ccStatus, 0x20, patchIndex }
+	local out = {}
+	local first = PATCHSEL_MSB_FIRST and msbBytes or lsbBytes
+	local second = PATCHSEL_MSB_FIRST and lsbBytes or msbBytes
+	for i = 1, #first do out[#out + 1] = first[i] end
+	for i = 1, #second do out[#out + 1] = second[i] end
+	if PATCHSEL_DELAY_MS > 0 then out[#out + 1] = -PATCHSEL_DELAY_MS end
+	out[#out + 1] = pcStatus
+	out[#out + 1] = PATCHSEL_PC_VALUE
+	return out
+end
+
+-- Builds the one-shot { midi = {...} } table (no outport) and stashes it in
+-- spikeQ1aInjectMidi for controller_midi_in to return VERBATIM this round -
+-- see that function and spikeQ1aInjectMidi's declaration. controller_info
+-- sets patchselector = true, which is what makes MainStage treat inbound
+-- Bank Select/PC as a patch-select request instead of passing it through as
+-- music.
+function handle_spike_q1a_joy_main_press()
+	local target = find_spike_q1a_target()
+	if target == nil then
+		print('[sllink] SPIKE Q1a: no target patch found (need a second patch differing from' ..
+		      ' the active one in listRows) - doing nothing')
+		return
+	end
+	local setIndex, patchIndex = target.setIndex, target.patchIndex
+	local function inRange(v) return type(v) == 'number' and v >= 0 and v <= 127 end
+	if not inRange(setIndex) or not inRange(patchIndex) then
+		print('[sllink] SPIKE Q1a: target "' .. tostring(target.label) .. '" has out-of-range' ..
+		      ' indices set=' .. tostring(setIndex) .. ' patch=' .. tostring(patchIndex) ..
+		      ' - refusing to inject')
+		return
+	end
+	print('[sllink] SPIKE Q1a: injecting set=' .. setIndex .. ' patch=' .. patchIndex ..
+	      ' "' .. target.label .. '" (no outport)')
+	spikeQ1aInjectMidi = { midi = build_spike_q1a_midi(setIndex, patchIndex) }
 end
 
 -- MARK: - MainStage callbacks
@@ -2103,6 +2212,42 @@ function controller_midi_in(midiEvent, portName)
 
 	if is_our_sl_frame(midiEvent) then
 		handle_sl_frame(midiEvent)
+
+		-- SPIKE Q1a (2026-08-21, throwaway): the Joystick-main-button handler
+		-- above may have stashed a one-shot injection table. When it has, this
+		-- round returns THAT verbatim instead of flush_pending's result -
+		-- deliberately skipping flush_pending entirely rather than calling it
+		-- and discarding its output, because flush_pending has the side effect
+		-- of dequeuing pendingMessages[1] (and, for a display message, clearing
+		-- displayFlushReady) the moment it decides a message fits; discarding
+		-- its return after that would desync the display memoization from what
+		-- actually reached the SL88 (see SLLinkDisplay's per-id-memoization
+		-- doc comment for why that's unsafe) - a bug this spike must not
+		-- introduce even though it's throwaway. Nothing queued this round is
+		-- lost: it is still sitting in pendingMessages for the next flush.
+		--
+		-- SAFETY OF SKIPPING THE QUERY THIS ROUND: rearm_timer() below still
+		-- runs unconditionally, exactly as it would on the normal path - it is
+		-- what schedules the next controller_timer_trigger tick, and that
+		-- scheduling does not depend on whether an Identification Query was
+		-- actually sent, only on this function having been called (see
+		-- rearm_timer's and request_quick_rearm's comments: settriggertimer is
+		-- confirmed to work when called from controller_midi_in, and confirmed
+		-- a no-op only from INSIDE controller_timer_trigger itself - neither
+		-- applies here). msg_identification_query() is also side-effect-free -
+		-- flush_pending rebuilds it fresh every call rather than consuming it
+		-- from a queue - so skipping it once just means it goes out on the
+		-- NEXT flush instead of this one; nothing is lost or left unsent
+		-- forever. This inbound frame (the button press itself) is itself the
+		-- "inbound frame after a tick" the SESSION CLOCK note requires, so the
+		-- clock cannot stall from taking this branch.
+		if spikeQ1aInjectMidi ~= nil then
+			local injected = spikeQ1aInjectMidi
+			spikeQ1aInjectMidi = nil
+			rearm_timer()
+			return injected
+		end
+
 		-- Protocol traffic, not music: swallow it, and use the opportunity to
 		-- flush whatever the handler queued. Do NOT include the Identification
 		-- Query while state == STATE_REIDENTIFY_WAIT: flush_pending(true)
