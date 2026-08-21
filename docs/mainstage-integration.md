@@ -64,16 +64,55 @@ Recorded here because each looked like a dead end at the time:
 - **`patchlist` is EMPTY on MainStage's first call**, before the concert has loaded. Any one-time
   introspection of it must wait for a non-empty list or it will burn its one shot on nothing.
 
-## Awaiting hardware verification (deployed, never seen running)
+## Verified on hardware (2026-08-21)
 
-Commit `3625399` was verified on hardware and reported three problems: the zoom screen's NEXT line was too prominent, a list-mode patch change took ~2s, and a mode switch left remnants of the previous screen. The changes below address those and are **offline-verified only** (82 harness assertions, `luac -p` clean) — none has been seen running:
+Tested against the SL88 with a real concert loaded, over three deploy rounds. Confirmed working:
 
-- **`znext` at SIZE_SMALL**, drawn self-clearing at Max Width like the list rows instead of erase-rect + text. Costs one message instead of two. Max Width truncation is confirmed broken at SIZE_BIG; this trusts it at SIZE_SMALL, which is the regime the list rows already rely on.
-- **Protocol messages now jump a display backlog in `flush_pending`.** This is the session-drop fix: the function only ever inspected `pendingMessages[1]`, so a keepalive queued mid-repaint waited for the whole backlog to drain, which on top of the 3s cadence reached the SL88's ~5s host timeout.
-- **`FLUSH_SOON_MS` 100 → 50.** Sweep 35 then 25 if repaints still lag; 100 is the last known-good fallback. Reported latency (~2s for a ~10-message repaint) suggests the real pace was ~200ms per message, so it is not yet established that MainStage honours a 50ms one-shot at all — measure the tick cadence from the timestamped LUA_DEBUG lines before sweeping further.
-- **Clear Screen, in exactly one place.** `set_display_mode()` now sends a real Clear Screen instead of a full-screen black rect, which was leaving remnants. The project-wide ban stands everywhere else; its original evidence was the pacing bug `displayFlushReady` fixed. A `displaySettleTicks` guard withholds one extra tick's display permit after a clear so the next draw cannot race the panel, without ever delaying the keepalive or the Identification Query.
-- **Page-jump scrolling.** Edge-triggered one-row scrolling made nearly every patch advance repaint all 8 rows; the window now jumps by `ROW_COUNT - PAGE_OVERLAP` and lands the cursor clear of the margin. Measured over a 20-step sweep: 75% of steps cost 3 messages, 25% cost 9.
-- **A missing sacrificial redraw in `set_display_mode()`**, which left its last message exposed to the known last-message-in-a-flush drop.
+- **Patch-change latency.** Was ~2s, now immediate. The cause was not message pacing: drain ticks
+  measured 65-73ms apart, so `FLUSH_SOON_MS = 50` is honoured. The delay was that work queued just
+  after an idle tick waited out the whole 3s keepalive one-shot, because `rearm_timer()` will not
+  touch an already-pending timer. `request_quick_rearm()` shortens a LONG-armed outstanding timer
+  when display work is queued. **`settriggertimer` is confirmed to re-arm from
+  `controller_select_patch`, `set_display_mode` and `handle_zoom_button`** — every `quick-rearm` log
+  line was followed by a tick ~55ms later instead of ~3s. It remains a confirmed no-op only from
+  inside `controller_timer_trigger`.
+- **Zoom screen layout** — all lines centred, patch name and NEXT line legible, `n/N` counting the
+  patch within its own set rather than the flat list.
+- **Mode switching** — no more surviving text from the previous screen.
+- **Page-jump scrolling** and the smaller NEXT line, which together cut a list-mode patch change
+  from 9 display messages to 3 for ~75% of steps.
+
+### Clear Screen is un-banned in exactly one place
+
+The project-wide ban stood on evidence that was actually the display-pacing bug `displayFlushReady`
+fixed. `set_display_mode()` now sends a real Clear Screen — the full-screen black rect it replaced was
+leaving remnants. It is sent **twice**, as two discrete flushes, because `flush_pending` always appends
+an Identification Query to whatever it emits, so a lone clear always travels bundled with the query,
+and a display message sharing an array with another message is a shape this project has measured as
+unreliable. The clear is idempotent, so a dropped one costs ~65ms. Do not collapse it back to one.
+Sending it alone without the query was considered and rejected: that flush can originate from a timer
+tick, where `settriggertimer` is a no-op and the query's reply is the only thing that re-arms the
+session clock — it would trade remnants for a dropout.
+
+## Still open
+
+- **One session dropout observed** on the zoom screen during the first hardware round (a second
+  `LOGIN` at t=1787334371.9 in that run's log). Keepalives were going out on every tick beforehand,
+  so the cause is not known. Watch for it specifically next run; it has not recurred since.
+- **Zoom centring is computed in Lua from estimated character widths**, because the protocol cannot
+  centre text when the erase-path lines pass Max Width 0. It looked right on hardware, but the widths
+  are eye-calibrated, not measured.
+- **The live spec says SIZE_MEDIUM is 22px**, where this project's own notes estimate ~27px. Worth
+  reconciling.
+- **`FLUSH_SOON_MS` sweep** — 50 is confirmed honoured and good. 35 and 25 are untried; 100 is the
+  last known-good fallback.
+
+## Next stage
+
+Phase 2 of `full-functionality-plan.md`: joystick navigation and patch selection. The load-bearing
+unknown is still Q1a — whether returning `{midi=...}` from `controller_midi_in` with no `outport`
+makes MainStage change patch. Everything drawn so far is read-only; Phase 2 is the first time the
+script talks back to MainStage.
 
 ## Open issues
 

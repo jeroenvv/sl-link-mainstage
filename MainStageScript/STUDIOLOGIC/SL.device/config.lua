@@ -169,6 +169,22 @@ pendingMessages = {}
 -- genuinely does arm a timer, so it does set this true).
 timerPending = false
 
+-- QUICK-REARM FIX (2026-08-21 hardware report): tracks which interval the CURRENTLY OUTSTANDING
+-- one-shot (if timerPending is true) was armed at - KEEPALIVE_MS, FLUSH_SOON_MS, or
+-- REIDENTIFY_WAIT_MS. Set at every settriggertimer call site alongside timerPending.
+--
+-- Measured in /tmp/lua.log: a patch change queued right after an idle tick (session sitting on
+-- an outstanding KEEPALIVE_MS timer, nothing to drain) waited a full ~2s for its first FLUSH -
+-- rearm_timer() refuses to touch the timer at all while timerPending is true, so display work
+-- queued right after that just sits until the LONG one-shot expires on its own, even though
+-- FLUSH_SOON_MS (draining pace) is what it actually needs.
+--
+-- request_quick_rearm() (see below) is the fix: called once per queueing burst from the paths
+-- that queue display work (controller_select_patch's update, set_display_mode, the button
+-- handlers - NOT queue_message() itself, which would fire it many times per repaint), it
+-- shortens an outstanding timer to FLUSH_SOON_MS when this says it is currently armed LONG.
+timerArmedInterval = KEEPALIVE_MS
+
 -- Retries left for the CURRENT instanceID - see handle_identification_rejected.
 -- Reset to MAX_SAME_ID_RETRIES whenever a FRESH instanceID is adopted
 -- (controller_initialize, and the bump fallback itself) or an identification
@@ -215,12 +231,25 @@ displayFlushReady = true
 -- why Clear Screen is sent there at all). A full-screen clear plausibly takes
 -- the panel longer to paint than an ordinary text line, and FLUSH_SOON_MS
 -- dropping to 50ms (see that constant) leaves even less margin than before.
--- Set to 1 by flush_pending() the moment it emits a Clear Screen; decremented
--- by controller_timer_trigger, which withholds that tick's displayFlushReady
--- grant while this is nonzero - so the draw that follows a clear gets roughly
--- two tick periods of quiet instead of one. Protocol messages and the
--- trailing Identification Query are never gated by displayFlushReady at all,
--- so the session clock keeps running through the settle regardless.
+-- Set to MODE_SWITCH_SETTLE_TICKS by flush_pending() the moment it emits a
+-- Clear Screen; decremented by controller_timer_trigger, which withholds that
+-- tick's displayFlushReady grant while this is nonzero - so the draws that
+-- follow a clear get roughly MODE_SWITCH_SETTLE_TICKS+1 tick periods of quiet
+-- instead of one. Protocol messages and the trailing Identification Query are
+-- never gated by displayFlushReady at all, so the session clock keeps running
+-- through the settle regardless.
+--
+-- RAISED from 1 to 3 (2026-08-21 hardware report: mode switches - especially
+-- the FIRST one - could leave stale text on screen). A single tick is only
+-- ~FLUSH_SOON_MS (50-70ms observed in /tmp/lua.log); named as its own
+-- constant, not folded into FLUSH_SOON_MS, so the two can be retuned
+-- independently - see the FLUSH_SOON_MS sweep-plan comment for the pattern:
+-- change only this one constant per hardware run and confirm every region on
+-- both screens still renders (no stale text, no missing region) before
+-- lowering it further. NOT the whole fix for that report - see
+-- set_display_mode's comment for what else was audited and what remains
+-- unexplained about the FIRST switch specifically.
+MODE_SWITCH_SETTLE_TICKS = 3
 displaySettleTicks = 0
 
 -- Counts every display message queue_message() handles (append OR coalesced
@@ -473,9 +502,9 @@ function flush_pending(includeQuery)
 				displayFlushReady = false
 				-- CLEAR SCREEN SETTLE GUARD: see displaySettleTicks'
 				-- declaration. A Clear Screen going out earns the next
-				-- draw an extra tick of quiet on top of the ordinary
-				-- one-per-tick pacing.
-				if m[9] == DISP_CLEAR_SCREEN then displaySettleTicks = 1 end
+				-- draw MODE_SWITCH_SETTLE_TICKS extra ticks of quiet on
+				-- top of the ordinary one-per-tick pacing.
+				if m[9] == DISP_CLEAR_SCREEN then displaySettleTicks = MODE_SWITCH_SETTLE_TICKS end
 			end
 			flushCounter = flushCounter + 1
 			-- CADENCE INSTRUMENTATION (2026-08-21): `tick=` ties this FLUSH to
@@ -745,6 +774,44 @@ assert(BIG_MAX_CHARS <= TEXT_STRING_CAP,
 assert(MEDIUM_MAX_CHARS <= TEXT_STRING_CAP,
        'MEDIUM_MAX_CHARS must fit within TEXT_STRING_CAP or zset draws would be re-truncated on the wire')
 
+-- MANUAL CENTERING for maxWidth=0 lines (2026-08-21 hardware report: every zoom-screen line was
+-- supposed to be centred, but zset/zname rendered off-centre while the lines drawn at a real
+-- maxWidth - zcnc, znext, zpos - looked right). CONFIRMED against the pinned upstream spec
+-- (fetched fresh rather than assumed - see https://github.com/fatarsrl/sl-link at the pinned
+-- commit, docs/display-messages.md): "In the selected area (the area between (X, Y) and
+-- (X + Width, Y)) the string can be justified to the left, right or centre, according to the
+-- proper alignment byte" - alignment is defined relative to that Width-wide area. At Width=0 the
+-- area collapses to the single point X, leaving ALIGN_CENTER/ALIGN_RIGHT nothing to justify
+-- within, which reads as exactly the observed symptom: the string draws pinned at X regardless of
+-- the ALIGN byte, i.e. visually left-anchored.
+--
+-- draw_text_with_erase() must keep maxWidth=0 - that is the whole reason it needs an explicit
+-- erase rect at all (see its own comment), and Max Width truncation is confirmed broken at
+-- SIZE_BIG and untested at SIZE_MEDIUM (BIG_MAX_CHARS/MEDIUM_MAX_CHARS's comments) - so switching
+-- it to a real maxWidth to get alignment "for free" would risk reintroducing that truncation bug.
+-- Centring is done in Lua instead: estimate the string's rendered pixel width and pick an X that
+-- lands the glyphs in the middle of the screen, then draw ALIGN_LEFT at that X - the one
+-- deterministic choice once maxWidth is 0 (see draw_text_with_erase()).
+--
+-- EYE-CALIBRATED, like BIG_MAX_CHARS/MEDIUM_MAX_CHARS - no real glyph-metrics table exists for
+-- this font. CHAR_WIDTH_BIG is derived from BIG_MAX_CHARS itself (27 characters already confirmed
+-- to fit within a 304px band at SIZE_BIG), not picked independently. CHAR_WIDTH_MEDIUM is scaled
+-- from it by the SIZE table's pixel heights (33px/22px - see docs/display-messages.md fetched at
+-- the pinned commit; note this is narrower than the ~27px this project's own
+-- docs/implementing-sl-link.md estimates for medium, which was never confirmed against the spec
+-- text itself - worth reconciling separately, out of scope for this fix). Retune both alongside
+-- BIG_MAX_CHARS/MEDIUM_MAX_CHARS if the geometry or font ever changes, the same way: by eye,
+-- against a name a few characters either side of dead centre.
+CHAR_WIDTH_BIG = 11    -- floor(304 / 27)
+CHAR_WIDTH_MEDIUM = 7  -- CHAR_WIDTH_BIG scaled by 22/33 (SIZE_MEDIUM/SIZE_BIG pixel heights)
+
+-- Estimated total rendered pixel width of `text` at `size`, for the manual centering above only -
+-- NOT used for truncation (truncate_text() already owns that, by character count).
+function estimate_text_width_px(text, size)
+	local perChar = (size == SIZE_BIG) and CHAR_WIDTH_BIG or CHAR_WIDTH_MEDIUM
+	return (text and #text or 0) * perChar
+end
+
 -- SCROLL-OFF MARGIN (vim's `scrolloff`): a scroll TRIGGERS once the cursor
 -- comes within SCROLL_MARGIN rows of an edge, so at least this many rows of
 -- context stay visible beyond it - Jeroen's requirement that at least one
@@ -930,6 +997,25 @@ function find_active_row_index()
 	return 0
 end
 
+-- The ACTIVE patch's 1-based ordinal position among patches in its OWN set (activeSetIndex),
+-- and that set's total patch count - "patch 3 of 7 in this song", for the zoom screen's zpos
+-- line (see paint_zoom_screen()). Counts only listRows entries with isPatch true AND
+-- setIndex == activeSetIndex, in listRows order, which is the same order MainStage's own
+-- patchlist uses within a set - so this is a real "position in the setlist", not a derived
+-- index. Returns 0, 0 if activeSetIndex has no patches (listRows empty, or a state before the
+-- first real patch selection), matching the graceful "0/0" this replaced.
+function zoom_position_in_set()
+	local pos, total = 0, 0
+	for i = 1, #listRows do
+		local row = listRows[i]
+		if row.isPatch and row.setIndex == activeSetIndex then
+			total = total + 1
+			if row.patchIndex == activePatchIndex then pos = total end
+		end
+	end
+	return pos, total
+end
+
 -- Finds the label of the nearest set header at or before cursorIndex, for
 -- the context bar. Phase 1's cursor always sits on a patch row (it tracks
 -- the active patch - see controller_select_patch), so this always finds a
@@ -965,6 +1051,20 @@ end
 -- update_screen and paint_screen add it themselves, after calling this, via
 -- queue_sacrificial_redraw() (see that function for why it now covers both
 -- paths).
+-- FIX 3 AUDIT (2026-08-21 hardware report: "every list line must be left-aligned, including the
+-- n/N position counter in the header, which is currently right-aligned"). Every list-mode draw
+-- call already passes ALIGN_LEFT - draw_ctx() and draw_list_row() (both the header/context bar
+-- and every row, including the blank past-end-of-list row) - so no code change was needed for
+-- the alignment itself.
+--
+-- The n/N counter this report describes DOES NOT EXIST in this codebase's list header: the
+-- two-line header with a right-aligned n/N was docs/full-functionality-plan.md's ORIGINAL design
+-- (see its "Resolved layout" section), superseded by the single-line ctx bar (draw_ctx(), "concert
+-- - set", ALIGN_LEFT) when the list became one continuous interleaved view - see displayMode's
+-- declaration and the "Continuous patch list" commit. Flagging rather than guessing: if this is
+-- still seen on hardware, the more likely explanation is FIX 5 (stale content left behind by an
+-- unreliable mode-switch erase) rather than a genuine list-screen element - worth checking
+-- specifically for that on the next run before assuming a counter needs to be added here.
 function paint_list_screen()
 	draw_ctx()
 	for i = 0, ROW_COUNT - 1 do
@@ -1038,12 +1138,26 @@ end
 -- blank band per name change. This is the price of maxWidth=0, itself
 -- required because Max Width truncation is broken at SIZE_BIG (see
 -- BIG_MAX_CHARS's comment).
+-- `x`/`align` as given are used verbatim for ALIGN_LEFT/ALIGN_RIGHT callers. For ALIGN_CENTER,
+-- `x` is IGNORED and recomputed here instead - see CHAR_WIDTH_BIG's comment above for why:
+-- maxWidth=0 gives the device's own ALIGN_CENTER no area to centre within, so the centred X is
+-- estimated in Lua and drawn ALIGN_LEFT, the one deterministic choice at maxWidth=0. The memo
+-- tuple below intentionally excludes x/align - both are pure functions of `text`/`size` here
+-- (either the caller's fixed values, or the deterministic estimate), so text+colour alone is
+-- still sufficient to detect "nothing changed".
 function draw_text_with_erase(id, text, x, y, align, size, fr, fg, fb, eraseX, eraseY, eraseW, eraseH)
 	local t = { text, fr, fg, fb }
 	if tuple_equal(drawn[id], t, #t) then return end
 	drawn[id] = t
 	queue_message(msg_draw_rect(eraseX, eraseY, eraseW, eraseH, 0, 0, 0), id .. ':rect')
-	queue_message(msg_write_text(text, x, y, 0, align, size, fr, fg, fb, 0, 0, 0), id .. ':text')
+	local drawX, drawAlign = x, align
+	if align == ALIGN_CENTER then
+		local estWidth = estimate_text_width_px(text, size)
+		drawX = math.floor((SCREEN_WIDTH - estWidth) / 2)
+		if drawX < eraseX then drawX = eraseX end
+		drawAlign = ALIGN_LEFT
+	end
+	queue_message(msg_write_text(text, drawX, y, 0, drawAlign, size, fr, fg, fb, 0, 0, 0), id .. ':text')
 end
 
 -- Governs zset ONLY (renamed from ZSET_ZNEXT_TRUST_MAXWIDTH on 2026-08-21,
@@ -1143,11 +1257,15 @@ function paint_zoom_screen()
 	draw_text('znext', next_line_text(), 8, 170, SCREEN_WIDTH - 16, ALIGN_CENTER, SIZE_SMALL,
 		80, 200, 120, 0, 0, 0)
 
-	-- n/N is the cursor's position in the flat listRows (headers included),
-	-- not a per-set patch count - the flat list has no per-set count left to
-	-- show now that patchRows no longer exists.
-	local n = #listRows > 0 and (cursorIndex + 1) or 0
-	draw_text('zpos', n .. '/' .. #listRows, 8, 210, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
+	-- n/N: the ACTIVE patch's ordinal position among patches in its OWN set -
+	-- "patch 3 of 7 in this song", matching what the zoom screen actually
+	-- shows (the active set/patch, not the cursor). CHANGED 2026-08-21
+	-- (hardware report): this used to be the cursor's flat position across
+	-- ALL listRows including every other set's headers and patches and every
+	-- OTHER set's rows too - "row 41 of 98" - which does not answer the
+	-- question this counter exists to answer. See zoom_position_in_set().
+	local n, total = zoom_position_in_set()
+	draw_text('zpos', n .. '/' .. total, 8, 210, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 end
 
 -- Ordinary content-driven redraw: draws the current model, memoized per
@@ -1359,11 +1477,74 @@ end
 -- takes longer to paint than a text line. FALLBACK if remnants or dropped
 -- lines return on hardware: revert to the full-screen black
 -- msg_draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0) this replaced.
+--
+-- FIX 5 AUDIT (2026-08-21 hardware report: the FIRST switch to list left old
+-- text on screen; later switches were fine; switching to zoom was "not always"
+-- fine either). Two specific hypotheses were checked and both came back
+-- clean, so they are not the cause:
+--   - invalidate_all() (called above, before the repaint) unconditionally
+--     replaces `drawn` wholesale (drawn = {}), which every draw_text/
+--     draw_rect/draw_text_with_erase call consults by id - there is no path
+--     by which a list-screen region's memo could survive it.
+--   - A blank list row draws an EMPTY string at a REAL, non-zero maxWidth
+--     (draw_list_row's row==nil branch, ROW_MAXW) - confirmed on hardware
+--     (docs/implementing-sl-link.md, "the text background fills the whole
+--     Max Width box... an empty string drawn with a coloured background
+--     still painted a visible full-width bar"), so a row going blank DOES
+--     paint over whatever was there before; it does not silently no-op.
+-- Raised MODE_SWITCH_SETTLE_TICKS (1 -> 3) as the concrete fix for the
+-- underlying race this report points at, but WHY specifically the FIRST
+-- switch differs from later ones was not pinned down - every switch runs
+-- this exact same function, and nothing here branches on "is this the first
+-- one". The one candidate not yet ruled out: the FIRST switch follows
+-- handle_login()'s own paint_screen() (the initial zoom paint, which unlike
+-- this function sends no Clear Screen and has no settle gap before it) with
+-- no guarantee that repaint has finished draining - drop_queued_display()
+-- above only discards what is still QUEUED, not a message already flushed
+-- but possibly still mid-paint on the panel. NEXT HARDWARE RUN: capture
+-- /tmp/lua.log across a first-switch and a later-switch and compare
+-- has_pending()/draining state (the timer-tick line already prints both) at
+-- the moment the Clear Screen for each switch is queued - if the first one
+-- is queued while the login repaint is still draining and later ones are
+-- not, that timing difference is the lead to follow.
 function set_display_mode(mode)
 	if mode ~= 'list' and mode ~= 'zoom' then return end
 	displayMode = mode
 	drop_queued_display()
 	invalidate_all()
+	-- DOUBLE CLEAR (2026-08-21 hardware report: mode switches intermittently -
+	-- in BOTH directions, not just the first switch - left old text on
+	-- screen). /tmp/lua.log traced this to flush_pending: it always appends
+	-- the Identification Query to whatever it emits, so this Clear Screen
+	-- goes out bundled with the query in one MIDI array (confirmed: FLUSH #268
+	-- tick=149, 13 Clear Screen bytes + 10 query bytes, one array). That is
+	-- the exact shape already on record as unreliable - see the
+	-- NOTES-STARVE-THE-CLOCK-adjacent finding above controller_timer_trigger's
+	-- send_keepalive() branch: [text, keepalive] in one array was NOT
+	-- rendered, only [display, query] alone or [display] first ever reliably
+	-- painted. So the clear itself is sometimes dropped by the panel, which
+	-- reads back as "old text remains" - not a settle-timing problem
+	-- (MODE_SWITCH_SETTLE_TICKS is fine) but a delivery problem.
+	--
+	-- flush_pending cannot be made to emit this Clear Screen alone: the
+	-- caller that ultimately drains it is sometimes controller_timer_trigger
+	-- itself (tick=149 above IS a timer-tick flush, not an inbound-frame
+	-- one), and that function's own settriggertimer call is a confirmed
+	-- no-op from inside itself - the query's reply landing at
+	-- controller_midi_in is the ONLY thing that re-arms the session clock
+	-- after such a tick (see the SESSION CLOCK note above
+	-- controller_midi_in). Dropping the query from that flush risks
+	-- stalling the clock for up to KEEPALIVE_MS with nothing to rescue it -
+	-- request_quick_rearm() does not run from that call site. So: queue the
+	-- Clear Screen TWICE instead, as two separate messages with no
+	-- regionId (queue_message never coalesces without one - see its
+	-- comment), each earning its own flush. It is idempotent, and a dropped
+	-- copy costs nothing but one extra ~50-70ms flush. flush_pending's
+	-- settle-guard (displaySettleTicks) resets on EVERY Clear Screen it
+	-- emits, so the settle window still lands after the LAST one. Do not
+	-- collapse this back to one queue_message() call - that is exactly the
+	-- unreliable shape this finding is about.
+	queue_message(msg_clear_screen(0, 0, 0))
 	queue_message(msg_clear_screen(0, 0, 0))
 	local before = queuedDisplayOps
 	if mode == 'zoom' then
@@ -1384,6 +1565,10 @@ function set_display_mode(mode)
 	screenDirty = false
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
+	-- FIX 1 (2026-08-21): always has real content queued (Clear Screen plus a
+	-- guaranteed-non-empty repaint, since invalidate_all() above forces every
+	-- region to resend) - see request_quick_rearm's comment.
+	request_quick_rearm()
 	print('[sllink] display mode -> ' .. mode)
 end
 
@@ -1442,6 +1627,11 @@ function handle_identification_rejected(reason)
 		-- rearm_timer's gating honest once the wait ends and normal inbound
 		-- traffic resumes calling it.
 		timerPending = true
+		-- Not KEEPALIVE_MS: request_quick_rearm() must never shorten THIS wait
+		-- (see its own STATE_REIDENTIFY_WAIT guard, which is belt-and-suspenders
+		-- for the same reason - this value alone already keeps its
+		-- `timerArmedInterval == KEEPALIVE_MS` check from matching).
+		timerArmedInterval = REIDENTIFY_WAIT_MS
 		print('[sllink] re-identify retry ' ..
 		      (MAX_SAME_ID_RETRIES - reidentifyRetriesLeft) .. '/' .. MAX_SAME_ID_RETRIES ..
 		      ' as (' .. string.format('%02X %02X', SL_HOST_ID, instanceID) .. ')')
@@ -1604,6 +1794,9 @@ function handle_zoom_button(pressKind)
 		print('[sllink] <- BUTTON zoom LONG - forcing full repaint of mode=' .. displayMode)
 		invalidate_all()
 		paint_screen()
+		-- FIX 1 (2026-08-21): invalidate_all() above guarantees this repaint
+		-- queues real content - see request_quick_rearm's comment.
+		request_quick_rearm()
 	else
 		local newMode = (displayMode == 'zoom') and 'list' or 'zoom'
 		print('[sllink] <- BUTTON zoom SHORT - toggling display mode -> ' .. newMode)
@@ -1621,6 +1814,7 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	-- must say so or the first rearm_timer() from inbound traffic would
 	-- wrongly re-arm on top of it.
 	timerPending = true
+	timerArmedInterval = KEEPALIVE_MS
 	state = STATE_IDLE
 	instanceID = SL_INSTANCE_START
 	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
@@ -1867,10 +2061,39 @@ function rearm_timer()
 	end
 	if has_pending() then
 		settriggertimer(FLUSH_SOON_MS) -- still draining a repaint; come back soon
+		timerArmedInterval = FLUSH_SOON_MS
 	else
 		settriggertimer(KEEPALIVE_MS)
+		timerArmedInterval = KEEPALIVE_MS
 	end
 	timerPending = true
+end
+
+-- QUICK-REARM FIX (2026-08-21 hardware report - see timerArmedInterval's declaration for the
+-- measured symptom). If a one-shot is currently outstanding AND it was armed at the LONG
+-- (keepalive) interval, shorten it to FLUSH_SOON_MS instead of leaving newly-queued display work
+-- to wait out however much of KEEPALIVE_MS is left. Call ONCE per queueing burst - from
+-- controller_select_patch's update, set_display_mode, and the button handlers - never from
+-- queue_message() itself, which would fire it many times over a single repaint.
+--
+-- Shares rearm_timer's STATE_REIDENTIFY_WAIT guard: that wait must never be shortened (see
+-- handle_identification_rejected), though in practice timerArmedInterval already being
+-- REIDENTIFY_WAIT_MS (not KEEPALIVE_MS) would keep the check below from matching anyway - this
+-- is belt-and-suspenders, not the only thing stopping it.
+--
+-- CONFIRMED ON HARDWARE (2026-08-21): settriggertimer DOES re-arm when called from
+-- controller_select_patch/set_display_mode/a button handler, the same as it is confirmed to from
+-- controller_midi_in (and confirmed NOT to from inside controller_timer_trigger itself - see the
+-- SESSION CLOCK note above controller_midi_in). Every quick-rearm log line that day was followed
+-- by a timer tick ~55ms later, not ~3s - i.e. FLUSH_SOON_MS, not KEEPALIVE_MS. grep
+-- '[sllink] quick-rearm' /tmp/lua.log against the timer tick line that follows to re-check.
+function request_quick_rearm()
+	if state == STATE_REIDENTIFY_WAIT then return end
+	if timerPending and timerArmedInterval == KEEPALIVE_MS then
+		settriggertimer(FLUSH_SOON_MS)
+		timerArmedInterval = FLUSH_SOON_MS
+		print('[sllink] quick-rearm -> FLUSH_SOON_MS')
+	end
 end
 
 function controller_midi_in(midiEvent, portName)
@@ -2039,7 +2262,14 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 	-- sure we are logged in: a LOGIN CONFIRMATION only arrives on a *fresh*
 	-- login, and the keyboard harmlessly ignores drawing we are not entitled
 	-- to do. The ID_QUERY branch repaints again once the session is confirmed.
+	local opsBefore = queuedDisplayOps
 	update_screen()
+	if queuedDisplayOps > opsBefore then
+		-- FIX 1 (2026-08-21 hardware report): this is the exact call site the
+		-- 2s-delay was measured against - see timerArmedInterval's declaration
+		-- and request_quick_rearm's comment.
+		request_quick_rearm()
+	end
 	return flush_pending(true)
 end
 
