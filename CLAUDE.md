@@ -32,8 +32,11 @@ MIDI endpoints whose display name contains "LINK" (the macOS port is named `SL L
 `Connect + Identify` logs `SL LINK MIDI port not found.`
 
 Key build settings: `MACOSX_DEPLOYMENT_TARGET = 26.5`, `SWIFT_VERSION = 5.0`,
-`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, `ENABLE_APP_SANDBOX = YES` (entitlements and Info.plist
-are Xcode-generated — there are no checked-in `.entitlements` or `Info.plist` files).
+`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, `ENABLE_APP_SANDBOX = YES`. Info.plist is
+Xcode-generated (no checked-in `Info.plist`), but entitlements **are** checked in at
+`SL-Link-Mainstage/SL-Link-Mainstage.entitlements` and wired up via `CODE_SIGN_ENTITLEMENTS` — they
+carry a scoped `temporary-exception.files.absolute-path.read-only` for the MainStage bridge files.
+Note that entitlement's paths must be the resolved `/private/tmp/...` form, not the `/tmp` symlink.
 
 `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` makes *every* unannotated declaration in the project
 implicitly main-actor-isolated, including plain enums/structs, not just classes. All of the
@@ -41,6 +44,45 @@ implicitly main-actor-isolated, including plain enums/structs, not just classes.
 `nonisolated` accordingly - if you add a new type under `SLLink/` and it needs to be called from a
 background queue, it needs the same annotation, or you'll get "main actor-isolated ... cannot be
 used in nonisolated context" warnings (errors under the Swift 6 language mode).
+
+## Working efficiently in this repo
+
+Lessons paid for in a long MainStage-bridge session. They are about *how* to work here, not about the
+protocol.
+
+**Edit files with the Edit/Write tools, not `python`/`sed` heredocs.** Editing a tracked file from the
+shell makes the harness re-dump the whole file back into context — `config.lua` is ~600 lines, and
+doing this repeatedly was the single largest waste of a long session. `Edit` also fails loudly on a
+stale match, where a shell replacement silently no-ops or duplicates a section.
+
+**Cap noisy output.** `xcodebuild` prints hundreds of lines of compiler invocations; pipe it through
+`| tail -5`. Same for long `grep`/`cat`. Batch independent greps into one call, and read targeted line
+ranges of long files rather than the whole file.
+
+**Dump what an unknown API gives you before testing hypotheses about it.** The `outport` blocker cost
+about ten hardware round-trips; MainStage had been passing the answer all along as
+`controller_midi_in`'s `portName` argument. One log line, ordered first, would have ended it.
+
+**Prove you can observe the signal before trusting a negative.** A dozen rounds concluded "outbound
+MIDI never works" using a sniffer that watched CoreMIDI *sources* while `outport` addresses a
+*destination*. Prefer a request/response probe over a fire-and-forget send. See the
+`test-mainstage-script` skill.
+
+**Prefer one decisive experiment to a sweep.** Sweeping six `outport` values with no working
+observation path produced six meaningless results.
+
+**Dispatch exploration to a subagent.** Open-ended searching — "where is X handled", "how do the 98
+bundled MainStage scripts use Y", auditing several files — should go to an `Explore`/Haiku/Sonnet
+agent, which returns a summary. Searching inline dumps every raw result into the session context
+permanently; in one long session `Read` results alone reached ~130% of the context window, mostly
+re-reads. Not worth the spawn for a single targeted grep or a known `file:line`. Verify what an agent
+reports rather than relaying it unchecked.
+
+**Keep commit messages short.** Subject line plus a few lines at most. Extended reasoning, evidence
+tables and rejected hypotheses belong in `docs/`, which the commit can reference.
+
+**Use the skills.** `.claude/skills/test-mainstage-script` (hardware deploy/verify loop) and
+`.claude/skills/lua-harness` (offline verification before spending a hardware round-trip).
 
 ## Codec tests
 
@@ -127,62 +169,31 @@ can't be avoided.
 All messages: `F0 00 20 1A 16 <id1> <id2> <itemType> [function] [payload...] F7`
 (`00 20 1A` = Fatar/Studiologic manufacturer ID, `16` = SL Link protocol ID).
 
-Implemented: Identification (request/approved/rejected/query), System (device notification,
-login confirmation/recall, logout request/confirmation, standby, restart), Display (clear/rect/
-text/bitmap-from-library), Buttons, Encoders, White/RGB LEDs. **Out of scope** (see the project
-plan's Scope boundary): device icon upload, Master Volume, Hardware/Pedal Settings queries - their
-`ItemType`/`Function` constants are kept in `SLLinkProtocol.swift` as accurate spec references, but
-nothing encodes or decodes them.
+**The protocol itself is documented in [`docs/implementing-sl-link.md`](docs/implementing-sl-link.md)**
+— encoding rules, session lifecycle, display, hardware I/O, and the four places real hardware
+disagrees with the published spec. Read that rather than re-deriving from the spec.
 
-Two spec discrepancies from the reference JUCE implementations, both switchable from the dev console
-without a rebuild:
+Project-specific notes that live only here:
 
-1. **ID byte semantics** — the spec's prose describes one 14-bit random ID; both reference
-   implementations instead use `(HOST_ID constant, random instance byte)`. `SLLinkSession` follows
-   the reference implementations (`SLLinkHeader.defaultHostID = 0x03`) and persists the pair in
-   `UserDefaults` (fixing the old code's "new random ID every connect" bug, which discarded Login
-   Recall). Both bytes are editable from the dev console.
-2. **Where the app name goes** — the spec puts it only in the Identification Request; both reference
-   implementations also append it to every keepalive. `SLLinkSession.useNameInKeepalive` defaults to
-   the spec-only path; flip it from the dev console (`SLLinkController.useNameInKeepalive`) if the
-   app never appears in the SL88's APP list.
+- **Implemented:** Identification, System (device notification, login confirmation/recall, logout,
+  standby, restart), Display (clear/rect/text/bitmap), Buttons, Encoders, White/RGB LEDs.
+  **Out of scope:** device icon upload, Master Volume, Hardware/Pedal Settings queries — their
+  constants are kept in `SLLinkProtocol.swift` as spec references, but nothing encodes or decodes them.
+- **Two discrepancies are switchable from the dev console** without a rebuild, because they were
+  inferred from the reference JUCE implementations rather than confirmed on hardware:
+  `SLLinkHeader.defaultHostID = 0x03` with the DeviceID pair persisted in `UserDefaults` (the spec
+  instead describes one 14-bit random ID), and `SLLinkSession.useNameInKeepalive` (the reference
+  implementations append the app name to every keepalive; the spec puts it only in the Identification
+  Request). Flip the latter if the app never appears in the SL88's APP list.
+- The **hardware-confirmed deviations** — swapped firmware/model payloads, A encoder/button reaching
+  the host, LONG_PRESSION delivered, trailing-byte optionality — are catalogued in
+  `docs/implementing-sl-link.md` §7. Do not reintroduce logic that special-cases or drops A traffic,
+  or that drops LONG_PRESSION, based on the spec's claims without re-confirming against hardware.
 
-**Hardware-confirmed deviations** — the two above were inferred from the reference implementations;
-these two were found by capturing live SysEx from a physically attached SL88 MK2 (firmware 1.1.2,
-model byte `0x01` = SL88) and are not optional/switchable, because the spec's documented forms simply
-never arrive:
-
-3. **Identification Approved carries the firmware/model payload, not Login Confirmation.** The spec
-   documents Identification Approved (`7F 01`) as a bare 10 bytes, and puts a 4-byte `MAJ MIN REV SL`
-   payload on Login Confirmation/Recall (`00 01` / `00 06`) instead. Real hardware does the opposite:
-   Approved arrives as 14 bytes with `MAJ MIN REV SL` appended (captured: `F0 00 20 1A 16 03 2A 7F 01
-   01 01 02 01 F7`, decoding to firmware 1.1.2 / SL88), and Login Confirmation arrives as a bare 10
-   bytes with no payload at all (captured: `F0 00 20 1A 16 03 2A 00 01 F7`). `SLLinkDecoder` accepts
-   both the spec-derived and hardware-observed length for all three functions (`identificationApproved`,
-   `loginConfirmed`, `loginRecall` all carry `firmware`/`model` as optionals); `SLLinkSession` latches
-   the values from whichever message actually carries them and carries them forward through later
-   state transitions that don't. Login Recall's payload has never been observed on hardware either;
-   its optionality is inferred by symmetry with Login Confirmation, not separately captured.
-4. **Trailing-byte optionality is the general pattern, not a one-off.** The spec itself documents some
-   trailing bytes as optional elsewhere (Master Volume's `MUTE` byte, Hardware Settings' `HST` byte -
-   both out of scope here, see above). Prefer accepting the known variant lengths explicitly over a
-   strict `bytes.count == N` guard when extending the decoder, per point 3.
-5. **The A Encoder and A Encoder Button are not actually reserved from the Host.** `hardware-io.md`
-   states the Host never receives A Encoder (`EID 0x05`) / A Encoder Button (`BID 0x0B`) messages -
-   supposedly reserved for the USB audio board's volume/mute - and says nothing about whether
-   LONG_PRESSION is delivered. A live capture from a physically attached SL88 MK2 (firmware 1.1.2)
-   contradicts both: A Encoder/A Encoder Button messages arrive as ordinary SL Link messages (no
-   accompanying Master Volume or channel-voice CC/pitch-bend traffic), and LONG_PRESSION (`EVT 0x02`)
-   is delivered for ordinary buttons (captured on the Zone 1 Encoder Button, `BID 0x00`).
-   `SLLinkDemoScreen` treats A identically to B rather than special-casing or dropping it - see its
-   type-level doc comment. Don't reintroduce logic that special-cases or silently discards A traffic,
-   or that drops LONG_PRESSION, based on the spec's claims without re-confirming against hardware.
-
-Session lifecycle (`SLLinkSession`): identify -> approved -> 3s keepalive (5s hard timeout on the
-keyboard) -> user selects the app -> login confirmation/recall -> active -> standby/restart bracket
-the user leaving/returning to SL-Link mode (screen must be fully repainted on restart, since the
-keyboard retains no display state across standby) -> logout is a request/confirm pair, either side
-can initiate.
+Session lifecycle: identify -> approved -> 3s keepalive (5s hard timeout on the keyboard) -> user
+selects the app -> login confirmation/recall -> active -> standby/restart bracket the user leaving and
+returning to SL-Link mode (full repaint required on restart) -> logout is a request/confirm pair,
+either side can initiate.
 
 ## Hardware verification status
 

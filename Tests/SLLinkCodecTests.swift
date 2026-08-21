@@ -381,6 +381,211 @@ check(
     SLLinkDecoder.decode([0xF0, 0x00, 0x20, 0x1A, 0x16, 0x15, 0xE3, 0x04, 0x01, 0x00, sysexEnd]) == nil
 )
 
+// MARK: - MainStage bridge dialect (MainStageProtocol.swift)
+//
+// Golden vectors for the private "SM" SysEx dialect shared with
+// MainStageScript/SL MainStage.device/config.lua. Unlike the SL Link
+// vectors above there is no captured hardware/MainStage traffic to check
+// against yet (MainStage hasn't been confirmed to bind a virtual endpoint -
+// see CLAUDE.md / docs/mainstage-integration.md); these vectors instead pin
+// down the dialect's own hand-computed byte layout so config.lua and this
+// decoder can't silently drift apart. "Both directions" here means: decode
+// for every message that flows Lua -> app (hello/goodbye/heartbeat/patch
+// list), and encode for the one message that flows app -> Lua (patch
+// selection) - there is nothing to decode in that direction, since
+// MainStage's own core (not this codec) interprets the raw Bank Select/
+// Program Change bytes.
+
+func ascii(_ text: String) -> [UInt8] {
+    text.unicodeScalars.map { UInt8($0.value) }
+}
+
+let msHeader: [UInt8] = [0xF0, 0x7D, 0x53, 0x4D]
+let msEnd: UInt8 = 0xF7
+
+// MARK: Bridge Hello (0x01)
+
+check(
+    "MainStage decode: Bridge Hello",
+    MainStageProtocol.decode(msHeader + [0x01, 0x01] + ascii("MainStage") + [0x00, msEnd])
+        == .hello(protocolVersion: 1, appName: "MainStage")
+)
+
+check(
+    "MainStage decode: Bridge Hello with empty app name",
+    MainStageProtocol.decode(msHeader + [0x01, 0x01, 0x00, msEnd])
+        == .hello(protocolVersion: 1, appName: "")
+)
+
+check(
+    "MainStage decode: Bridge Hello missing terminator rejects",
+    MainStageProtocol.decode(msHeader + [0x01, 0x01] + ascii("MainStage") + [msEnd]) == nil
+)
+
+// MARK: Bridge Goodbye (0x02)
+
+check(
+    "MainStage decode: Bridge Goodbye",
+    MainStageProtocol.decode(msHeader + [0x02, msEnd]) == .goodbye
+)
+
+check(
+    "MainStage decode: Bridge Goodbye with unexpected payload rejects",
+    MainStageProtocol.decode(msHeader + [0x02, 0x00, msEnd]) == nil
+)
+
+// MARK: Heartbeat (0x03)
+
+check(
+    "MainStage decode: Heartbeat sequence 0",
+    MainStageProtocol.decode(msHeader + [0x03, 0x00, 0x00, msEnd]) == .heartbeat(sequence: 0)
+)
+
+check(
+    "MainStage decode: Heartbeat sequence over 127 splits MSB/LSB (200 -> msb 1, lsb 72)",
+    MainStageProtocol.decode(msHeader + [0x03, 0x01, 0x48, msEnd]) == .heartbeat(sequence: 200)
+)
+
+check(
+    "MainStage decode: Heartbeat wrong payload length rejects",
+    MainStageProtocol.decode(msHeader + [0x03, 0x00, msEnd]) == nil
+)
+
+// MARK: Patch List Dump (0x10) - realistic multi-song list
+
+let multiSongPatchList: [UInt8] = {
+    var event = msHeader
+    event.append(0x10)
+    event.append(contentsOf: ascii("Joseph key2"))
+    event.append(0x00)
+    event.append(contentsOf: [0x00, 0x05]) // entryCount = 5
+    // Song 1 (set, no patch index of its own, set index 0)
+    event.append(contentsOf: [0x01, 0x7F, 0x00])
+    event.append(contentsOf: ascii("Song 1"))
+    event.append(0x00)
+    // Piano (patch 0 of set 0)
+    event.append(contentsOf: [0x02, 0x00, 0x00])
+    event.append(contentsOf: ascii("Piano"))
+    event.append(0x00)
+    // Strings (patch 1 of set 0)
+    event.append(contentsOf: [0x02, 0x01, 0x00])
+    event.append(contentsOf: ascii("Strings"))
+    event.append(0x00)
+    // Song 2 (set, no patch index of its own, set index 1)
+    event.append(contentsOf: [0x01, 0x7F, 0x01])
+    event.append(contentsOf: ascii("Song 2"))
+    event.append(0x00)
+    // Organ (patch 0 of set 1) - the currently active entry
+    event.append(contentsOf: [0x02, 0x00, 0x01])
+    event.append(contentsOf: ascii("Organ"))
+    event.append(0x00)
+    event.append(contentsOf: [0x01, 0x00]) // currentSetIndex=1, currentPatchIndex=0
+    event.append(msEnd)
+    return event
+}()
+
+let expectedMultiSongPatchList = MainStagePatchList(
+    concertName: "Joseph key2",
+    entries: [
+        MainStagePatchEntry(isPatch: false, patchIndex: nil, setIndex: 0, label: "Song 1"),
+        MainStagePatchEntry(isPatch: true, patchIndex: 0, setIndex: 0, label: "Piano"),
+        MainStagePatchEntry(isPatch: true, patchIndex: 1, setIndex: 0, label: "Strings"),
+        MainStagePatchEntry(isPatch: false, patchIndex: nil, setIndex: 1, label: "Song 2"),
+        MainStagePatchEntry(isPatch: true, patchIndex: 0, setIndex: 1, label: "Organ"),
+    ],
+    currentSetIndex: 1,
+    currentPatchIndex: 0
+)
+
+check(
+    "MainStage decode: realistic multi-song patch list",
+    MainStageProtocol.decode(multiSongPatchList) == .patchList(expectedMultiSongPatchList)
+)
+
+// MARK: Patch List Dump - empty list
+
+let emptyPatchList: [UInt8] = msHeader + [0x10] + ascii("Empty Concert") + [0x00, 0x00, 0x00, 0x7F, 0x7F, msEnd]
+
+check(
+    "MainStage decode: empty patch list",
+    MainStageProtocol.decode(emptyPatchList)
+        == .patchList(MainStagePatchList(concertName: "Empty Concert", entries: [], currentSetIndex: nil, currentPatchIndex: nil))
+)
+
+// MARK: Patch List Dump - malformed input is rejected, not crashed on
+
+check(
+    "MainStage decode: wrong manufacturer ID rejects",
+    MainStageProtocol.decode([0xF0, 0x7C, 0x53, 0x4D, 0x02, msEnd]) == nil
+)
+
+check(
+    "MainStage decode: wrong bridge tag rejects",
+    MainStageProtocol.decode([0xF0, 0x7D, 0x53, 0x4E, 0x02, msEnd]) == nil
+)
+
+check(
+    "MainStage decode: unknown function rejects",
+    MainStageProtocol.decode(msHeader + [0x7F, msEnd]) == nil
+)
+
+check(
+    "MainStage decode: MSB set on a data byte rejects",
+    MainStageProtocol.decode(msHeader + [0x02, 0x80, msEnd]) == nil
+)
+
+check(
+    "MainStage decode: entry count exceeds available bytes (truncated) rejects",
+    MainStageProtocol.decode(msHeader + [0x10] + ascii("X") + [0x00, 0x00, 0x05, msEnd]) == nil
+)
+
+check(
+    "MainStage decode: unknown entry type byte rejects",
+    MainStageProtocol.decode(msHeader + [0x10] + ascii("X") + [0x00, 0x00, 0x01, 0x03, 0x00, 0x00, msEnd]) == nil
+)
+
+let trailingGarbagePatchList: [UInt8] = msHeader + [0x10] + ascii("Empty Concert") + [0x00, 0x00, 0x00, 0x7F, 0x7F, 0x01, msEnd]
+
+check(
+    "MainStage decode: trailing garbage after current indices rejects",
+    MainStageProtocol.decode(trailingGarbagePatchList) == nil
+)
+
+check(
+    "MainStage decode: missing sysex end rejects",
+    MainStageProtocol.decode(msHeader + [0x02]) == nil
+)
+
+check(
+    "MainStage decode: empty input rejects",
+    MainStageProtocol.decode([]) == nil
+)
+
+// MARK: Patch selection encode (app -> MainStage)
+//
+// Bank Select MSB (CC0) = SetIndex, Bank Select LSB (CC32) = PatchIndex,
+// then Program Change, on channel 16 (status nibble 0x0F). Ordering and
+// channel both come from the VAX77 reference script's header, which states
+// what MainStage listens for. See MainStageProtocol.encodeSelection.
+
+checkBytes(
+    "MainStage encodeSelection: MSB=set, LSB=patch, channel 16",
+    MainStageProtocol.encodeSelection(patchIndex: 3, setIndex: 1),
+    [0xBF, 0x00, 1, 0xBF, 0x20, 3, 0xCF, 0x7F]
+)
+
+checkBytes(
+    "MainStage encodeSelection with nil indices sends the 0x7F sentinel",
+    MainStageProtocol.encodeSelection(patchIndex: nil, setIndex: nil),
+    [0xBF, 0x00, 0x7F, 0xBF, 0x20, 0x7F, 0xCF, 0x7F]
+)
+
+checkBytes(
+    "MainStage encodeSelection honours an explicit channel override",
+    MainStageProtocol.encodeSelection(patchIndex: 5, setIndex: 2, channel: 3),
+    [0xB3, 0x00, 2, 0xB3, 0x20, 5, 0xC3, 0x7F]
+)
+
 // MARK: - Summary
 
 print("")

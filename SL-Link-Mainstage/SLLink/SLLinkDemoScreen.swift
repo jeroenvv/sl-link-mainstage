@@ -56,6 +56,16 @@ nonisolated final class SLLinkDemoScreen {
     /// rotary input to whichever zone this points at.
     private var selectedZone: Int? = nil
 
+    /// Set by `showMainStageStatus` (driven by `SLLinkController` off a
+    /// MainStage Patch List Dump/Goodbye - see
+    /// docs/mainstage-integration.md) to repurpose the title bar as a live
+    /// MainStage status line. `nil` (the default, and what a bridge
+    /// Goodbye resets it to) falls back to the plain demo title. Reusing
+    /// the title bar's existing region rather than adding a new one avoids
+    /// guessing at unused screen space on a layout that was never designed
+    /// with MainStage integration in mind.
+    private var mainStageStatusText: String?
+
     private static let zoneColor: [SLColor] = [
         SLColor(r: 220, g: 60, b: 60),
         SLColor(r: 60, g: 200, b: 90),
@@ -72,17 +82,31 @@ nonisolated final class SLLinkDemoScreen {
     /// (system-messages.md's Standby/Restart section).
     func redrawAll() {
         display.clear(color: .black)
-        display.text(
-            id: "title", "SL Link MainStage - Demo",
-            x: 8, y: 6, maxWidth: 304, align: .left, size: .medium,
-            foreground: .white, background: .black
-        )
+        drawTitle()
         for zone in 0..<4 {
             drawZoneBorder(zone)
             drawZoneFill(zone)
             drawZoneLabel(zone)
             drawZoneValue(zone)
         }
+    }
+
+    private func drawTitle() {
+        display.text(
+            id: "title", mainStageStatusText ?? "SL Link MainStage - Demo",
+            x: 8, y: 6, maxWidth: 304, align: .left, size: .medium,
+            foreground: .white, background: .black
+        )
+    }
+
+    /// Repaints just the title bar with live MainStage state, or (`nil`)
+    /// reverts it to the plain demo title - see `mainStageStatusText`'s
+    /// doc comment. Cheap: `SLLinkDisplay`'s per-id memoization means this
+    /// only actually sends a message when the text changes. Must run on
+    /// `SLLinkSession.queue`, same requirement as every other method here.
+    func showMainStageStatus(_ text: String?) {
+        mainStageStatusText = text
+        drawTitle()
     }
 
     private static let borderThickness = 3
