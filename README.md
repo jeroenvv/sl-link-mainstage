@@ -1,6 +1,27 @@
 # sl-link-mainstage
 Mainstage integration for SL88 MK2
 
+## Installing the MainStage script
+
+Run `./Scripts/install-mainstage-script.sh` to copy `MainStageScript/STUDIOLOGIC/SL.device` into
+`~/Music/Audio Music Apps/MainStage Devices/STUDIOLOGIC/` (not "MIDI Device Scripts", which is
+Logic Pro's folder of the same shape). It's idempotent, needs no admin rights, doesn't modify
+MainStage.app, and survives MainStage updates. Re-run it after every `config.lua` change and after
+a MainStage update that rescans its script folders, then quit and relaunch MainStage so it rescans
+for the new script. Requires an SL88 MK2 connected over USB and MainStage; the Swift app in this
+repo is not part of this path and does not need to be running.
+
+## Using it
+
+Load a concert in MainStage, then select **MainStage** in the SL88's own APP list. The screen shows
+the concert, set and patch, and follows patch changes made in MainStage. The Zoom button
+(physically the button below Cancel) toggles between the patch list and the single-patch zoomed
+view; a long press forces a full repaint.
+
+If the app never appears in the APP list, quit and relaunch MainStage. For diagnostics,
+`defaults write com.apple.mainstage3 LUA_DEBUG -bool true` routes the script's `print()` output to
+MainStage's stdout — turn it back off afterward, since it measurably slows MainStage down.
+
 ## Documentation
 
 - [`docs/implementing-sl-link.md`](docs/implementing-sl-link.md) — reusable guide to implementing the
