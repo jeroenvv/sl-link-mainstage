@@ -76,7 +76,9 @@ IT_IDENTIFICATION = 0x7F
 
 -- Button IDs (only what this script wires up so far)
 BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
-BID_JOY_MAIN = 0x15 -- joystick main/push button; SPIKE Q1a only (see handle_spike_q1a_joy_main_press)
+BID_JOY_UP = 0x11 -- joystick Up; unwired since round 5 - see the ECHO-MECHANISM banner comment
+BID_JOY_DOWN = 0x13 -- joystick Down; unwired since round 5 - see the ECHO-MECHANISM banner comment
+BID_JOY_MAIN = 0x15 -- joystick main/push button; SPIKE Q1a round 5: SHORT = echo-mechanism test send, LONG = CONTROL (see the banner comment)
 
 -- Button press-event byte, e[9] of an IT_BUTTON frame
 PRESS_SHORT = 0x01
@@ -294,11 +296,29 @@ scrollOffset = 0
 -- for the old per-set filter.
 listRows = {}
 
--- SPIKE Q1a (2026-08-21, throwaway - see handle_spike_q1a_joy_main_press): set
--- for exactly one controller_midi_in round by the Joystick-main-button
--- handler to the { midi = {...} } table that round must return VERBATIM
--- (no outport field), then cleared. nil the rest of the time.
+-- SPIKE Q1a (2026-08-21, throwaway - see the SPIKE_VARIANT dispatch): set for
+-- exactly one controller_midi_in round, by whichever variant handler ran, to
+-- the { midi = {...} } table that round must return VERBATIM (no outport
+-- field), then cleared. nil the rest of the time - including for the
+-- CONTROL variant, which never touches this at all.
 spikeQ1aInjectMidi = nil
+
+-- SPIKE Q1a round 5 (2026-08-22, ECHO MECHANISM): which of the three
+-- well-separated echo targets (see build_patchsel_echo_targets()) the next
+-- joy main SHORT press sends. Incremented (mod target count) on every press
+-- so successive presses cycle 1, 2, 3, 1, 2, 3... rather than repeating the
+-- same target, which is what makes a hit unmistakable - see
+-- handle_patchsel_echo_press().
+patchselEchoCycleIndex = 0
+
+-- PORT DISCOVERY (round 5): every distinct portName controller_midi_in has
+-- ever been called with, so the first event on a NEW port logs exactly once
+-- (see the PORT SEEN print at the top of controller_midi_in) instead of
+-- flooding the log on every subsequent keypress/note on a port already seen.
+-- We know the SL Link port is called LINK; we do not yet know what the
+-- SL88's ordinary MIDI port is called, and that name is required for
+-- PATCHSEL_OUT_PORT if 'LINK' turns out not to be it.
+seenPorts = {}
 
 screenDirty = false
 
@@ -449,6 +469,15 @@ function flush_pending(includeQuery)
 	local out = {}
 	local query = includeQuery and msg_identification_query() or nil
 	local reserve = query and #query or 0
+	-- Round 5's echo-mechanism message (handle_patchsel_echo_press) tags
+	-- itself with an .outport field so it can be sent on PATCHSEL_OUT_PORT
+	-- instead of SL_PORT if a future round needs a different port; every
+	-- other queued message leaves .outport nil and keeps going to SL_PORT as
+	-- before. Only ever set from the single message dequeued below - the
+	-- query and any other queued content still share whatever port that
+	-- message chose (or SL_PORT if none dequeued this flush), since a
+	-- MIDIPacketList return can only carry one outport per call.
+	local outPort = SL_PORT
 
 	-- Exactly ONE queued message per flush, always paired with the query.
 	--
@@ -505,6 +534,7 @@ function flush_pending(includeQuery)
 			local isDisplay = (m[8] == IT_DISPLAY)
 			table.remove(pendingMessages, index)
 			for i = 1, #m do out[#out + 1] = m[i] end
+			if m.outport then outPort = m.outport end
 			if isDisplay then
 				displayFlushReady = false
 				-- CLEAR SCREEN SETTLE GUARD: see displaySettleTicks'
@@ -534,7 +564,7 @@ function flush_pending(includeQuery)
 	end
 
 	if #out == 0 then return nil end
-	return { midi = out, outport = SL_PORT }
+	return { midi = out, outport = outPort }
 end
 
 
@@ -1771,10 +1801,29 @@ function handle_sl_frame(e)
 		if bid == BID_ZOOM then
 			handle_zoom_button(pressKind)
 		elseif bid == BID_JOY_MAIN and pressKind == PRESS_SHORT then
-			handle_spike_q1a_joy_main_press()
+			handle_patchsel_echo_press()
 		else
 			local kind = (pressKind == PRESS_SHORT and 'SHORT') or (pressKind == PRESS_LONG and 'LONG')
 				or tostring(pressKind)
+			-- SPIKE Q1a CONTROL variant (round 2, 2026-08-22; still the CONTROL
+			-- in round 5's ECHO MECHANISM test): joystick main LONG. This is
+			-- deliberately NOT its own elseif branch above - it falls into the
+			-- same catch-all every other unhandled BID/pressKind combination
+			-- takes, so reading the code is enough to see that it cannot set
+			-- spikeQ1aInjectMidi, cannot call queue_message, and cannot behave
+			-- differently from an unhandled press in any way that matters to
+			-- controller_midi_in. The only addition is this print, purely for
+			-- the hardware log; it runs BEFORE the ordinary unhandled-BUTTON
+			-- print below, which also still fires for this press exactly as it
+			-- would for any other unhandled one. If MainStage still advances a
+			-- patch on this press, something other than our traffic is doing
+			-- it; if it does not, that rules out a spurious side effect being
+			-- mistaken for mechanism A working on the SHORT press above.
+			if bid == BID_JOY_MAIN and pressKind == PRESS_LONG then
+				print('[sllink] SPIKE Q1a round 5 CONTROL (joy main LONG) instance=' ..
+				      string.format('%02X', instanceID) .. ': sending and injecting nothing - taking the' ..
+				      ' ordinary unhandled-button path (spikeQ1aInjectMidi left untouched, nothing queued)')
+			end
 			print('[sllink] <- BUTTON bid=' .. string.format('0x%02X', bid)
 				.. ' event=' .. kind .. ' (unhandled) frame=' .. dump_event(e))
 		end
@@ -1814,12 +1863,112 @@ function handle_zoom_button(pressKind)
 end
 
 -- ============================================================================
--- THROWAWAY SPIKE - Q1a (2026-08-21). Answers ONE question: does returning
--- { midi = {...} } from controller_midi_in with NO outport field inject MIDI
--- into MainStage and make it change patch? Wired to the Joystick main button,
--- SHORT press only, because Phase 2 hasn't built real navigation input yet.
+-- THROWAWAY SPIKE - Q1a (2026-08-21, round 2: 2026-08-22, round 3: 2026-08-22,
+-- round 4: 2026-08-22).
+-- Round 1 answered "does returning { midi = {...} } from controller_midi_in
+-- with no outport inject MIDI into MainStage and change patch?" - yes. Round
+-- 2 answered "does the bank-pair address matter, or is the PC value doing
+-- all the work?" - see docs/mainstage-integration.md's "Q1a answered,
+-- partly": injecting the bank pair WITHOUT a PC did nothing; injecting it
+-- WITH PC=0x00 changed the patch, but erratically and only by advancing one
+-- regardless of the requested target - so the PC value looks load-bearing
+-- and the bank-pair address looks ignored, contradicting the spec/VAX77
+-- claim that MainStage derives Program Change from the Bank Select address.
+--
+-- Round 3 tested that conclusion with three gestures (BASELINE_CYCLING,
+-- PC_ONLY, CHANNEL_1) - see git history for their code. The result: on
+-- CHANNEL_1 (bank pair + PC=0x00 on MIDI channel 1, not 16) the target
+-- address was honoured EXACTLY on some presses and missed (patch just
+-- advanced by one) on others, alternating. Reading: channel 1 is the right
+-- channel, and the misses look like the Program Change being processed
+-- WITHOUT its Bank Select - i.e. CoreMIDI is interleaving the two. Apple's
+-- own VAX77.device/config.lua inserts a -100 (ms delay) entry before its
+-- Program Change specifically "to avoid that CoreMIDI interleaves the Bank
+-- Select events with the SysEx" (see the PATCHSEL_* comment below) - that
+-- candidate fix had never been tried. BASELINE_CYCLING and PC_ONLY are
+-- RETIRED this round (no button triggers either any more - see git history
+-- for their removed code); CHANNEL_1 is kept alive unchanged as a
+-- side-by-side control.
+--
+-- Round 4 tests the anti-interleave-delay candidate fix with three gestures
+-- plus the unchanged CONTROL, dispatched below by SPIKE_VARIANT:
+--   CHANNEL_1_DELAY  (joy main SHORT) - bank pair + PC=0x00 on channel 1,
+--                                        WITH a -100ms anti-interleave delay
+--                                        entry inserted immediately before
+--                                        the Program Change status byte.
+--                                        THE CANDIDATE FIX.
+--   CHANNEL_1        (joy down SHORT) - bank pair + PC=0x00 on channel 1, NO
+--                                        delay. Unchanged from round 3
+--                                        byte-for-byte - the side-by-side
+--                                        control, so delay is the only
+--                                        difference between this and
+--                                        CHANNEL_1_DELAY in the same session.
+--   CHANNEL_16_DELAY (joy up SHORT)   - bank pair + PC=0x00 on channel 16,
+--                                        WITH the same -100ms delay. Isolates
+--                                        the channel while holding the delay
+--                                        constant.
+--   CONTROL          (joy main LONG)  - unchanged since round 2: injects
+--                                        NOTHING; see its branch inside
+--                                        handle_sl_frame's IT_BUTTON dispatch.
+--                                        The falsification control - if the
+--                                        patch still advances with nothing
+--                                        injected, something other than our
+--                                        bytes is doing it.
+--
+-- instanceID logging addition (round 4): MainStage loads this script once
+-- per USB-MIDI interface, so two instances of it run concurrently. Round 3's
+-- hit/miss alternation is equally consistent with "CoreMIDI interleaves the
+-- Bank Select and Program Change" and with "two script instances are
+-- independently reacting to the same physical button press" - nothing in
+-- the round-3 logs distinguished the two hypotheses. Every SPIKE Q1a log
+-- line (from handle_spike_q1a_press and the CONTROL branch) and the
+-- controller_select_patch log line now carry an instance=XX tag so the next
+-- hardware run can tell them apart: capture with
+-- `grep -E '\[sllink\] (SPIKE Q1a|controller_select_patch)' /tmp/lua.log`.
+-- If every SPIKE line and the controller_select_patch line that follows it
+-- show the SAME instance= value throughout a run, that rules out two
+-- instances fighting (supports CoreMIDI interleaving, i.e. CHANNEL_1_DELAY
+-- is the real fix); if instance= ALTERNATES between two different values
+-- across presses, two script instances are genuinely both alive and
+-- reacting - a different bug, independent of message timing.
+--
+-- Round 5 (2026-08-22, ECHO MECHANISM) closes the question rounds 1-4 were
+-- chasing rather than answering it: a disassembly-backed investigation (see
+-- docs/mainstage-device-scripts.md's patchselector section and
+-- docs/mainstage-integration.md's "Q1a closed") found that MainStage's
+-- patch-selector parser only runs when controller_midi_in returns FALSY - a
+-- table return (the injection mechanism every round-1-4 variant used) always
+-- diverts the event into the generic assignment layer instead, on every
+-- channel and byte order tried. There is nothing left to permute on the
+-- injection path; round 4's CHANNEL_1_DELAY/CHANNEL_1/CHANNEL_16_DELAY
+-- variants and their BID_JOY_UP/BID_JOY_DOWN triggers are RETIRED this round
+-- (unwired - see BID_JOY_UP/BID_JOY_DOWN's declarations - but their code
+-- below is left completely alone per this round's brief, for direct
+-- comparison against the new mechanism; see git history if the old wiring is
+-- needed again).
+--
+-- Round 5 tests two candidate mechanisms for getting those same two CCs to
+-- MainStage as GENUINE inbound MIDI instead:
+--   MECHANISM A (joy main SHORT, handle_patchsel_echo_press) - send the CC
+--     pair OUTBOUND via outport (through the ordinary queue_message/
+--     flush_pending machinery, NOT spikeQ1aInjectMidi) and see whether the
+--     SL88 echoes it back to us as inbound (soft MIDI thru). If it does,
+--     MainStage sees real inbound traffic from the scripted device and the
+--     patch-selector parser - proven reachable only from real inbound MIDI,
+--     never from injection - should run.
+--   MECHANISM B (no button - see controller_midi_in) - make sure inbound
+--     CC 0 / CC 32 are never swallowed or substituted, in case they DO come
+--     back: they must fall through to `return nil` so MainStage's own parser
+--     can act on them, logged first so a hit is visible even if the parser
+--     acts before this script would otherwise notice.
+--   CONTROL (joy main LONG) - unchanged: sends and injects nothing (see its
+--     branch inside handle_sl_frame's IT_BUTTON dispatch).
+-- Three distinct, well-separated targets (build_patchsel_echo_targets) cycle
+-- across successive MECHANISM A presses so "advanced by one" cannot
+-- masquerade as a hit the way it did in round 2.
+--
 -- To be replaced by real selection in Step 3 of the Phase 2 plan regardless
--- of which way this answers - do not build on top of this handler.
+-- of which way this answers - do not build on top of these handlers.
 -- ============================================================================
 
 -- Tunable degrees of freedom for the still-UNCONFIRMED patch-select MIDI
@@ -1841,9 +1990,59 @@ end
 PATCHSEL_CHANNEL   = 0x0F -- 0x0F = channel 16 (round 1); VAX77 uses 0x00 = channel 1
 PATCHSEL_MSB_FIRST = true -- Bank Select MSB (0x00) before LSB (0x20); VAX77 sends LSB first
 PATCHSEL_PC_VALUE  = 0x00 -- Program Change data byte; VAX77 uses 0x7F as a don't-care
-PATCHSEL_DELAY_MS  = 0    -- if >0, insert a -PATCHSEL_DELAY_MS entry before the Program Change
-                           -- (VAX77's -100 anti-interleave delay; a negative number in a midi
-                           -- array is a millisecond delay - confirmed via VAX77's own source)
+PATCHSEL_DELAY_MS  = 0    -- fallback default for build_spike_q1a_midi callers that don't pass
+                           -- delayMsOverride; stays 0 (no delay entry). Round 4 passes the delay
+                           -- explicitly per-variant instead (see PATCHSEL_ANTI_INTERLEAVE_DELAY_MS)
+                           -- since two variants need it and one doesn't IN THE SAME SESSION - a
+                           -- single global toggle can't express that.
+-- UNCHANGED this round (round 2 tests WHICH BYTES ARE SENT, not how they are
+-- encoded - permuting both at once is exactly what round 1's own notes warn
+-- against). Do not touch the four constants above until H1 vs H2 is settled.
+
+-- VAX77's own anti-interleave delay value (see the PATCHSEL_* comment above
+-- and the round-4 section of the banner comment). Passed explicitly as
+-- build_spike_q1a_midi's delayMsOverride argument by the CHANNEL_1_DELAY and
+-- CHANNEL_16_DELAY variants below, rather than via the PATCHSEL_DELAY_MS
+-- global, because round 4 needs the delay on two variants and not on a third
+-- (CHANNEL_1) IN THE SAME SESSION - a single global toggle can't express
+-- that; a per-call override can.
+PATCHSEL_ANTI_INTERLEAVE_DELAY_MS = 100
+
+-- SPIKE_VARIANT dispatch (round 4, 2026-08-22). Every round-4 gesture that
+-- INJECTS something is exactly one row here, naming its trigger (for the log
+-- line only - the real trigger wiring is the IT_BUTTON dispatch above) and
+-- the label that appears in its log line - so each variant's behaviour is
+-- stated in one place instead of being smeared across the dispatch and
+-- duplicated per-variant functions. The three variants have genuinely
+-- different byte-building shapes (see handle_spike_q1a_press), not just an
+-- includePC toggle on one shared shape, so this table only carries what's
+-- common to all of them. The CONTROL variant (joy main LONG) is deliberately
+-- NOT a row here: it injects nothing at all, so there is nothing for
+-- build_spike_q1a_midi to build - see its own branch inside handle_sl_frame's
+-- IT_BUTTON dispatch. BASELINE_CYCLING and PC_ONLY (round 3) are retired -
+-- see git history.
+SPIKE_VARIANT_CHANNEL_1_DELAY  = 'CHANNEL_1_DELAY'
+SPIKE_VARIANT_CHANNEL_1        = 'CHANNEL_1'
+SPIKE_VARIANT_CHANNEL_16_DELAY = 'CHANNEL_16_DELAY'
+
+PATCHSEL_CHANNEL_1_VALUE = 0x00 -- round 3 CHANNEL_1 probe: channel 1 (Apple VAX77's channel), not PATCHSEL_CHANNEL
+
+SPIKE_VARIANT_TABLE = {
+	[SPIKE_VARIANT_CHANNEL_1_DELAY] = {
+		trigger = 'joy main SHORT',
+		label = 'bank pair + PC=0x00 on channel 1 + ' .. PATCHSEL_ANTI_INTERLEAVE_DELAY_MS ..
+		        'ms anti-interleave delay (candidate fix)',
+	},
+	[SPIKE_VARIANT_CHANNEL_1] = {
+		trigger = 'joy down SHORT',
+		label = 'bank pair + PC=0x00 on channel 1, no delay (round-3 control, unchanged)',
+	},
+	[SPIKE_VARIANT_CHANNEL_16_DELAY] = {
+		trigger = 'joy up SHORT',
+		label = 'bank pair + PC=0x00 on channel 16 + ' .. PATCHSEL_ANTI_INTERLEAVE_DELAY_MS ..
+		        'ms anti-interleave delay',
+	},
+}
 
 -- Picks a patch row deliberately NOT equal to the currently active
 -- (activeSetIndex, activePatchIndex), preferring the first patch of a
@@ -1867,50 +2066,213 @@ function find_spike_q1a_target()
 	return sameSetFallback
 end
 
--- Builds the Bank Select MSB / Bank Select LSB / Program Change byte
--- sequence from the PATCHSEL_* constants above. Order and channel are
--- data-driven so a failed hardware round only needs a constant flipped, not
--- this function rewritten.
-function build_spike_q1a_midi(setIndex, patchIndex)
-	local ccStatus = 0xB0 + PATCHSEL_CHANNEL
-	local pcStatus = 0xC0 + PATCHSEL_CHANNEL
-	local msbBytes = { ccStatus, 0x00, setIndex }
-	local lsbBytes = { ccStatus, 0x20, patchIndex }
+-- Builds the Bank Select MSB / Bank Select LSB [/ Program Change] byte
+-- sequence from the PATCHSEL_* constants above. Order is data-driven so a
+-- failed hardware round only needs a constant flipped, not this function
+-- rewritten. includePC=false omits the delay entry and the Program Change
+-- entirely - not just zeroes it - so the emitted array contains no
+-- 0xC0-family status byte at all.
+--
+-- Four independent axes beyond the base (setIndex, patchIndex, includePC)
+-- pair: whether the bank bytes are sent at all (includeBank), the channel
+-- (channelOverride, for CHANNEL_1/CHANNEL_1_DELAY/CHANNEL_16_DELAY), the PC
+-- value (pcValueOverride), and - new this round - the anti-interleave delay
+-- (delayMsOverride, for CHANNEL_1_DELAY/CHANNEL_16_DELAY's -100ms entry; see
+-- PATCHSEL_ANTI_INTERLEAVE_DELAY_MS). All four are OPTIONAL and TRAILING
+-- specifically so the original 3-positional-arg call shape stays
+-- byte-identical for existing callers - including the ~15 harness_assert.lua
+-- assertions that call build_spike_q1a_midi(5, 12, true) and
+-- build_spike_q1a_midi(5, 12, false) and must keep producing exactly the
+-- same bytes they do today. includeBank defaults to true and
+-- channelOverride/pcValueOverride/delayMsOverride default to the same
+-- PATCHSEL_* globals the old code read directly (delayMsOverride ->
+-- PATCHSEL_DELAY_MS, which stays 0), so old callers are unaffected.
+function build_spike_q1a_midi(setIndex, patchIndex, includePC, includeBank, channelOverride, pcValueOverride, delayMsOverride)
+	if includeBank == nil then includeBank = true end
+	local channel = channelOverride or PATCHSEL_CHANNEL
+	local pcValue = pcValueOverride
+	if pcValue == nil then pcValue = PATCHSEL_PC_VALUE end
+	local delayMs = delayMsOverride
+	if delayMs == nil then delayMs = PATCHSEL_DELAY_MS end
+	local ccStatus = 0xB0 + channel
+	local pcStatus = 0xC0 + channel
 	local out = {}
-	local first = PATCHSEL_MSB_FIRST and msbBytes or lsbBytes
-	local second = PATCHSEL_MSB_FIRST and lsbBytes or msbBytes
-	for i = 1, #first do out[#out + 1] = first[i] end
-	for i = 1, #second do out[#out + 1] = second[i] end
-	if PATCHSEL_DELAY_MS > 0 then out[#out + 1] = -PATCHSEL_DELAY_MS end
-	out[#out + 1] = pcStatus
-	out[#out + 1] = PATCHSEL_PC_VALUE
+	if includeBank then
+		local msbBytes = { ccStatus, 0x00, setIndex }
+		local lsbBytes = { ccStatus, 0x20, patchIndex }
+		local first = PATCHSEL_MSB_FIRST and msbBytes or lsbBytes
+		local second = PATCHSEL_MSB_FIRST and lsbBytes or msbBytes
+		for i = 1, #first do out[#out + 1] = first[i] end
+		for i = 1, #second do out[#out + 1] = second[i] end
+	end
+	if includePC then
+		if delayMs > 0 then out[#out + 1] = -delayMs end
+		out[#out + 1] = pcStatus
+		out[#out + 1] = pcValue
+	end
 	return out
 end
 
--- Builds the one-shot { midi = {...} } table (no outport) and stashes it in
--- spikeQ1aInjectMidi for controller_midi_in to return VERBATIM this round -
--- see that function and spikeQ1aInjectMidi's declaration. controller_info
--- sets patchselector = true, which is what makes MainStage treat inbound
--- Bank Select/PC as a patch-select request instead of passing it through as
--- music.
-function handle_spike_q1a_joy_main_press()
+-- Hex-dumps a build_spike_q1a_midi() array for the SPIKE log line. Unlike dump_event (which dumps
+-- a raw inbound frame, 0-indexed, all-positive bytes), this array is 1-indexed Lua-array-style and
+-- can contain negative millisecond-delay entries (see build_spike_q1a_midi) - rendered as
+-- "(-100ms delay)" rather than run through string.format('%02X', ...), which would misbehave on a
+-- negative number.
+function format_spike_midi_bytes(bytes)
+	local parts = {}
+	for i = 1, #bytes do
+		local v = bytes[i]
+		if type(v) == 'number' and v < 0 then
+			parts[#parts + 1] = '(' .. v .. 'ms delay)'
+		else
+			parts[#parts + 1] = string.format('%02X', v)
+		end
+	end
+	return table.concat(parts, ' ')
+end
+
+-- Builds the one-shot { midi = {...} } table (no outport) for the variant
+-- named by `variant` (a SPIKE_VARIANT_* constant, keyed into
+-- SPIKE_VARIANT_TABLE), and stashes it in spikeQ1aInjectMidi for
+-- controller_midi_in to return VERBATIM this round - see that function and
+-- spikeQ1aInjectMidi's declaration. controller_info sets patchselector =
+-- true, which is what makes MainStage treat inbound Bank Select/PC as a
+-- patch-select request instead of passing it through as music. Log lines
+-- all share the '[sllink] SPIKE Q1a ' prefix with the variant name right
+-- after it, so `grep -E '\[sllink\] (SPIKE Q1a|controller_select_patch)' /tmp/lua.log`
+-- reduces a hardware capture to one line per press/select across all round-4
+-- variants plus the resulting patch-select, each carrying an instance=XX tag
+-- - see the round-4 section of the banner comment above for how to read
+-- that tag. All three live variants now share the same target-selection
+-- shape (find_spike_q1a_target(), unconditionally - round 3's BASELINE_CYCLING
+-- cycling-target and PC_ONLY no-target special cases are retired), so this
+-- only branches per variant when building the MIDI bytes, on channel and
+-- delay.
+function handle_spike_q1a_press(variant)
+	local descriptor = SPIKE_VARIANT_TABLE[variant]
+	local instanceTag = 'instance=' .. string.format('%02X', instanceID)
+
 	local target = find_spike_q1a_target()
 	if target == nil then
-		print('[sllink] SPIKE Q1a: no target patch found (need a second patch differing from' ..
-		      ' the active one in listRows) - doing nothing')
+		print('[sllink] SPIKE Q1a ' .. variant .. ' (' .. descriptor.trigger .. ') ' .. instanceTag ..
+		      ': no target patch found (need a second patch differing from the active one in' ..
+		      ' listRows) - doing nothing')
 		return
 	end
+
 	local setIndex, patchIndex = target.setIndex, target.patchIndex
 	local function inRange(v) return type(v) == 'number' and v >= 0 and v <= 127 end
 	if not inRange(setIndex) or not inRange(patchIndex) then
-		print('[sllink] SPIKE Q1a: target "' .. tostring(target.label) .. '" has out-of-range' ..
-		      ' indices set=' .. tostring(setIndex) .. ' patch=' .. tostring(patchIndex) ..
-		      ' - refusing to inject')
+		print('[sllink] SPIKE Q1a ' .. variant .. ' (' .. descriptor.trigger .. ') ' .. instanceTag ..
+		      ': target "' .. tostring(target.label) .. '" has out-of-range indices set=' ..
+		      tostring(setIndex) .. ' patch=' .. tostring(patchIndex) .. ' - refusing to inject')
 		return
 	end
-	print('[sllink] SPIKE Q1a: injecting set=' .. setIndex .. ' patch=' .. patchIndex ..
-	      ' "' .. target.label .. '" (no outport)')
-	spikeQ1aInjectMidi = { midi = build_spike_q1a_midi(setIndex, patchIndex) }
+
+	local midiBytes
+	if variant == SPIKE_VARIANT_CHANNEL_1_DELAY then
+		midiBytes = build_spike_q1a_midi(setIndex, patchIndex, true, true, PATCHSEL_CHANNEL_1_VALUE, nil,
+			PATCHSEL_ANTI_INTERLEAVE_DELAY_MS)
+	elseif variant == SPIKE_VARIANT_CHANNEL_16_DELAY then
+		midiBytes = build_spike_q1a_midi(setIndex, patchIndex, true, true, PATCHSEL_CHANNEL, nil,
+			PATCHSEL_ANTI_INTERLEAVE_DELAY_MS)
+	else -- SPIKE_VARIANT_CHANNEL_1
+		midiBytes = build_spike_q1a_midi(setIndex, patchIndex, true, true, PATCHSEL_CHANNEL_1_VALUE)
+	end
+	spikeQ1aInjectMidi = { midi = midiBytes }
+
+	print('[sllink] SPIKE Q1a ' .. variant .. ' (' .. descriptor.trigger .. ') ' .. instanceTag ..
+	      ': injecting set=' .. setIndex .. ' patch=' .. patchIndex .. ' "' .. target.label .. '" (' ..
+	      descriptor.label .. ') bytes=[' .. format_spike_midi_bytes(midiBytes) .. ']')
+end
+
+-- MARK: - SPIKE Q1a round 5: ECHO MECHANISM (2026-08-22)
+
+-- Outbound port for the round-5 echo send (MECHANISM A). Try 'LINK' first -
+-- it is the SL Link port and the only one confirmed to reach the SL88 at
+-- all (see the outport banner comment at the top of this file). If the
+-- echo never comes back on 'LINK', the next thing to try is whatever port
+-- name the PORT SEEN log lines reveal for the SL88's ORDINARY MIDI port
+-- (see seenPorts' declaration and the PORT SEEN print in controller_midi_in)
+-- - that name is not yet known, which is exactly what this round's
+-- instrumentation is for.
+PATCHSEL_OUT_PORT = 'LINK'
+
+-- Picks THREE distinct, well-separated patch rows from listRows (not just
+-- "differs from active by one" the way find_spike_q1a_target does) so a
+-- successful echo is unmistakable across a run of presses: first, middle
+-- and last of the patch rows currently known, by array position - about as
+-- spread out as the loaded list allows. Deduplicates by position for a
+-- short list (fewer than 3 patch rows), so the result can have 1 or 2
+-- entries instead of 3 rather than repeating a row. Returns {} if listRows
+-- has no patch rows at all.
+function build_patchsel_echo_targets()
+	local patchRows = {}
+	for i = 1, #listRows do
+		if listRows[i].isPatch then
+			patchRows[#patchRows + 1] = listRows[i]
+		end
+	end
+	local n = #patchRows
+	if n == 0 then return {} end
+
+	local positions = { 1, math.floor(n / 2) + 1, n }
+	local targets, seen = {}, {}
+	for _, pos in ipairs(positions) do
+		if not seen[pos] then
+			seen[pos] = true
+			targets[#targets + 1] = patchRows[pos]
+		end
+	end
+	return targets
+end
+
+-- MECHANISM A: sends the CC pair OUTBOUND via PATCHSEL_OUT_PORT, cycling
+-- through build_patchsel_echo_targets()'s three targets on successive
+-- presses (patchselEchoCycleIndex) so a hit cannot be confused with "the
+-- same target as last time, coincidentally advanced". Deliberately goes
+-- through queue_message()/flush_pending() - the SAME machinery every
+-- ordinary display/protocol message uses - rather than spikeQ1aInjectMidi:
+-- this is a genuine outbound send, not a controller_midi_in substitution,
+-- so it must actually leave the device on the wire for the SL88 to have
+-- anything to echo back. Byte order is MSB (CC 0, patch) THEN LSB (CC 32,
+-- set) per docs/mainstage-device-scripts.md's patchselector section; no
+-- Program Change at all, channel 1 (status 0xB0 literally, not
+-- PATCHSEL_CHANNEL/PATCHSEL_CHANNEL_1_VALUE - those belong to the retired
+-- injection ladder above and are left untouched for it, not reused here).
+function handle_patchsel_echo_press()
+	local targets = build_patchsel_echo_targets()
+	local instanceTag = 'instance=' .. string.format('%02X', instanceID)
+	if #targets == 0 then
+		print('[sllink] SPIKE Q1a round 5 ECHO (joy main SHORT) ' .. instanceTag ..
+		      ': no patch rows in listRows yet - doing nothing')
+		return
+	end
+
+	local slot = (patchselEchoCycleIndex % #targets) + 1
+	patchselEchoCycleIndex = patchselEchoCycleIndex + 1
+	local target = targets[slot]
+	local setIndex, patchIndex = target.setIndex, target.patchIndex
+
+	local function inRange(v) return type(v) == 'number' and v >= 0 and v <= 127 end
+	if not inRange(setIndex) or not inRange(patchIndex) then
+		print('[sllink] SPIKE Q1a round 5 ECHO (joy main SHORT) ' .. instanceTag ..
+		      ': target ' .. slot .. '/' .. #targets .. ' "' .. tostring(target.label) ..
+		      '" has out-of-range indices set=' .. tostring(setIndex) .. ' patch=' .. tostring(patchIndex) ..
+		      ' - refusing to send')
+		return
+	end
+
+	-- Channel 1 = status 0xB0 with no offset added. MSB (patch) before LSB
+	-- (set); no Program Change entry at all.
+	local bytes = { 0xB0, 0x00, patchIndex, 0xB0, 0x20, setIndex }
+	bytes.outport = PATCHSEL_OUT_PORT
+	queue_message(bytes, nil) -- regionId nil: never coalesced away, same as other protocol messages
+
+	print('[sllink] SPIKE Q1a round 5 ECHO (joy main SHORT) ' .. instanceTag ..
+	      ': queued target ' .. slot .. '/' .. #targets .. ' set=' .. setIndex .. ' patch=' .. patchIndex ..
+	      ' "' .. tostring(target.label) .. '" bytes=[' .. format_spike_midi_bytes(bytes) ..
+	      '] outport=' .. PATCHSEL_OUT_PORT)
 end
 
 -- MARK: - MainStage callbacks
@@ -2206,6 +2568,19 @@ function request_quick_rearm()
 end
 
 function controller_midi_in(midiEvent, portName)
+	-- PORT DISCOVERY (round 5, ECHO MECHANISM): logged once per distinct
+	-- portName, not once per event, so playing the keyboard doesn't flood
+	-- the log - see seenPorts' declaration. Runs before everything else so
+	-- it captures the SL88's ordinary MIDI port the first time ANY event
+	-- (note, CC, wheel...) arrives on it, which PATCHSEL_OUT_PORT needs if
+	-- 'LINK' turns out not to be the right port for the echo send.
+	local portKey = tostring(portName)
+	if not seenPorts[portKey] then
+		seenPorts[portKey] = true
+		print('[sllink] PORT SEEN "' .. portKey .. '" first event status=' ..
+		      string.format('0x%02X', midiEvent[0]))
+	end
+
 	if midiEvent[0] == 0xF0 then
 		print('[sllink] <- SYSEX on port=' .. tostring(portName) .. ': ' .. dump_event(midiEvent))
 	end
@@ -2213,9 +2588,12 @@ function controller_midi_in(midiEvent, portName)
 	if is_our_sl_frame(midiEvent) then
 		handle_sl_frame(midiEvent)
 
-		-- SPIKE Q1a (2026-08-21, throwaway): the Joystick-main-button handler
-		-- above may have stashed a one-shot injection table. When it has, this
-		-- round returns THAT verbatim instead of flush_pending's result -
+		-- SPIKE Q1a (2026-08-21, throwaway; round 2: 2026-08-22; round 3:
+		-- 2026-08-22): a non-CONTROL variant handler above
+		-- (handle_spike_q1a_press) may have stashed a one-shot injection
+		-- table; the CONTROL variant never does.
+		-- When one has, this round returns THAT verbatim instead of
+		-- flush_pending's result -
 		-- deliberately skipping flush_pending entirely rather than calling it
 		-- and discarding its output, because flush_pending has the side effect
 		-- of dequeuing pendingMessages[1] (and, for a display message, clearing
@@ -2265,6 +2643,23 @@ function controller_midi_in(midiEvent, portName)
 
 	if midiEvent[0] == 0xC0 then
 		return { midi = {} } -- swallow Program Change (patchselector handles it)
+	end
+
+	-- MECHANISM B (round 5, ECHO MECHANISM): if the echo sent by
+	-- handle_patchsel_echo_press ever comes back as genuine inbound MIDI,
+	-- this is where it would arrive. CC 0 (Bank MSB / patch) and CC 32
+	-- (Bank LSB / set) must NOT be swallowed or substituted here - the
+	-- patch-selector parser this script arms via patchselector=true only
+	-- runs when controller_midi_in returns falsy (see
+	-- docs/mainstage-device-scripts.md's patchselector section), so
+	-- returning anything but nil for these two CCs would silently defeat
+	-- the whole point of sending them. Logged before the fall-through so a
+	-- hit is visible in the log even before controller_select_patch (or its
+	-- absence) tells us whether MainStage's parser acted on it.
+	if midiEvent[0] == 0xB0 and (midiEvent[1] == 0x00 or midiEvent[1] == 0x20) then
+		print('[sllink] <- CC ' .. string.format('0x%02X', midiEvent[1]) .. ' on port=' ..
+		      tostring(portName) .. ' value=' .. tostring(midiEvent[2]) ..
+		      ' (patch-selector traffic - passing through untouched, NOT swallowed)')
 	end
 
 	-- Musical traffic must pass through untouched - never swallow it just to
@@ -2385,7 +2780,9 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 	-- concert line on the SL88 screen can be told apart from a draw failure
 	-- (2026-08-19 hardware run: concert line never appeared, cause unknown).
 	print('[sllink] controller_select_patch: "' .. patchName .. '" (' .. #listRows .. ' rows total)' ..
-	      ' concert="' .. currentConcert .. '" set="' .. setName .. '"')
+	      ' concert="' .. currentConcert .. '" set="' .. setName .. '"' ..
+	      ' activeSetIndex=' .. tostring(activeSetIndex) .. ' activePatchIndex=' .. tostring(activePatchIndex) ..
+	      ' instance=' .. string.format('%02X', instanceID))
 
 	-- Keep the visible window on the newly-set cursor - must run after
 	-- listRows/cursorIndex are rebuilt above (clamp_scroll's upper bound

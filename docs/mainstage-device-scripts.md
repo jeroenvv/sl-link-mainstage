@@ -92,10 +92,30 @@ Vocabulary actually used across the 98 bundled scripts:
 A `Keyboard` item takes `startKey` and `numberKeys`. Other `controller_info` keys seen: `preset_name`
 (53 scripts — a UI hint telling the user which device preset to select), `auto_passthrough` (10),
 `device_request` (3, a SysEx inquiry), `copyright`, and `patchselector` — used by just two scripts,
-both Infinite Response (`VAX77`, `VAXMIDI`). Setting it means MainStage's own core listens for the
-device to select a patch with **Bank Select MSB = SetIndex, LSB = PatchIndex on channel 16, then a
-Program Change** — you do not derive Program Change numbers yourself. VAX77's header states this, and
-it swallows inbound Program Change entirely.
+both Infinite Response (`VAX77`, `VAXMIDI`). Setting it arms a parser in MainStageCore itself
+(symbol `_WsMIDIHasPatchSelector`, `0x6e304`). Its wire format, confirmed against that parser rather
+than against VAX77's own header comment — which is wrong about its own protocol:
+
+- Status byte must be **exactly `0xB0`** — channel 1, not channel 16.
+- **CC 0 (Bank MSB) only latches a value. CC 32 (Bank LSB) is what performs the selection.** MSB must
+  arrive before LSB.
+- **No Program Change is involved at all.** Selection completes on CC 32. VAX77 swallows inbound
+  Program Change outright (its lines 17-18) and writes `0x7F` into the PC field of the row template it
+  sends as a "none" sentinel — consistent with PC playing no role on the wire.
+- **LSB indexes the concert's children (the SET); MSB indexes that set's children (the PATCH)** — the
+  inverse of what an earlier version of this doc said. VAX77's own table-building code (lines 55-64)
+  agrees with the binary; its header comment does not — the same trap this doc fell into.
+
+**The parser only runs when `controller_midi_in` returns falsy.** When a script returns a table,
+MainStage dispatches the event into the generic assignment/action layer instead, and the
+patch-selector code is branched around entirely. So bytes injected via a `controller_midi_in`
+substitution return (§4) can **never** reach the patch selector — on any channel, in any byte order,
+with or without a Program Change. There is no encoding of the injection that makes this work.
+
+Caveats on the above: the branch polarity was inferred from control flow in the disassembly, not from
+a named symbol, and the parser's target class was not confirmed via an `isKindOfClass:` check. What
+would confirm it: sending MSB-then-LSB on channel 1 with no Program Change from a **real** external
+MIDI port, not an injected substitution.
 
 ## 3. Callbacks
 
@@ -155,6 +175,13 @@ The substitution form is how you inject events into MainStage. Apple's `M-Audio/
 rewrites an inbound Program Change into a CC exactly this way. The Launchkey MK3 script, by contrast,
 *never* injects — every one of its returns carries an `outport`, and it relies on declared `items`
 plus MainStage's own assignment layer instead. Both are valid designs.
+
+**This table is specific to `controller_midi_in`.** `outport`'s meaning is callback-dependent: in
+`controller_select_patch`, `controller_initialize` and `controller_timer_trigger` there is no inbound
+event to substitute, so a missing `outport` just means "the device's default output port". VAX77's
+trailing Bank/PC bytes (its lines 96-108) are returned from `controller_select_patch` and travel **to**
+the keyboard — they are not an example of injection, despite this project's own round-1 notes drawing
+that inference from their byte ordering. That inference was invalid.
 
 **Never swallow musical MIDI.** Returning a table replaces the event, so return `nil` for notes, pitch
 bend and sustain or you will hang notes.

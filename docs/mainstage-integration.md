@@ -94,15 +94,22 @@ Sending it alone without the query was considered and rejected: that flush can o
 tick, where `settriggertimer` is a no-op and the query's reply is the only thing that re-arms the
 session clock — it would trade remnants for a dropout.
 
-## Q1a answered, partly (2026-08-21)
+## Q1a closed (2026-08-22)
 
-**Inbound substitution works.** Returning `{midi=...}` from `controller_midi_in` with no `outport`
-field does reach MainStage and does change patch — the route the whole of Phase 2 depends on is alive.
-The spike wired joystick main SHORT (BID `0x15`) to inject a Bank Select pair plus a Program Change for
-a hardcoded target.
+**Inbound substitution reaches MainStage and changes patch, but never through the patch selector.** A
+disassembly-backed investigation of MainStage 3.7.1 found that the patch-selector parser MainStage
+arms for `patchselector = true` scripts (see
+[`mainstage-device-scripts.md`](mainstage-device-scripts.md#2-controller_info--the-items-table)) runs
+only when `controller_midi_in` returns falsy. A table return — the only way a script can inject bytes
+— diverts the event into MainStage's generic assignment/action layer instead, bypassing the parser
+entirely. **No encoding, on any channel or byte order, with or without a Program Change, can reach the
+patch selector through `controller_midi_in`'s return value.** The permutation ladder below is closed —
+there is nothing left to permute on this path.
 
-**But the addressing is ignored.** Every press injected the same target (`set=0 patch=0`,
-"m.1 C07 Broad Strings") and MainStage landed on a different patch each time, advancing by one:
+That also explains the spike result that originally opened this question: the injected bytes were
+never seen as patch-selector traffic, so the "advance by one patch" behaviour was the generic
+assignment layer's doing, not an artifact of our encoding. The spike wired joystick main SHORT
+(BID `0x15`) to inject a Bank Select pair plus a Program Change for a hardcoded target:
 
 ```
 441.403 SPIKE Q1a: injecting set=0 patch=0 "m.1 C07 Broad Strings" (no outport)
@@ -111,17 +118,20 @@ a hardcoded target.
 457.904 controller_select_patch: "m.54 C07 Strings"
 ```
 
-The callback follows the injection by ~1ms every time, so the two are causally linked. What is not yet
-separated: whether our bytes are being misread as "next patch", or whether they are discarded and
-something else about the press advances the patch. The next round must distinguish those before
-permuting the encoding — a discriminator that does not require guessing is to inject WITHOUT the
-Program Change, or with a deliberately invalid bank, and see whether the advance still happens.
+The callback followed the injection by ~1ms every time — causally linked — but every press injected
+the same target and MainStage landed on a different patch regardless. That is no longer mysterious:
+the bytes never reached patch-selector logic to be addressed by in the first place.
 
-Encoding used for round 1: MSB (`0x00`) before LSB (`0x20`), channel 16, Program Change value `0x00`,
-no delay. All four are named constants (`PATCHSEL_CHANNEL`, `PATCHSEL_MSB_FIRST`, `PATCHSEL_PC_VALUE`,
-`PATCHSEL_DELAY_MS`) so each can be permuted one at a time. Apple's VAX77 script — the only shipping
-script that sets `patchselector = true` — emits LSB first, on channel 1, with a `-100` delay element
-before the Program Change, which is the first permutation to try.
+The encoding tried in that round (MSB `0x00` before LSB `0x20`, channel 16, Program Change `0x00`, no
+delay) turned out to be wrong on every axis per the binary — channel 1 not 16, no Program Change at
+all, and LSB (not MSB) indexes the set, the inverse of what VAX77's header comment (and this doc, at
+the time) claimed. None of that matters for Q1a's outcome: the parser this encoding targeted is
+unreachable from `controller_midi_in` regardless of encoding.
+
+**Caveats:** the branch polarity was inferred from control flow in the disassembly, not a named
+symbol, and the parser's target class was not confirmed via `isKindOfClass:`. What would confirm it:
+sending MSB-then-LSB on channel 1 with no Program Change from a **real** external MIDI port, not an
+injected substitution.
 
 ## Still open
 
@@ -138,10 +148,11 @@ before the Program Change, which is the first permutation to try.
 
 ## Next stage
 
-Phase 2 of `full-functionality-plan.md`: joystick navigation and patch selection. The load-bearing
-unknown is still Q1a — whether returning `{midi=...}` from `controller_midi_in` with no `outport`
-makes MainStage change patch. Everything drawn so far is read-only; Phase 2 is the first time the
-script talks back to MainStage.
+Phase 2 of `full-functionality-plan.md`: joystick navigation and patch selection. Q1a is now closed
+(above): inbound substitution does change patch, but never through the patch-selector parser, which is
+unreachable from `controller_midi_in`'s return value. Whatever Phase 2 does for patch selection has to
+go through a different route than `patchselector`. Everything drawn so far is read-only; Phase 2 is
+still the first time the script talks back to MainStage.
 
 ## Open issues
 
@@ -208,6 +219,30 @@ script talks back to MainStage.
   change, accepted as the price of `maxWidth = 0`.
 - **The multi-row patch list is parked**, pending pacing calibration — a seven-row repaint costs
   ~0.7 s at one message per tick. The single-patch (zoom) screen is the working display.
+
+## Round 5: the soft-thru route is dead too (2026-08-22)
+
+With `patchselector` unreachable from an injected return value, the remaining hope was to get the CC
+pair to MainStage as *genuine* inbound MIDI from the scripted device. The script sent
+`B0 00 <patch>` then `B0 20 <set>` outbound to the `LINK` port and logged every inbound CC 0 / CC 32.
+
+**Nothing came back.** Across six presses cycling three well-separated targets, no inbound CC was ever
+logged and no patch changed. The SL88 does not echo what we send it, so MainStage never sees it as
+inbound MIDI on the scripted controller's port. Port discovery also showed only one port name ever
+delivering events to the script: `LINK`.
+
+### What is left, and it is known to work
+
+MainStage's *assignment layer* does receive script-injected MIDI — that is what was stepping patches
+erratically through rounds 1-4, hitting something already mapped in the concert. So the workable route
+for relative navigation is deliberate rather than accidental: inject a distinct CC per direction and
+assign each one in MainStage's Layout mode to its patch/set action. This is what Novation's Launchkey
+script does, and it needs a one-time mapping per concert.
+
+Jeroen scoped the feature to relative stepping — Up/Down one patch back/forward, Left/Right one set
+back/forward — so absolute addressing is no longer required. Note only "next patch" has been observed
+so far; "previous patch" and the set steps are unproven and depend entirely on what the assignment
+layer offers.
 
 ## Historical record
 
