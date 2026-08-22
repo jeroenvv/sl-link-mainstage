@@ -251,3 +251,73 @@ investigation log: every probe, several confidently wrong conclusions and their 
 dead ends (virtual endpoints, file-based transport via `io`, the `outport` sweep). Useful if you need
 to know *why* something was ruled out, or to avoid re-running an experiment. Not needed for normal
 work — much of it is superseded by the guides above, and it corrects itself repeatedly as it goes.
+
+## Every control emits a mappable CC (2026-08-22)
+
+Since MainStage's `patchselector` parser is unreachable from an injected `controller_midi_in` return
+(see "Q1a closed" above), the script no longer tries to reach it at all. Instead every SL88 control —
+every button, encoder turn and encoder press, short and long where it applies — emits its own distinct
+CC on a dedicated channel (`CC_CHANNEL`, channel 16), for MainStage's own MIDI Learn / assignment layer
+to map. This is the same pattern Novation's Launchkey script uses ("Round 5" above): inject a
+recognisable MIDI event and let the user assign it in Layout mode, rather than trying to reach a
+parser the script has no legitimate route into.
+
+### CC map (34 gestures, CC 40–74, skipping 64)
+
+Copied from `CC_MAP` in `config.lua`:
+
+| CC | Gesture | | CC | Gesture |
+|---:|:---|---|---:|:---|
+| 40 | `JOY_UP_SHORT` | | 58 | `ENC4_PRESS_LONG` |
+| 41 | `JOY_UP_LONG` | | 59 | `ENC1_TURN` |
+| 42 | `JOY_DOWN_SHORT` | | 60 | `ENC2_TURN` |
+| 43 | `JOY_DOWN_LONG` | | 61 | `ENC3_TURN` |
+| 44 | `JOY_LEFT_SHORT` | | 62 | `ENC4_TURN` |
+| 45 | `JOY_LEFT_LONG` | | 63 | `ENCB_TURN` |
+| 46 | `JOY_RIGHT_SHORT` | | *64* | *(skipped — sustain CC)* |
+| 47 | `JOY_RIGHT_LONG` | | 65 | `ENCB_PRESS_SHORT` |
+| 48 | `JOY_PRESS_SHORT` | | 66 | `ENCB_PRESS_LONG` |
+| 49 | `JOY_PRESS_LONG` | | 67 | `SEL1_SHORT` |
+| 50 | `JOY_ROTATE` | | 68 | `SEL1_LONG` |
+| 51 | `ENC1_PRESS_SHORT` | | 69 | `SEL2_SHORT` |
+| 52 | `ENC1_PRESS_LONG` | | 70 | `SEL2_LONG` |
+| 53 | `ENC2_PRESS_SHORT` | | 71 | `SEL3_SHORT` |
+| 54 | `ENC2_PRESS_LONG` | | 72 | `SEL3_LONG` |
+| 55 | `ENC3_PRESS_SHORT` | | 73 | `SEL4_SHORT` |
+| 56 | `ENC3_PRESS_LONG` | | 74 | `SEL4_LONG` |
+| 57 | `ENC4_PRESS_SHORT` | | | |
+
+`64` is deliberately skipped — it's the conventional sustain-pedal CC, and while nothing else is
+expected to be routed to channel 16, it wasn't worth the ambiguity of using it for something else if
+it ever is.
+
+### Mapping procedure
+
+In MainStage: pick a target (a patch/set action, a channel-strip control, anything assignable), hit
+**Learn**, then move or press the corresponding SL88 control once. One control, one mapping, done per
+concert — no in-script navigation logic involved.
+
+### Momentary buttons: the release is deferred a round, deliberately
+
+Buttons read as momentary in MainStage — 127 then 0. The 0 is **not** queued immediately behind the
+127: `queue_cc`'s own per-control coalescing means a second call for the same control before the first
+flushes just replaces the pending value, so if the release were queued right behind the press, the
+press (127) would never reach a batch at all — only the release (0) would. Instead only the 127 is
+queued at press time; the control is remembered, and its 0 release is queued at the **start of the
+next inbound SL frame** (in practice, usually within one Identification Query/reply round-trip, since
+that heartbeat keeps inbound frames arriving even with no further user input) — before that frame's
+own event is handled.
+
+### Encoders send absolute position, not relative ticks
+
+Encoders send their tracked value **absolutely**, 0–127, which MIDI Learns like an ordinary knob.
+`CC_ENCODER_RELATIVE` exists in `config.lua` as a documented escape hatch to switch to relative
+increments (65 = up one tick, 63 = down one) instead, but it is **not implemented** — flipping it
+alone does nothing, since the accumulate-and-clamp path and `queue_cc`'s replace-in-place coalescing
+both assume absolute values.
+
+### Status: Confirmed on hardware (2026-08-22)
+
+Deployed and tested against the SL88 with a real concert loaded. MainStage's MIDI Learn does accept a CC arriving by injection — Selector 1 (CC 67) was learned and responded on the first attempt, confirming the one assumption the whole design rested on. The `[sllink] CC batch: N CC(s), B bytes` log line confirms each injection round on the script side.
+
+Not yet mapped, by choice — left for a later phase: Cancel, Apply, Global, DAW (Home/Zoom already has its own on-keyboard function, the list/zoom toggle).
