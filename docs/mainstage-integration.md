@@ -321,3 +321,13 @@ both assume absolute values.
 Deployed and tested against the SL88 with a real concert loaded. MainStage's MIDI Learn does accept a CC arriving by injection — Selector 1 (CC 67) was learned and responded on the first attempt, confirming the one assumption the whole design rested on. The `[sllink] CC batch: N CC(s), B bytes` log line confirms each injection round on the script side.
 
 Not yet mapped, by choice — left for a later phase: Cancel, Apply, Global, DAW (Home/Zoom already has its own on-keyboard function, the list/zoom toggle).
+
+### Sweep and mapping verification (2026-08-24)
+
+Jeroen mapped joystick Up/Down/Left/Right, encoder B, and the long-press variant of the Cancel/Stop
+button in MainStage, and confirmed all of them work. A sustained fast turn on encoder B produced 715
+logged `CC batch` sends over the session, every one coalesced to a single CC - confirming `queue_cc`'s
+per-control coalescing collapses a fast sweep to one send per flush round rather than flooding. No
+session dropout occurred during or around the sweep; the session's few re-logins in this run were
+minutes apart with the queue idle beforehand, consistent with reselecting the app on the keyboard
+rather than anything code-induced. Closes the CC-mapping plan's outstanding verification step.
