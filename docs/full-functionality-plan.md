@@ -338,6 +338,13 @@ sketch):
 
 ### Phase 2 — Navigation and selection
 
+> **SUPERSEDED (2026-08-22).** The browse-cursor + selection design below is not being built.
+> MainStage's `patchselector` parser turns out to be unreachable from a device script's injected
+> MIDI — see `docs/mainstage-integration.md`'s "Q1a closed" section. Phase 2 now exposes every SL88
+> control as its own mappable CC instead, for MainStage's own MIDI Learn to bind — see that doc's
+> "Every control emits a mappable CC" section. The design below is kept as historical record of what
+> was originally planned, not as a live spec.
+
 Depends on Q1 + Q2.
 
 - Joystick Up / Down (`0x11` / `0x13`) → move highlight, clamped within the set.

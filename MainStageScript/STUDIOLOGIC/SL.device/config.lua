@@ -69,17 +69,126 @@ SL_INSTANCE_START = 0x6D -- first instance byte tried; bumped on rejection
 
 -- Item types
 IT_SYSTEM = 0x00
-IT_BUTTON = 0x01 -- handled for BID_ZOOM (see handle_zoom_button); other BIDs are logged only
-IT_ENCODER = 0x03 -- logged only; not otherwise handled
+IT_BUTTON = 0x01 -- handled for BID_ZOOM (see handle_zoom_button) and every BID in BUTTON_CC; other BIDs are logged only
+IT_ENCODER = 0x03 -- handled for every EID in ENCODER_CC; other EIDs (just A) are logged only
 IT_DISPLAY = 0x04
 IT_IDENTIFICATION = 0x7F
 
--- Button IDs (only what this script wires up so far)
+-- Button IDs, matching SLButtonID in SLLinkProtocol.swift (verified against
+-- that file, not re-derived here - see docs/implementing-sl-link.md).
 BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
+BID_JOY_UP = 0x11
+BID_JOY_LEFT = 0x12
+BID_JOY_DOWN = 0x13
+BID_JOY_RIGHT = 0x14
+BID_JOY_MAIN = 0x15
+BID_ZONE1_SEL = 0x04 -- SLButtonID.zone1SelectButton .. zone4SelectButton
+BID_ZONE2_SEL = 0x05
+BID_ZONE3_SEL = 0x06
+BID_ZONE4_SEL = 0x07
+BID_ZONE1_ENC = 0x00 -- SLButtonID.zone1EncoderButton .. zone4EncoderButton (the zone
+BID_ZONE2_ENC = 0x01 -- encoders' PUSH buttons - a different namespace from the EID_ZONE*
+BID_ZONE3_ENC = 0x02 -- rotation IDs below, which share the same 0x00-0x03 numbering
+BID_ZONE4_ENC = 0x03 -- under a different itemType (IT_BUTTON vs IT_ENCODER)
+BID_B_ENC = 0x0C -- SLButtonID.bEncoderButton
 
 -- Button press-event byte, e[9] of an IT_BUTTON frame
 PRESS_SHORT = 0x01
 PRESS_LONG = 0x02
+
+-- Encoder IDs, matching SLEncoderID in SLLinkProtocol.swift.
+EID_ZONE1 = 0x00
+EID_ZONE2 = 0x01
+EID_ZONE3 = 0x02
+EID_ZONE4 = 0x03
+EID_JOYSTICK = 0x04
+EID_A = 0x05 -- reference only: A is intentionally excluded from the CC map
+             -- (see docs' "Two decisions" / CC map design), not forgotten -
+             -- its ticks fall through to the unhandled-ENCODER log line.
+EID_B = 0x06
+
+-- MARK: - Phase 2 CC dispatch (every SL88 control emits a mappable CC)
+--
+-- One dedicated MIDI channel carries every gesture below (34 total, CC
+-- 40-74 skipping 64) so MainStage can MIDI-Learn each one directly - no
+-- in-script patch-selection logic, which is dead: MainStage's patchselector
+-- parser only runs when controller_midi_in returns falsy, so injected MIDI
+-- (the old Q1a spike's approach) can never reach it. See the design doc for
+-- the full table and the one-time mapping procedure.
+CC_CHANNEL = 0x0F -- channel 16; nothing else is expected to be routed here
+
+-- Encoders currently send their ABSOLUTE tracked value (0-127), which learns
+-- like an ordinary knob. Flipping this to true would send a relative
+-- increment instead (65 = up one, 63 = down one) - NOT implemented; the
+-- accumulate-and-clamp path below and queue_cc's replace-in-place coalescing
+-- both assume absolute values, so wiring the relative branch is more than a
+-- one-constant change despite the name. Kept as the documented escape hatch
+-- the design calls for, not a working toggle.
+CC_ENCODER_RELATIVE = false
+
+CC_MAP = {
+	JOY_UP_SHORT = 40,    JOY_UP_LONG = 41,
+	JOY_DOWN_SHORT = 42,  JOY_DOWN_LONG = 43,
+	JOY_LEFT_SHORT = 44,  JOY_LEFT_LONG = 45,
+	JOY_RIGHT_SHORT = 46, JOY_RIGHT_LONG = 47,
+	JOY_PRESS_SHORT = 48, JOY_PRESS_LONG = 49,
+	JOY_ROTATE = 50,
+
+	ENC1_PRESS_SHORT = 51, ENC1_PRESS_LONG = 52,
+	ENC2_PRESS_SHORT = 53, ENC2_PRESS_LONG = 54,
+	ENC3_PRESS_SHORT = 55, ENC3_PRESS_LONG = 56,
+	ENC4_PRESS_SHORT = 57, ENC4_PRESS_LONG = 58,
+
+	ENC1_TURN = 59, ENC2_TURN = 60, ENC3_TURN = 61, ENC4_TURN = 62,
+
+	ENCB_TURN = 63,
+	-- 64 deliberately skipped (sustain CC; harmless on a channel nothing
+	-- listens to, but not worth the ambiguity if it's ever routed anywhere).
+	ENCB_PRESS_SHORT = 65, ENCB_PRESS_LONG = 66,
+
+	SEL1_SHORT = 67, SEL1_LONG = 68,
+	SEL2_SHORT = 69, SEL2_LONG = 70,
+	SEL3_SHORT = 71, SEL3_LONG = 72,
+	SEL4_SHORT = 73, SEL4_LONG = 74,
+}
+
+-- BID -> { short, long } CC_MAP keys, for every button wired to a CC.
+BUTTON_CC = {
+	[BID_JOY_UP]    = { short = 'JOY_UP_SHORT',    long = 'JOY_UP_LONG' },
+	[BID_JOY_DOWN]  = { short = 'JOY_DOWN_SHORT',  long = 'JOY_DOWN_LONG' },
+	[BID_JOY_LEFT]  = { short = 'JOY_LEFT_SHORT',  long = 'JOY_LEFT_LONG' },
+	[BID_JOY_RIGHT] = { short = 'JOY_RIGHT_SHORT', long = 'JOY_RIGHT_LONG' },
+	[BID_JOY_MAIN]  = { short = 'JOY_PRESS_SHORT', long = 'JOY_PRESS_LONG' },
+	[BID_ZONE1_SEL] = { short = 'SEL1_SHORT', long = 'SEL1_LONG' },
+	[BID_ZONE2_SEL] = { short = 'SEL2_SHORT', long = 'SEL2_LONG' },
+	[BID_ZONE3_SEL] = { short = 'SEL3_SHORT', long = 'SEL3_LONG' },
+	[BID_ZONE4_SEL] = { short = 'SEL4_SHORT', long = 'SEL4_LONG' },
+	[BID_ZONE1_ENC] = { short = 'ENC1_PRESS_SHORT', long = 'ENC1_PRESS_LONG' },
+	[BID_ZONE2_ENC] = { short = 'ENC2_PRESS_SHORT', long = 'ENC2_PRESS_LONG' },
+	[BID_ZONE3_ENC] = { short = 'ENC3_PRESS_SHORT', long = 'ENC3_PRESS_LONG' },
+	[BID_ZONE4_ENC] = { short = 'ENC4_PRESS_SHORT', long = 'ENC4_PRESS_LONG' },
+	[BID_B_ENC]     = { short = 'ENCB_PRESS_SHORT', long = 'ENCB_PRESS_LONG' },
+}
+
+-- EID -> CC_MAP key, for every encoder wired to a CC. A is deliberately
+-- absent (see EID_A's comment above).
+ENCODER_CC = {
+	[EID_ZONE1] = 'ENC1_TURN',
+	[EID_ZONE2] = 'ENC2_TURN',
+	[EID_ZONE3] = 'ENC3_TURN',
+	[EID_ZONE4] = 'ENC4_TURN',
+	[EID_JOYSTICK] = 'JOY_ROTATE',
+	[EID_B] = 'ENCB_TURN',
+}
+
+-- Batch cap for one controller_midi_in return: 16 CCs (48 bytes, 3 bytes
+-- each) - well under MainStage's measured ~78-byte injection ceiling, where
+-- an oversized array is discarded WHOLE rather than truncated (rule 2 in the
+-- banner above). A fast encoder sweep or many simultaneous button events
+-- would otherwise risk that ceiling; anything past the cap is left queued
+-- for the next round rather than truncated into the array or dropped - see
+-- flush_pending_cc().
+CC_BATCH_CAP = 16
 
 -- Identification functions
 ID_REQUEST = 0x00
@@ -147,6 +256,17 @@ STATE_REIDENTIFY_WAIT = 'reidentify_wait' -- rejected; waiting out REIDENTIFY_WA
 state = STATE_IDLE
 instanceID = SL_INSTANCE_START
 pendingMessages = {}
+
+-- Phase 2 CC dispatch state - see the CC_MAP block above and queue_cc()/
+-- flush_pending_cc() below.
+pendingCC = {} -- control name (a CC_MAP key) -> pending value, coalesced
+pendingCCOrder = {} -- insertion order of pendingCC's keys, for a deterministic batch
+pendingReleases = {} -- controls whose 127 press already went out; queue their
+                      -- 0 release the NEXT round (see queue_momentary_cc())
+encoderValue = { -- absolute 0-127 tracked value per encoder wired to a CC
+	[EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
+	[EID_JOYSTICK] = 64, [EID_B] = 64,
+}
 
 -- NOTES-STARVE-THE-CLOCK FIX (established on hardware 2026-08-20, rule 6 in
 -- the banner above): true whenever a settriggertimer one-shot is currently
@@ -442,6 +562,17 @@ function flush_pending(includeQuery)
 	local out = {}
 	local query = includeQuery and msg_identification_query() or nil
 	local reserve = query and #query or 0
+	-- A queued message may tag itself with an .outport field to be sent on a
+	-- port other than SL_PORT (nothing currently does - the Phase 2 CC
+	-- batch goes out through flush_pending_cc, not this path, and is
+	-- outport-less by design, like the old Q1a spike injection it replaced -
+	-- see CC_BATCH_CAP's comment). Kept as a general escape hatch: every
+	-- ordinary queued message leaves .outport nil and keeps going to
+	-- SL_PORT. Only ever set from the single message dequeued below - the
+	-- query and any other queued content still share whatever port that
+	-- message chose (or SL_PORT if none dequeued this flush), since a
+	-- MIDIPacketList return can only carry one outport per call.
+	local outPort = SL_PORT
 
 	-- Exactly ONE queued message per flush, always paired with the query.
 	--
@@ -498,6 +629,7 @@ function flush_pending(includeQuery)
 			local isDisplay = (m[8] == IT_DISPLAY)
 			table.remove(pendingMessages, index)
 			for i = 1, #m do out[#out + 1] = m[i] end
+			if m.outport then outPort = m.outport end
 			if isDisplay then
 				displayFlushReady = false
 				-- CLEAR SCREEN SETTLE GUARD: see displaySettleTicks'
@@ -527,7 +659,70 @@ function flush_pending(includeQuery)
 	end
 
 	if #out == 0 then return nil end
-	return { midi = out, outport = SL_PORT }
+	return { midi = out, outport = outPort }
+end
+
+
+-- MARK: - Phase 2 CC dispatch (queue/emit; see the CC_MAP block near the top)
+
+-- Coalesces into the pending-CC table, keyed by CONTROL (a CC_MAP key), not
+-- by CC number. A second call for the same control before it flushes
+-- REPLACES the pending value rather than queuing a duplicate - this is what
+-- lets a fast encoder sweep collapse to one CC per control instead of one
+-- per tick (see controller_midi_in's return path).
+function queue_cc(control, value)
+	if value < 0 then value = 0 elseif value > 127 then value = 127 end
+	if pendingCC[control] == nil then
+		pendingCCOrder[#pendingCCOrder + 1] = control
+	end
+	pendingCC[control] = value
+end
+
+-- Buttons read as momentary in MainStage (127 then 0), but queue_cc's own
+-- per-control coalescing means two queue_cc calls back to back for the same
+-- control would just leave the release (0) pending - the press would never
+-- reach a batch at all. So the release is NOT queued immediately behind the
+-- press: this only queues 127 now and remembers the control in
+-- pendingReleases; controller_midi_in queues each pending release's 0 at the
+-- START of the NEXT round (the next inbound SL frame - in practice usually
+-- within one Identification Query/reply round-trip, since that heartbeat
+-- keeps inbound SL frames arriving even with no further user input), before
+-- handling that frame's own event. Simpler than threading a delay through
+-- the batching path, and "shortly after" is all momentary behaviour needs.
+function queue_momentary_cc(control)
+	queue_cc(control, 127)
+	pendingReleases[#pendingReleases + 1] = control
+end
+
+function build_cc_message(control, value)
+	return { 0xB0 + CC_CHANNEL, CC_MAP[control], value }
+end
+
+-- Batches every pending CC into ONE { midi = {...} } table (outport-less,
+-- like the old spike injection this replaces) and clears what it emits.
+-- Capped at CC_BATCH_CAP controls (CC_BATCH_CAP * 3 bytes) - see that
+-- constant's comment for why. A control past the cap is left in
+-- pendingCC/pendingCCOrder for the next round rather than being dropped or
+-- truncated into an oversized array.
+function flush_pending_cc()
+	local out = {}
+	local emitted = 0
+	local remaining = {}
+	for i = 1, #pendingCCOrder do
+		local control = pendingCCOrder[i]
+		if emitted < CC_BATCH_CAP then
+			local msg = build_cc_message(control, pendingCC[control])
+			for j = 1, #msg do out[#out + 1] = msg[j] end
+			pendingCC[control] = nil
+			emitted = emitted + 1
+		else
+			remaining[#remaining + 1] = control
+		end
+	end
+	pendingCCOrder = remaining
+	print('[sllink] CC batch: ' .. emitted .. ' CC(s), ' .. #out .. ' bytes' ..
+	      (#remaining > 0 and (', ' .. #remaining .. ' deferred to next round') or ''))
+	return { midi = out }
 end
 
 
@@ -1761,8 +1956,12 @@ function handle_sl_frame(e)
 	elseif itemType == IT_BUTTON then
 		local bid = func
 		local pressKind = e[9]
+		local ccButton = BUTTON_CC[bid]
 		if bid == BID_ZOOM then
 			handle_zoom_button(pressKind)
+		elseif ccButton ~= nil and (pressKind == PRESS_SHORT or pressKind == PRESS_LONG) then
+			local control = (pressKind == PRESS_SHORT) and ccButton.short or ccButton.long
+			queue_momentary_cc(control)
 		else
 			local kind = (pressKind == PRESS_SHORT and 'SHORT') or (pressKind == PRESS_LONG and 'LONG')
 				or tostring(pressKind)
@@ -1772,9 +1971,17 @@ function handle_sl_frame(e)
 	elseif itemType == IT_ENCODER then
 		local eid = func
 		local delta = e[9] - 0x40
-		print('[sllink] <- ENCODER eid=' .. string.format('0x%02X', eid)
-			.. ' tick=' .. string.format('0x%02X', e[9])
-			.. ' delta=' .. tostring(delta) .. ' (unhandled) frame=' .. dump_event(e))
+		local control = ENCODER_CC[eid]
+		if control ~= nil then
+			local newValue = encoderValue[eid] + delta
+			if newValue < 0 then newValue = 0 elseif newValue > 127 then newValue = 127 end
+			encoderValue[eid] = newValue
+			queue_cc(control, newValue)
+		else
+			print('[sllink] <- ENCODER eid=' .. string.format('0x%02X', eid)
+				.. ' tick=' .. string.format('0x%02X', e[9])
+				.. ' delta=' .. tostring(delta) .. ' (unhandled) frame=' .. dump_event(e))
+		end
 	else
 		print('[sllink] <- unhandled itemType=' .. string.format('0x%02X', itemType)
 			.. ' frame=' .. dump_event(e))
@@ -1819,6 +2026,13 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	instanceID = SL_INSTANCE_START
 	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
 	pendingMessages = {}
+	pendingCC = {}
+	pendingCCOrder = {}
+	pendingReleases = {}
+	encoderValue = {
+		[EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
+		[EID_JOYSTICK] = 64, [EID_B] = 64,
+	}
 	displayMode = 'zoom' -- see the displayMode declaration above for why
 	patchName, setName, currentConcert = '', '', ''
 	activeSetIndex, activePatchIndex = 0, 0
@@ -2102,7 +2316,36 @@ function controller_midi_in(midiEvent, portName)
 	end
 
 	if is_our_sl_frame(midiEvent) then
+		-- Release any momentary CC presses queued LAST round before handling
+		-- THIS frame, so a button press on this frame queues its own release
+		-- for the round after, not this one - see queue_momentary_cc's
+		-- comment for why the release can't just follow the press directly.
+		if #pendingReleases > 0 then
+			for i = 1, #pendingReleases do
+				queue_cc(pendingReleases[i], 0)
+			end
+			pendingReleases = {}
+		end
+
 		handle_sl_frame(midiEvent)
+
+		-- Phase 2 (every SL88 control emits its own CC): a batch queued by
+		-- the release-drain above and/or this frame's own button/encoder
+		-- event takes priority this round, mirroring the old Q1a spike's
+		-- proven injection shape - return it ALONE, never call
+		-- flush_pending, never dequeue pendingMessages and discard the
+		-- result. Anything already queued for the SL88 (display/protocol
+		-- traffic) is untouched and drains on a later flush; rearm_timer()
+		-- below still runs unconditionally, so skipping the Identification
+		-- Query this round does not stall the session clock (this inbound
+		-- frame is itself the "reply" the clock needs - see the SESSION
+		-- CLOCK note above rearm_timer).
+		if #pendingCCOrder > 0 then
+			local out = flush_pending_cc()
+			rearm_timer()
+			return out
+		end
+
 		-- Protocol traffic, not music: swallow it, and use the opportunity to
 		-- flush whatever the handler queued. Do NOT include the Identification
 		-- Query while state == STATE_REIDENTIFY_WAIT: flush_pending(true)
@@ -2240,7 +2483,9 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 	-- concert line on the SL88 screen can be told apart from a draw failure
 	-- (2026-08-19 hardware run: concert line never appeared, cause unknown).
 	print('[sllink] controller_select_patch: "' .. patchName .. '" (' .. #listRows .. ' rows total)' ..
-	      ' concert="' .. currentConcert .. '" set="' .. setName .. '"')
+	      ' concert="' .. currentConcert .. '" set="' .. setName .. '"' ..
+	      ' activeSetIndex=' .. tostring(activeSetIndex) .. ' activePatchIndex=' .. tostring(activePatchIndex) ..
+	      ' instance=' .. string.format('%02X', instanceID))
 
 	-- Keep the visible window on the newly-set cursor - must run after
 	-- listRows/cursorIndex are rebuilt above (clamp_scroll's upper bound

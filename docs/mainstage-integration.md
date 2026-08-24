@@ -94,6 +94,45 @@ Sending it alone without the query was considered and rejected: that flush can o
 tick, where `settriggertimer` is a no-op and the query's reply is the only thing that re-arms the
 session clock — it would trade remnants for a dropout.
 
+## Q1a closed (2026-08-22)
+
+**Inbound substitution reaches MainStage and changes patch, but never through the patch selector.** A
+disassembly-backed investigation of MainStage 3.7.1 found that the patch-selector parser MainStage
+arms for `patchselector = true` scripts (see
+[`mainstage-device-scripts.md`](mainstage-device-scripts.md#2-controller_info--the-items-table)) runs
+only when `controller_midi_in` returns falsy. A table return — the only way a script can inject bytes
+— diverts the event into MainStage's generic assignment/action layer instead, bypassing the parser
+entirely. **No encoding, on any channel or byte order, with or without a Program Change, can reach the
+patch selector through `controller_midi_in`'s return value.** The permutation ladder below is closed —
+there is nothing left to permute on this path.
+
+That also explains the spike result that originally opened this question: the injected bytes were
+never seen as patch-selector traffic, so the "advance by one patch" behaviour was the generic
+assignment layer's doing, not an artifact of our encoding. The spike wired joystick main SHORT
+(BID `0x15`) to inject a Bank Select pair plus a Program Change for a hardcoded target:
+
+```
+441.403 SPIKE Q1a: injecting set=0 patch=0 "m.1 C07 Broad Strings" (no outport)
+441.404 controller_select_patch: "m.26 C07 Strings"
+457.903 SPIKE Q1a: injecting set=0 patch=0 "m.1 C07 Broad Strings" (no outport)
+457.904 controller_select_patch: "m.54 C07 Strings"
+```
+
+The callback followed the injection by ~1ms every time — causally linked — but every press injected
+the same target and MainStage landed on a different patch regardless. That is no longer mysterious:
+the bytes never reached patch-selector logic to be addressed by in the first place.
+
+The encoding tried in that round (MSB `0x00` before LSB `0x20`, channel 16, Program Change `0x00`, no
+delay) turned out to be wrong on every axis per the binary — channel 1 not 16, no Program Change at
+all, and LSB (not MSB) indexes the set, the inverse of what VAX77's header comment (and this doc, at
+the time) claimed. None of that matters for Q1a's outcome: the parser this encoding targeted is
+unreachable from `controller_midi_in` regardless of encoding.
+
+**Caveats:** the branch polarity was inferred from control flow in the disassembly, not a named
+symbol, and the parser's target class was not confirmed via `isKindOfClass:`. What would confirm it:
+sending MSB-then-LSB on channel 1 with no Program Change from a **real** external MIDI port, not an
+injected substitution.
+
 ## Still open
 
 - **One session dropout observed** on the zoom screen during the first hardware round (a second
@@ -109,10 +148,11 @@ session clock — it would trade remnants for a dropout.
 
 ## Next stage
 
-Phase 2 of `full-functionality-plan.md`: joystick navigation and patch selection. The load-bearing
-unknown is still Q1a — whether returning `{midi=...}` from `controller_midi_in` with no `outport`
-makes MainStage change patch. Everything drawn so far is read-only; Phase 2 is the first time the
-script talks back to MainStage.
+Phase 2 of `full-functionality-plan.md`: joystick navigation and patch selection. Q1a is now closed
+(above): inbound substitution does change patch, but never through the patch-selector parser, which is
+unreachable from `controller_midi_in`'s return value. Whatever Phase 2 does for patch selection has to
+go through a different route than `patchselector`. Everything drawn so far is read-only; Phase 2 is
+still the first time the script talks back to MainStage.
 
 ## Open issues
 
@@ -180,6 +220,30 @@ script talks back to MainStage.
 - **The multi-row patch list is parked**, pending pacing calibration — a seven-row repaint costs
   ~0.7 s at one message per tick. The single-patch (zoom) screen is the working display.
 
+## Round 5: the soft-thru route is dead too (2026-08-22)
+
+With `patchselector` unreachable from an injected return value, the remaining hope was to get the CC
+pair to MainStage as *genuine* inbound MIDI from the scripted device. The script sent
+`B0 00 <patch>` then `B0 20 <set>` outbound to the `LINK` port and logged every inbound CC 0 / CC 32.
+
+**Nothing came back.** Across six presses cycling three well-separated targets, no inbound CC was ever
+logged and no patch changed. The SL88 does not echo what we send it, so MainStage never sees it as
+inbound MIDI on the scripted controller's port. Port discovery also showed only one port name ever
+delivering events to the script: `LINK`.
+
+### What is left, and it is known to work
+
+MainStage's *assignment layer* does receive script-injected MIDI — that is what was stepping patches
+erratically through rounds 1-4, hitting something already mapped in the concert. So the workable route
+for relative navigation is deliberate rather than accidental: inject a distinct CC per direction and
+assign each one in MainStage's Layout mode to its patch/set action. This is what Novation's Launchkey
+script does, and it needs a one-time mapping per concert.
+
+Jeroen scoped the feature to relative stepping — Up/Down one patch back/forward, Left/Right one set
+back/forward — so absolute addressing is no longer required. Note only "next patch" has been observed
+so far; "previous patch" and the set steps are unproven and depend entirely on what the assignment
+layer offers.
+
 ## Historical record
 
 [`archive/mainstage-integration-log.md`](archive/mainstage-integration-log.md) is the full
@@ -187,3 +251,73 @@ investigation log: every probe, several confidently wrong conclusions and their 
 dead ends (virtual endpoints, file-based transport via `io`, the `outport` sweep). Useful if you need
 to know *why* something was ruled out, or to avoid re-running an experiment. Not needed for normal
 work — much of it is superseded by the guides above, and it corrects itself repeatedly as it goes.
+
+## Every control emits a mappable CC (2026-08-22)
+
+Since MainStage's `patchselector` parser is unreachable from an injected `controller_midi_in` return
+(see "Q1a closed" above), the script no longer tries to reach it at all. Instead every SL88 control —
+every button, encoder turn and encoder press, short and long where it applies — emits its own distinct
+CC on a dedicated channel (`CC_CHANNEL`, channel 16), for MainStage's own MIDI Learn / assignment layer
+to map. This is the same pattern Novation's Launchkey script uses ("Round 5" above): inject a
+recognisable MIDI event and let the user assign it in Layout mode, rather than trying to reach a
+parser the script has no legitimate route into.
+
+### CC map (34 gestures, CC 40–74, skipping 64)
+
+Copied from `CC_MAP` in `config.lua`:
+
+| CC | Gesture | | CC | Gesture |
+|---:|:---|---|---:|:---|
+| 40 | `JOY_UP_SHORT` | | 58 | `ENC4_PRESS_LONG` |
+| 41 | `JOY_UP_LONG` | | 59 | `ENC1_TURN` |
+| 42 | `JOY_DOWN_SHORT` | | 60 | `ENC2_TURN` |
+| 43 | `JOY_DOWN_LONG` | | 61 | `ENC3_TURN` |
+| 44 | `JOY_LEFT_SHORT` | | 62 | `ENC4_TURN` |
+| 45 | `JOY_LEFT_LONG` | | 63 | `ENCB_TURN` |
+| 46 | `JOY_RIGHT_SHORT` | | *64* | *(skipped — sustain CC)* |
+| 47 | `JOY_RIGHT_LONG` | | 65 | `ENCB_PRESS_SHORT` |
+| 48 | `JOY_PRESS_SHORT` | | 66 | `ENCB_PRESS_LONG` |
+| 49 | `JOY_PRESS_LONG` | | 67 | `SEL1_SHORT` |
+| 50 | `JOY_ROTATE` | | 68 | `SEL1_LONG` |
+| 51 | `ENC1_PRESS_SHORT` | | 69 | `SEL2_SHORT` |
+| 52 | `ENC1_PRESS_LONG` | | 70 | `SEL2_LONG` |
+| 53 | `ENC2_PRESS_SHORT` | | 71 | `SEL3_SHORT` |
+| 54 | `ENC2_PRESS_LONG` | | 72 | `SEL3_LONG` |
+| 55 | `ENC3_PRESS_SHORT` | | 73 | `SEL4_SHORT` |
+| 56 | `ENC3_PRESS_LONG` | | 74 | `SEL4_LONG` |
+| 57 | `ENC4_PRESS_SHORT` | | | |
+
+`64` is deliberately skipped — it's the conventional sustain-pedal CC, and while nothing else is
+expected to be routed to channel 16, it wasn't worth the ambiguity of using it for something else if
+it ever is.
+
+### Mapping procedure
+
+In MainStage: pick a target (a patch/set action, a channel-strip control, anything assignable), hit
+**Learn**, then move or press the corresponding SL88 control once. One control, one mapping, done per
+concert — no in-script navigation logic involved.
+
+### Momentary buttons: the release is deferred a round, deliberately
+
+Buttons read as momentary in MainStage — 127 then 0. The 0 is **not** queued immediately behind the
+127: `queue_cc`'s own per-control coalescing means a second call for the same control before the first
+flushes just replaces the pending value, so if the release were queued right behind the press, the
+press (127) would never reach a batch at all — only the release (0) would. Instead only the 127 is
+queued at press time; the control is remembered, and its 0 release is queued at the **start of the
+next inbound SL frame** (in practice, usually within one Identification Query/reply round-trip, since
+that heartbeat keeps inbound frames arriving even with no further user input) — before that frame's
+own event is handled.
+
+### Encoders send absolute position, not relative ticks
+
+Encoders send their tracked value **absolutely**, 0–127, which MIDI Learns like an ordinary knob.
+`CC_ENCODER_RELATIVE` exists in `config.lua` as a documented escape hatch to switch to relative
+increments (65 = up one tick, 63 = down one) instead, but it is **not implemented** — flipping it
+alone does nothing, since the accumulate-and-clamp path and `queue_cc`'s replace-in-place coalescing
+both assume absolute values.
+
+### Status: Confirmed on hardware (2026-08-22)
+
+Deployed and tested against the SL88 with a real concert loaded. MainStage's MIDI Learn does accept a CC arriving by injection — Selector 1 (CC 67) was learned and responded on the first attempt, confirming the one assumption the whole design rested on. The `[sllink] CC batch: N CC(s), B bytes` log line confirms each injection round on the script side.
+
+Not yet mapped, by choice — left for a later phase: Cancel, Apply, Global, DAW (Home/Zoom already has its own on-keyboard function, the list/zoom toggle).
