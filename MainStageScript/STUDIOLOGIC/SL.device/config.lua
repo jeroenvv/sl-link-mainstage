@@ -1,19 +1,25 @@
 -- SL MainStage - MainStage MIDI Device Script for the Studiologic SL88 MK2
 --
--- Speaks SL Link directly from Lua, with no helper application: identifies to
--- the keyboard, holds the session alive, and draws the current MainStage patch
--- on the SL88's screen.
+-- Speaks SL Link directly from Lua, with no helper application: identifies to the keyboard, holds
+-- the session alive, and draws the current MainStage patch on the SL88's screen.
 --
 -- Background is in docs/, not here:
 --   docs/mainstage-device-scripts.md  writing MainStage Lua device scripts
 --   docs/implementing-sl-link.md      the SL Link protocol, and where hardware
 --                                     disagrees with the published spec
 --   docs/mainstage-integration.md     status, and the historical record
--- SL-Link-Mainstage/SLLink/ is the Swift implementation every byte here is
--- checked against.
+--   docs/config-lua-history.md        the reasoning behind THIS file's display
+--                                     pacing / session clock / flush constraints
+-- SL-Link-Mainstage/SLLink/ is the Swift implementation every byte here is checked against.
+--
+-- MainStage's Lua sandbox has NO `io` and NO `os` - no file access, no clock, no environment. Never
+-- add a call to either; it errors immediately (`attempt to index global 'io'`/`'os'`), and there is
+-- no way to catch it usefully at load time. (Tests/lua/harness.lua, which drives this file with
+-- plain `lua`, is the one place `os` is legitimate - it is not part of the MainStage sandbox this
+-- file itself runs in.)
 --
 -- =========================================================================
--- FIVE RULES YOU MUST NOT BREAK. Each was found the hard way; each fails
+-- SIX RULES YOU MUST NOT BREAK. Each was found the hard way; each fails
 -- SILENTLY, which is why they are repeated here rather than left in docs.
 --
 --  1. outport is the SHORT kMIDIPropertyName ('LINK'), never the display
@@ -27,9 +33,9 @@
 --     its declaration), not a property of Clear Screen itself. Write Text
 --     overwrites the pixels it covers, so redrawing is self-cleaning, which
 --     is still why ordinary repaints never need one. The one deliberate
---     exception, dated 2026-08-21, is set_display_mode's mode switch (see
---     that function's comment) - queued alone, never bundled with a Write
---     Text, paired with its own settle guard.
+--     exception is set_display_mode's mode switch (see that function's
+--     comment) - queued alone, never bundled with a Write Text, paired with
+--     its own settle guard. See docs/config-lua-history.md#the-clear-screen-ban-and-its-lift.
 --  4. Never truncate strings. Max Width truncates visually in pixels and
 --     appends '...' itself.
 --  5. Display messages must be paced to at most ONE per timer tick. The
@@ -74,8 +80,8 @@ IT_ENCODER = 0x03 -- handled for every EID in ENCODER_CC; other EIDs (just A) ar
 IT_DISPLAY = 0x04
 IT_IDENTIFICATION = 0x7F
 
--- Button IDs, matching SLButtonID in SLLinkProtocol.swift (verified against
--- that file, not re-derived here - see docs/implementing-sl-link.md).
+-- Button IDs, matching SLButtonID in SLLinkProtocol.swift (verified against that file, not
+-- re-derived here - see docs/implementing-sl-link.md).
 BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
 BID_JOY_UP = 0x11
 BID_JOY_LEFT = 0x12
@@ -102,29 +108,19 @@ EID_ZONE2 = 0x01
 EID_ZONE3 = 0x02
 EID_ZONE4 = 0x03
 EID_JOYSTICK = 0x04
-EID_A = 0x05 -- reference only: A is intentionally excluded from the CC map
-             -- (see docs' "Two decisions" / CC map design), not forgotten -
-             -- its ticks fall through to the unhandled-ENCODER log line.
+EID_A = 0x05 -- reference only: A is intentionally excluded from the CC map (see docs' 'Two
+	-- decisions' / CC map design), not forgotten - its ticks fall through to the unhandled-ENCODER log
+	-- line.
 EID_B = 0x06
 
 -- MARK: - Phase 2 CC dispatch (every SL88 control emits a mappable CC)
 --
--- One dedicated MIDI channel carries every gesture below (34 total, CC
--- 40-74 skipping 64) so MainStage can MIDI-Learn each one directly - no
--- in-script patch-selection logic, which is dead: MainStage's patchselector
--- parser only runs when controller_midi_in returns falsy, so injected MIDI
--- (the old Q1a spike's approach) can never reach it. See the design doc for
--- the full table and the one-time mapping procedure.
+-- One dedicated MIDI channel carries every gesture below (34 total, CC 40-74 skipping 64) so
+-- MainStage can MIDI-Learn each one directly - no in-script patch-selection logic, which is dead:
+-- MainStage's patchselector parser only runs when controller_midi_in returns falsy, so injected
+-- MIDI (the old Q1a spike's approach) can never reach it. See docs/mainstage-integration.md for the
+-- full table and the one-time mapping procedure.
 CC_CHANNEL = 0x0F -- channel 16; nothing else is expected to be routed here
-
--- Encoders currently send their ABSOLUTE tracked value (0-127), which learns
--- like an ordinary knob. Flipping this to true would send a relative
--- increment instead (65 = up one, 63 = down one) - NOT implemented; the
--- accumulate-and-clamp path below and queue_cc's replace-in-place coalescing
--- both assume absolute values, so wiring the relative branch is more than a
--- one-constant change despite the name. Kept as the documented escape hatch
--- the design calls for, not a working toggle.
-CC_ENCODER_RELATIVE = false
 
 CC_MAP = {
 	JOY_UP_SHORT = 40,    JOY_UP_LONG = 41,
@@ -142,8 +138,8 @@ CC_MAP = {
 	ENC1_TURN = 59, ENC2_TURN = 60, ENC3_TURN = 61, ENC4_TURN = 62,
 
 	ENCB_TURN = 63,
-	-- 64 deliberately skipped (sustain CC; harmless on a channel nothing
-	-- listens to, but not worth the ambiguity if it's ever routed anywhere).
+	-- 64 deliberately skipped (sustain CC; harmless on a channel nothing listens to, but not worth the
+	-- ambiguity if it's ever routed anywhere).
 	ENCB_PRESS_SHORT = 65, ENCB_PRESS_LONG = 66,
 
 	SEL1_SHORT = 67, SEL1_LONG = 68,
@@ -170,8 +166,8 @@ BUTTON_CC = {
 	[BID_B_ENC]     = { short = 'ENCB_PRESS_SHORT', long = 'ENCB_PRESS_LONG' },
 }
 
--- EID -> CC_MAP key, for every encoder wired to a CC. A is deliberately
--- absent (see EID_A's comment above).
+-- EID -> CC_MAP key, for every encoder wired to a CC. A is deliberately absent (see EID_A's comment
+-- above).
 ENCODER_CC = {
 	[EID_ZONE1] = 'ENC1_TURN',
 	[EID_ZONE2] = 'ENC2_TURN',
@@ -181,13 +177,11 @@ ENCODER_CC = {
 	[EID_B] = 'ENCB_TURN',
 }
 
--- Batch cap for one controller_midi_in return: 16 CCs (48 bytes, 3 bytes
--- each) - well under MainStage's measured ~78-byte injection ceiling, where
--- an oversized array is discarded WHOLE rather than truncated (rule 2 in the
--- banner above). A fast encoder sweep or many simultaneous button events
--- would otherwise risk that ceiling; anything past the cap is left queued
--- for the next round rather than truncated into the array or dropped - see
--- flush_pending_cc().
+-- Batch cap for one controller_midi_in return: 16 CCs (48 bytes, 3 bytes each) - well under
+-- MainStage's measured ~78-byte injection ceiling, where an oversized array is discarded WHOLE
+-- rather than truncated (rule 2 in the banner above). A fast encoder sweep or many simultaneous
+-- button events would otherwise risk that ceiling; anything past the cap is left queued for the
+-- next round rather than truncated into the array or dropped - see flush_pending_cc().
 CC_BATCH_CAP = 16
 
 -- Identification functions
@@ -212,34 +206,30 @@ DISP_DRAW_RECT = 0x02
 
 -- Text align / size
 ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT = 0x00, 0x01, 0x02
--- SIZE_MEDIUM (0x01) is UNDOCUMENTED - the spec (docs/display-messages.md)
--- only gives pixel heights for small (21px) and big (33px). Assumed ~27px by
--- interpolation, but that is unverified: the zoom screen geometry below that
--- positions text around SIZE_MEDIUM rests on this estimate, not a
--- measurement. Recalibrate the y coordinates around 'zset' in
+-- SIZE_MEDIUM (0x01) is UNDOCUMENTED - the spec, sl-link/docs/display-messages.md (upstream spec),
+-- only gives pixel heights for small (21px) and big (33px). Assumed ~27px by interpolation, but
+-- that is unverified: the zoom screen geometry below that positions text around SIZE_MEDIUM rests
+-- on this estimate, not a measurement. Recalibrate the y coordinates around 'zset' in
 -- paint_zoom_screen() on hardware if the real glyph height differs.
 SIZE_SMALL, SIZE_MEDIUM, SIZE_BIG = 0x00, 0x01, 0x02
 
 -- The keyboard drops a host that goes quiet for ~5s; the app uses 3s.
 KEEPALIVE_MS = 3000
 
--- docs/mainstage-integration.md "Open issues": MainStage tears the script
--- down and re-initialises it mid-session, which resets instanceID to
--- SL_INSTANCE_START - but the SL88 still holds the PREVIOUS incarnation's
--- registration under that id, because controller_finalize has no return
--- path to send a Logout Request. Bumping the instance byte immediately on
--- rejection "solves" it by registering as a DIFFERENT app, which is why the
--- user's APP-list selection was getting lost. Waiting comfortably longer
--- than the keyboard's ~5s host timeout (the KEEPALIVE_MS comment above) lets
--- that stale registration expire on its own, so retrying the SAME id
--- reclaims our own identity instead.
+-- MainStage tears the script down and re-initialises it mid-session, which resets instanceID to
+-- SL_INSTANCE_START - but the SL88 still holds the PREVIOUS incarnation's registration under that
+-- id, since controller_finalize never sends a Logout Request (see that function). Bumping the
+-- instance byte immediately on rejection would 'solve' it by registering as a DIFFERENT app,
+-- silently losing the user's APP-list selection - do not do that here. Wait comfortably longer than
+-- the keyboard's ~5s host timeout so the stale registration expires, then retry the SAME id. NEVER
+-- shorten this below that margin - rearm_timer()/request_quick_rearm() both special-case
+-- STATE_REIDENTIFY_WAIT so nothing overwrites it early. See
+-- docs/config-lua-history.md#reidentify_wait_ms-derivation.
 REIDENTIFY_WAIT_MS = 6000
 
--- Retries of the SAME instanceID (each separated by REIDENTIFY_WAIT_MS)
--- before handle_identification_rejected gives up and falls back to bumping
--- the instance byte, as before. Bounded so a GENUINE collision - e.g. the
--- other script instance loaded for the other USB-MIDI interface, which is
--- actually alive and will keep rejecting us - doesn't wait forever.
+-- Retries of the SAME instanceID before falling back to bumping the instance byte. Bounded so a
+-- GENUINE collision (the other script instance, loaded for the other USB-MIDI interface, alive and
+-- rejecting us every time) doesn't wait forever.
 MAX_SAME_ID_RETRIES = 2
 
 APP_NAME = 'MainStage'
@@ -257,137 +247,88 @@ state = STATE_IDLE
 instanceID = SL_INSTANCE_START
 pendingMessages = {}
 
--- Phase 2 CC dispatch state - see the CC_MAP block above and queue_cc()/
--- flush_pending_cc() below.
+-- Phase 2 CC dispatch state - see the CC_MAP block above and queue_cc()/ flush_pending_cc() below.
 pendingCC = {} -- control name (a CC_MAP key) -> pending value, coalesced
 pendingCCOrder = {} -- insertion order of pendingCC's keys, for a deterministic batch
-pendingReleases = {} -- controls whose 127 press already went out; queue their
-                      -- 0 release the NEXT round (see queue_momentary_cc())
+pendingReleases = {} -- controls whose 127 press already went out; queue their 0 release the NEXT
+	-- round (see queue_momentary_cc())
 encoderValue = { -- absolute 0-127 tracked value per encoder wired to a CC
 	[EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
 	[EID_JOYSTICK] = 64, [EID_B] = 64,
 }
 
--- NOTES-STARVE-THE-CLOCK FIX (established on hardware 2026-08-20, rule 6 in
--- the banner above): true whenever a settriggertimer one-shot is currently
--- outstanding. controller_midi_in calls rearm_timer() on EVERY inbound MIDI
--- event, including every note on/off - while the user plays, notes arrive
--- far faster than the timer period, so an ungated settriggertimer() call
--- there just keeps cancelling and restarting the pending timer, and
--- controller_timer_trigger never fires. No tick means no keepalive Device
--- Notification, and the SL88 drops a host that goes quiet for ~5s - the
--- display dropping out WHILE PLAYING and recovering once playing stopped.
+-- Gates EVERY settriggertimer call (rule 6 in the banner above): true whenever a one-shot is
+-- currently outstanding. rearm_timer() only calls settriggertimer when this is false, and sets it
+-- true when it does; controller_timer_trigger() clears it at its own start (the one-shot has just
+-- fired). Without this, controller_midi_in's per-note rearm_timer() call keeps cancelling and
+-- restarting the pending timer while the user plays, so controller_timer_trigger never fires and
+-- the SL88 drops the host after ~5s of silence. See
+-- docs/config-lua-history.md#rule-6-notes-starve-the-clock.
 --
--- rearm_timer() now only calls settriggertimer when this is false, and sets
--- it true when it does. controller_timer_trigger() clears it at its own
--- start (the one-shot has just fired, so nothing is outstanding any more).
--- Every OTHER direct settriggertimer call must keep this flag honest too -
--- see controller_initialize, controller_timer_trigger's own top-of-function
--- call (which is a documented no-op on hardware - see the SESSION CLOCK
--- note above controller_midi_in - so it deliberately does NOT set this
--- true), and handle_identification_rejected's REIDENTIFY_WAIT_MS arm (which
--- genuinely does arm a timer, so it does set this true).
+-- Every OTHER direct settriggertimer call site must keep this flag honest: controller_initialize
+-- (true - first arm), controller_timer_trigger's own top-of-function call (does NOT set this true -
+-- confirmed on hardware to be a no-op from inside itself, see the SESSION CLOCK note above
+-- controller_midi_in), and handle_identification_rejected's REIDENTIFY_WAIT_MS arm (true -
+-- genuinely arms a timer).
 timerPending = false
 
--- QUICK-REARM FIX (2026-08-21 hardware report): tracks which interval the CURRENTLY OUTSTANDING
--- one-shot (if timerPending is true) was armed at - KEEPALIVE_MS, FLUSH_SOON_MS, or
--- REIDENTIFY_WAIT_MS. Set at every settriggertimer call site alongside timerPending.
---
--- Measured in /tmp/lua.log: a patch change queued right after an idle tick (session sitting on
--- an outstanding KEEPALIVE_MS timer, nothing to drain) waited a full ~2s for its first FLUSH -
--- rearm_timer() refuses to touch the timer at all while timerPending is true, so display work
--- queued right after that just sits until the LONG one-shot expires on its own, even though
--- FLUSH_SOON_MS (draining pace) is what it actually needs.
---
--- request_quick_rearm() (see below) is the fix: called once per queueing burst from the paths
--- that queue display work (controller_select_patch's update, set_display_mode, the button
--- handlers - NOT queue_message() itself, which would fire it many times per repaint), it
--- shortens an outstanding timer to FLUSH_SOON_MS when this says it is currently armed LONG.
+-- Which interval the CURRENTLY OUTSTANDING one-shot (if timerPending is true) was armed at -
+-- KEEPALIVE_MS, FLUSH_SOON_MS, POPUP_TICK_MS, or REIDENTIFY_WAIT_MS. Set at every settriggertimer
+-- call site alongside timerPending. Read by request_quick_rearm() (below) to decide whether an
+-- outstanding LONG interval should be shortened to FLUSH_SOON_MS. See
+-- docs/config-lua-history.md#quick-rearm-2026-08-21.
 timerArmedInterval = KEEPALIVE_MS
 
--- Retries left for the CURRENT instanceID - see handle_identification_rejected.
--- Reset to MAX_SAME_ID_RETRIES whenever a FRESH instanceID is adopted
--- (controller_initialize, and the bump fallback itself) or an identification
--- succeeds; decremented on every same-id retry.
+-- Retries left for the CURRENT instanceID - see handle_identification_rejected. Reset to
+-- MAX_SAME_ID_RETRIES whenever a FRESH instanceID is adopted (controller_initialize, and the bump
+-- fallback itself) or an identification succeeds; decremented on every same-id retry.
 reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
 
--- DEFECT A FIX (established on hardware 2026-08-19): controller_midi_in calls
--- flush_pending(true) on every inbound SL frame, and the Identification
--- Query's reply is itself one of those inbound frames - so before this flag
--- existed, a display item queued by flush_pending's own query reply flushed
--- again on that reply, whose reply flushed again, and so on: the queue
--- drained at the ~2ms round-trip rate, not at FLUSH_SOON_MS (100ms) as
--- intended. FLUSH_SOON_MS only ever paced the FALLBACK timer, never the
--- actual drain rate - it was inert.
+-- The one-display-message-per-tick pacing gate (rule 5 in the banner above). Set TRUE once per
+-- timer tick, by controller_timer_trigger. flush_pending() may dequeue and emit a display message
+-- (itemType IT_DISPLAY - this includes queue_sacrificial_redraw's trailing duplicate, which has no
+-- regionId but is still IT_DISPLAY) only while this is true, and clears it the instant it does.
+-- Protocol messages (identification, keepalive, logout - regionId nil, itemType
+-- IT_SYSTEM/IT_IDENTIFICATION) and the trailing Identification Query are NEVER gated by this flag:
+-- they go out on every flush regardless, because the query's reply is the only thing that re-arms
+-- the one-shot timer (see the SESSION CLOCK note above controller_timer_trigger) - gating it too
+-- would stall the session clock the moment any display work was queued.
 --
--- CONSEQUENCE, confirmed on hardware: the SL88 cannot paint that fast and
--- silently drops a display message that arrives while it is still painting
--- the previous one. A 7-row calibration screen (one saturated colour per
--- row, since-removed diagnostic-only screen) rendered rows 0/2/4/6 and left
--- 1/3/5 black - every SECOND message lost, not a geometry bug (which would
--- leave only the last row visible). A 3-region zoom update (zset/zname/zpos,
--- flushed back to back as FLUSH #148/#149/#150) reliably lost the MIDDLE
--- one - the patch name, the one thing this screen exists to show.
---
--- Set TRUE once per timer tick, by controller_timer_trigger. flush_pending()
--- may dequeue and emit a display message (itemType IT_DISPLAY - this
--- includes queue_sacrificial_redraw's trailing duplicate, which has no
--- regionId but is still IT_DISPLAY) only while this is true, and clears it
--- the instant it does. Protocol messages (identification, keepalive, logout
--- - regionId nil, itemType IT_SYSTEM/IT_IDENTIFICATION) and the trailing
--- Identification Query are NOT gated by this flag: they go out on every
--- flush regardless, because the query's reply is the only thing that re-arms
--- the one-shot timer (see the SESSION CLOCK note above
--- controller_timer_trigger) - gating it too would stall the session clock
--- the moment any display work was queued.
---
--- Starts true so a display message queued before the very first timer tick
--- (or while the queue has been sitting idle/empty) can still go out on the
--- next available flush rather than waiting up to KEEPALIVE_MS for a tick
--- that has nothing to do with it.
+-- Starts true so a display message queued before the very first timer tick can still go out on the
+-- next available flush rather than waiting up to KEEPALIVE_MS. Without this gate, the SL88 silently
+-- drops a display message that arrives while it is still painting the previous one - see
+-- docs/config-lua-history.md#defect-a-the-ungated-flush-drained-at-round-trip-speed-not-timer-speed
+-- for the hardware finding this fixes.
 displayFlushReady = true
 
--- CLEAR SCREEN SETTLE GUARD (2026-08-21, see set_display_mode's comment for
--- why Clear Screen is sent there at all). A full-screen clear plausibly takes
--- the panel longer to paint than an ordinary text line, and FLUSH_SOON_MS
--- dropping to 50ms (see that constant) leaves even less margin than before.
--- Set to MODE_SWITCH_SETTLE_TICKS by flush_pending() the moment it emits a
--- Clear Screen; decremented by controller_timer_trigger, which withholds that
--- tick's displayFlushReady grant while this is nonzero - so the draws that
--- follow a clear get roughly MODE_SWITCH_SETTLE_TICKS+1 tick periods of quiet
--- instead of one. Protocol messages and the trailing Identification Query are
--- never gated by displayFlushReady at all, so the session clock keeps running
--- through the settle regardless.
+-- A full-screen Clear Screen plausibly takes the panel longer to paint than an ordinary text line.
+-- Set to MODE_SWITCH_SETTLE_TICKS by flush_pending() the moment it emits a Clear Screen;
+-- decremented by controller_timer_trigger, which withholds that tick's displayFlushReady grant
+-- while this is nonzero - so the draws that follow a clear get roughly MODE_SWITCH_SETTLE_TICKS+1
+-- tick periods of quiet instead of one. Protocol messages and the trailing Identification Query are
+-- never gated by displayFlushReady at all, so the session clock keeps running through the settle
+-- regardless.
 --
--- RAISED from 1 to 3 (2026-08-21 hardware report: mode switches - especially
--- the FIRST one - could leave stale text on screen). A single tick is only
--- ~FLUSH_SOON_MS (50-70ms observed in /tmp/lua.log); named as its own
--- constant, not folded into FLUSH_SOON_MS, so the two can be retuned
--- independently - see the FLUSH_SOON_MS sweep-plan comment for the pattern:
--- change only this one constant per hardware run and confirm every region on
--- both screens still renders (no stale text, no missing region) before
--- lowering it further. NOT the whole fix for that report - see
--- set_display_mode's comment for what else was audited and what remains
--- unexplained about the FIRST switch specifically.
+-- Named as its own constant, not folded into FLUSH_SOON_MS, so the two can be retuned
+-- independently. Raised from 1 to 3 after a hardware report of stale text after mode switches - see
+-- docs/config-lua-history.md#the-clear-screen-ban-and-its-lift and
+-- #fix-5-audit-the-first-switch-anomaly for what this did and didn't explain.
 MODE_SWITCH_SETTLE_TICKS = 3
 displaySettleTicks = 0
 
--- Counts every display message queue_message() handles (append OR coalesced
--- replace-in-place). update_screen()/paint_screen() used to detect "did this
--- paint queue anything real" by comparing #pendingMessages before/after -
--- that broke once coalescing can replace an existing entry without changing
--- the queue's length, so they diff this counter instead.
+-- Counts every display message queue_message() handles (append OR coalesced replace-in-place).
+-- update_screen()/paint_screen() used to detect "did this paint queue anything real" by comparing
+-- #pendingMessages before/after - that broke once coalescing can replace an existing entry without
+-- changing the queue's length, so they diff this counter instead.
 queuedDisplayOps = 0
 
--- What MainStage has loaded (from controller_select_patch), and the model for
--- both display modes below. currentConcert already existed before this
--- feature and is reused rather than adding a parallel concertName.
--- The alternating-message-loss finding that used to keep 'list' parked
--- (a 7-row calibration screen showed rows 0/2/4/6 painted and 1/3/5 BLACK)
--- turned out to be the display-pacing bug fixed by displayFlushReady below,
--- not anything about the list screen itself - see docs/ for the record.
--- 'zoom' stays the default (unchanged on load/restart); the Zoom button
--- (BID_ZOOM, see handle_zoom_button) toggles to 'list' and back.
+-- What MainStage has loaded (from controller_select_patch), and the model for both display modes
+-- below. currentConcert already existed before this feature and is reused rather than adding a
+-- parallel concertName. 'zoom' stays the default (unchanged on load/restart); the Zoom button
+-- (BID_ZOOM, see handle_zoom_button) toggles to 'list' and back. See
+-- docs/config-lua-history.md#defect-a-the-ungated-flush-drained-at-round-trip-speed-not-timer-speed
+-- for why 'list' used to be avoided (a display-pacing bug, since fixed - not anything about the
+-- list screen itself).
 displayMode = 'zoom' -- or 'list'
 
 activeSetIndex = 0
@@ -396,137 +337,82 @@ currentConcert = ''
 setName = ''
 patchName = ''
 
--- cursorIndex is an index into listRows (0-based, matching the pattern used
--- throughout this file: listRows[cursorIndex + 1] is the Lua-array entry).
--- Phase 2 moves it independently of the active patch (joystick navigation);
--- Phase 1 has no wired input for that, so controller_select_patch simply
--- keeps it tracking whatever MainStage just loaded - see
--- find_active_row_index().
+-- cursorIndex is an index into listRows (0-based, matching the pattern used throughout this file:
+-- listRows[cursorIndex + 1] is the Lua-array entry). Phase 2 moves it independently of the active
+-- patch (joystick navigation); Phase 1 has no wired input for that, so controller_select_patch
+-- simply keeps it tracking whatever MainStage just loaded - see find_active_row_index().
 cursorIndex = 0
 scrollOffset = 0
 
--- The flat, interleaved patchlist, normalised: { label, isPatch, setIndex,
--- patchIndex }, in the SAME order MainStage's own patchlist array uses - this
--- order IS the continuous list (sets and patches interleaved exactly as
--- MainStage displays them), so it is built with ipairs(), not pairs(), in
--- controller_select_patch: order is not just cosmetic here the way it was
--- for the old per-set filter.
+-- The flat, interleaved patchlist, normalised: { label, isPatch, setIndex, patchIndex }, in the
+-- SAME order MainStage's own patchlist array uses - this order IS the continuous list (sets and
+-- patches interleaved exactly as MainStage displays them), so it is built with ipairs(), not
+-- pairs(), in controller_select_patch: order is not just cosmetic here the way it was for the old
+-- per-set filter.
 listRows = {}
 
-screenDirty = false
-
--- What the screen was last painted with, and when. Used to keep the display
--- self-healing: see the ID_QUERY handling in handle_sl_frame.
+-- What the screen was last painted with, and when. Used to keep the display self-healing: see the
+-- ID_QUERY handling in handle_sl_frame.
 lastPaintedPatch = nil
 lastPaintTick = -1
 
--- Repaint at least this often even when nothing changed, because the SL88
--- redraws its own screen when the user picks an app from the APP list and
--- there is no reliable signal for that (LOGIN CONFIRMATION only arrives on a
--- *fresh* login; if the keyboard still remembers us it never sends one).
+-- Repaint at least this often even when nothing changed, because the SL88 redraws its own screen
+-- when the user picks an app from the APP list and there is no reliable signal for that (LOGIN
+-- CONFIRMATION only arrives on a *fresh* login; if the keyboard still remembers us it never sends
+-- one).
 --
--- Counted in IDLE ticks, not raw timer ticks. The tick rate is not constant -
--- it drops to FLUSH_SOON_MS while a repaint drains - so counting raw ticks
--- made "5 ticks" elapse in half a second mid-drain, which repainted, which
--- queued more work, which produced more fast ticks: a runaway repaint loop
--- that made the screen flicker and drop lines.
+-- MUST be counted in IDLE ticks, not raw timer ticks - the tick rate is not constant, it drops to
+-- FLUSH_SOON_MS while a repaint drains. Counting raw ticks makes 'N ticks' elapse fast mid-drain,
+-- which repaints, which queues more work, which produces more fast ticks: a runaway repaint loop.
+-- See Tests/lua/harness.lua's 'queue convergence' and 'repaint rate' checks, which fail if this
+-- regresses.
 REPAINT_EVERY_IDLE_TICKS = 10
 idleTicks = 0
 
 -- MARK: - Outbound plumbing
 --
--- A script can only send by returning MIDI from a callback, and MainStage
--- imposes a BYTE-LENGTH CEILING on what it will actually emit: measured on
--- hardware, 78 bytes render and 87 bytes render NOTHING AT ALL - the whole
--- array is discarded, not truncated. The SL Link spec itself has no such
--- limit (Write Text is `S(1)...S(N)` for arbitrary N, and Max Width truncates
--- visually in pixels - docs/display-messages.md), so this is purely a
--- MainStage constraint to work around.
---
--- Therefore: keep queued messages DISCRETE rather than pre-concatenated, and
--- emit only as many whole messages per flush as fit inside FLUSH_BUDGET.
--- Whatever is left over goes out on a following tick.
---
--- FLUSH_BUDGET sits below the 78 known to work, since the exact ceiling is
--- only bracketed to [78, 87) and there is nothing to gain from running close.
+-- A script can only send by returning MIDI from a callback. MainStage imposes a BYTE-LENGTH CEILING
+-- on what it will emit (rule 2 in the banner): measured on hardware, 78 bytes render and 87 bytes
+-- render NOTHING AT ALL - the whole array is discarded, not truncated. Keep queued messages
+-- DISCRETE rather than pre-concatenated, and emit only as many whole messages per flush as fit
+-- inside FLUSH_BUDGET; whatever is left over goes out on a following tick. FLUSH_BUDGET sits below
+-- the 78 known to work, since the exact ceiling is only bracketed to [78, 87) and there is nothing
+-- to gain from running close. See docs/config-lua-history.md#the-mainstage-byte-ceiling.
 FLUSH_BUDGET = 72
 
--- Write Text's fixed wire overhead before the string itself: header+ids (7) +
--- itemType+func (2) + x/y/maxWidth (6) + align+size (2) + fg rgb (3) +
--- bg rgb (3) + 0x00 terminator (1) + F7 (1) = 25.
+-- Write Text's fixed wire overhead before the string itself: header+ids (7) + itemType+func (2) +
+-- x/y/maxWidth (6) + align+size (2) + fg rgb (3) + bg rgb (3) + 0x00 terminator (1) + F7 (1) = 25.
 WRITE_TEXT_OVERHEAD = 25
 
--- While output is still queued, ask for the next tick quickly rather than
--- waiting a whole keepalive period, so a repaint converges in a fraction of a
--- second instead of one message every KEEPALIVE_MS.
+-- While output is still queued, ask for the next tick quickly rather than waiting a whole keepalive
+-- period, so a repaint converges in a fraction of a second instead of one message every
+-- KEEPALIVE_MS. This is the actual pace a repaint drains at, one display message per interval - it
+-- only became true once flush_pending() started gating display messages behind displayFlushReady
+-- (set once per timer tick); before that this constant was inert (see
+-- docs/config-lua-history.md#defect-a-the-ungated-flush-drained-at-round-trip-speed-not-timer-speed).
 --
--- DEFECT A FIX: before displayFlushReady existed, this constant was INERT -
--- it governed only the fallback timer's interval, while the actual drain
--- happened on every inbound SL frame (~2ms round trips), far faster than
--- this value. Now that flush_pending() gates display messages behind
--- displayFlushReady (set once per timer tick), this is genuinely the pace a
--- repaint drains at: one display message every FLUSH_SOON_MS.
---
--- RETUNED 2026-08-21: lowered from 100 to 50 to cut patch-change latency - a
--- hardware report found switching patches could take up to two seconds,
--- which combined with the 3s keepalive cadence to reach the SL88's ~5s host
--- timeout and drop the session (see flush_pending's DEFECT B FIX for the
--- other half of that fix). 100 was left in place when DEFECT A was fixed
--- specifically because retuning it was deferred to a later, deliberate
--- experiment - it was never itself measured as a floor, just an untested
--- holdover.
---
--- SWEEP PLAN, one value at a time, each verified on hardware before moving
--- on: 50 (current) -> 35 -> 25. Change only this one constant per hardware
--- run (see test-mainstage-script's "one variable per run" rule) and read
--- /tmp/lua.log's FLUSH/tick lines (both now carry the tick number and queue
--- depth - see their print statements) to confirm every expected region still
--- renders. 100 is the last KNOWN-GOOD value - if display messages start
--- going missing (a row or zoom region never appears, or a shorter name
--- leaves a stale tail) on any step of the sweep, that step went one too far:
--- revert to the previous value in the list, and if 50 itself already loses
--- messages, revert all the way to 100.
---
--- Reducing a captured hardware log to a per-message interval table (note:
--- /tmp/lua.log itself has no per-line timestamps - restart-mainstage.sh
--- redirects stdout raw - so capture it through a timestamping filter first,
--- e.g. `... | while IFS= read -r l; do printf '%s %s\n' "$(date
--- '+%H:%M:%S.%3N')" "$l"; done > /tmp/lua.log`, or pipe through moreutils'
--- `ts '%H:%M:.S'` if installed):
---   grep -E '\[sllink\] (FLUSH|timer tick)' /tmp/lua.log | \
---     awk '{ts=$1; if (p!="") printf "%s -> %s  %s\n", p, ts, $0; p=ts}'
--- prints each FLUSH/tick line paired with the timestamp delta since the
--- previous one - the `tick=`/`pending=`/`queueDepthAfter=` fields already in
--- each line then tell you how many ticks and how much queue depth changed
--- per interval, without needing a Lua-side clock (there isn't one - `os` is
--- absent in this environment).
+-- A sweep toward a lower value (50 -> 35 -> 25) is planned but not run past 50 - see
+-- docs/config-lua-history.md#flush_soon_ms-retuning-and-the-sweep-plan for the procedure and the
+-- known-good fallback (100) before changing this.
 FLUSH_SOON_MS = 50
 
--- `regionId`, when given, is stashed as a NAMED field on the message table
--- (Lua's `#`/ipairs only see the integer-keyed byte sequence, so this rides
--- along for free without disturbing flush_pending's byte-for-byte indexing
--- or drop_queued_display's `m[8]` itemType check). It is how
--- drop_queued_display() finds its way back to the `drawn[id]` memo entry a
--- discarded message came from - see that function's comment - and, below, how
--- a newer paint for the same region COALESCES with an older one still
--- sitting in the queue instead of piling up behind it.
+-- `regionId`, when given, is stashed as a NAMED field on the message table (Lua's `#`/ipairs only
+-- see the integer-keyed byte sequence, so this rides along for free without disturbing
+-- flush_pending's byte-for-byte indexing or drop_queued_display's `m[8]` itemType check). It is how
+-- drop_queued_display() finds its way back to the `drawn[id]` memo entry a discarded message came
+-- from - see that function's comment - and, below, how a newer paint for the same region COALESCES
+-- with an older one still sitting in the queue instead of piling up behind it.
 --
--- PER-REGION COALESCING (measured on hardware: rapid patch navigation queued
--- 4, 5, 6, 7, then 10 messages in a row - at one message per ~100ms flush,
--- some rows were never painted before the next patch superseded them, i.e.
--- the black-rows bug). If the queue already holds a display message for this
--- SAME regionId, REPLACE it in place rather than appending a duplicate: the
--- newer content wins, and nothing behind it is thrown away and re-created the
--- way drop_queued_display() used to. Position is preserved deliberately - the
--- SL88 has no layers and paints strictly in message order, so an update to
--- one region must not reorder it relative to regions that were queued around
--- it, or draw order (e.g. a row's backing rect before its text - see
--- draw_row) could invert.
+-- PER-REGION COALESCING: if the queue already holds a display message for this SAME regionId,
+-- REPLACE it in place rather than appending a duplicate - see
+-- docs/config-lua-history.md#per-region-coalescing-under-rapid-navigation for the hardware finding
+-- this fixes. Position is preserved deliberately - the SL88 has no layers and paints strictly in
+-- message order, so an update to one region must not reorder it relative to regions queued around
+-- it, or draw order (e.g. a row's backing rect before its text) could invert.
 --
--- Protocol messages (identification, keepalive, logout - regionId nil) are
--- NEVER coalesced: they append as always. Collapsing two Identification
--- Queries, for instance, would drop one side of a request/reply pair the
--- session clock depends on (see the SESSION CLOCK note near
+-- Protocol messages (identification, keepalive, logout - regionId nil) are NEVER coalesced: they
+-- append as always. Collapsing two Identification Queries, for instance, would drop one side of a
+-- request/reply pair the session clock depends on (see the SESSION CLOCK note near
 -- controller_timer_trigger).
 function queue_message(msg, regionId)
 	if regionId then
@@ -546,70 +432,44 @@ function has_pending()
 	return #pendingMessages > 0
 end
 
--- Counts every display message flush_pending() actually emits (not merely
--- queues). Screen content proves what was PAINTED; it cannot distinguish a
--- message that was sent and dropped by the keyboard from one that was never
--- sent at all - see the alternating-row-loss finding at the displayMode
--- declaration above. This is the observation path that tells the two apart.
+-- Counts every display message flush_pending() actually emits (not merely queues). Screen content
+-- proves what was PAINTED; it cannot distinguish a message that was sent and dropped by the
+-- keyboard from one that was never sent at all - see the alternating-row-loss finding at the
+-- displayMode declaration above. This is the observation path that tells the two apart.
 flushCounter = 0
 
--- Emits whole messages up to the budget. `includeQuery` appends an
--- Identification Query and reserves room for it inside the budget: its reply
--- is the only thing that re-arms the one-shot timer (see the SESSION CLOCK
--- note above controller_midi_in), so a flush carrying no query can stall the
--- session clock.
+-- Emits whole messages up to the budget. `includeQuery` appends an Identification Query and
+-- reserves room for it inside the budget: its reply is the only thing that re-arms the one-shot
+-- timer (see the SESSION CLOCK note above controller_midi_in), so a flush carrying no query can
+-- stall the session clock.
 function flush_pending(includeQuery)
 	local out = {}
 	local query = includeQuery and msg_identification_query() or nil
 	local reserve = query and #query or 0
-	-- A queued message may tag itself with an .outport field to be sent on a
-	-- port other than SL_PORT (nothing currently does - the Phase 2 CC
-	-- batch goes out through flush_pending_cc, not this path, and is
-	-- outport-less by design, like the old Q1a spike injection it replaced -
-	-- see CC_BATCH_CAP's comment). Kept as a general escape hatch: every
-	-- ordinary queued message leaves .outport nil and keeps going to
-	-- SL_PORT. Only ever set from the single message dequeued below - the
-	-- query and any other queued content still share whatever port that
-	-- message chose (or SL_PORT if none dequeued this flush), since a
-	-- MIDIPacketList return can only carry one outport per call.
+	-- A queued message may tag itself with an .outport field to send on a port other than SL_PORT
+	-- (nothing currently does - the Phase 2 CC batch goes out through flush_pending_cc, not this path,
+	-- and is outport-less by design). General escape hatch: an ordinary queued message leaves .outport
+	-- nil and keeps going to SL_PORT. A MIDIPacketList return can only carry one outport per call, so
+	-- this is set from the single message dequeued below only.
 	local outPort = SL_PORT
 
-	-- Exactly ONE queued message per flush, always paired with the query.
+	-- Exactly ONE queued message per flush, always paired with the query - the only shape ([display,
+	-- query]) ever confirmed reliable on hardware. See
+	-- docs/config-lua-history.md#the-display-query-flush-shape.
 	--
-	-- Every shape that has ever rendered reliably on hardware looked like
-	-- [display, query]; the ones that silently vanished were the odd ones out -
-	-- a lone display message, a display bundled with the keepalive, two
-	-- displays together. Position in the repaint turned out to be irrelevant
-	-- (moving the draw order just moved the failure), as did size and content.
-	-- Rather than keep guessing at the underlying rule, emit the one shape that
-	-- has never failed. A repaint costs a few more flushes, which at
-	-- FLUSH_SOON_MS still converges in well under a second.
+	-- A display message (itemType IT_DISPLAY) may only be dequeued here while displayFlushReady is
+	-- true, and doing so clears it (rule 5 in the banner). A non-display, protocol message at the
+	-- front of the queue (identification, keepalive, logout) is never gated - it dequeues every flush
+	-- regardless.
 	--
-	-- DEFECT A FIX: that "a few more flushes" assumed flushes happen at
-	-- FLUSH_SOON_MS. They didn't (see displayFlushReady's declaration) - so a
-	-- display message (itemType IT_DISPLAY) may only be dequeued here while
-	-- displayFlushReady is true, and doing so clears it. A non-display,
-	-- protocol message at the front of the queue (identification, keepalive,
-	-- logout) is never gated - it dequeues exactly as before, every flush.
-	--
-	-- DEFECT B FIX (established on hardware 2026-08-21): the above only ever
-	-- looked at pendingMessages[1]. During a repaint drain, a keepalive queued
-	-- BEHIND a display message sat stuck there until the whole display
-	-- backlog cleared, one message every FLUSH_SOON_MS -
-	-- controller_timer_trigger's "protocol messages dequeue every flush
-	-- regardless" comment was only true once a protocol message actually
-	-- reached the head of the queue. Combined with the 3s keepalive cadence,
-	-- a slow repaint could miss the SL88's ~5s host timeout and drop the
-	-- session mid-repaint.
-	--
-	-- Fix: if the head message can't go out this flush (it is IT_DISPLAY and
-	-- displayFlushReady is false), scan forward for the FIRST protocol
-	-- message (itemType ~= IT_DISPLAY) and let it jump the queue instead,
-	-- removed from its own position with everything else left untouched.
-	-- Display messages never reorder relative to each other - only a
-	-- protocol message can jump ahead of ones still waiting on
-	-- displayFlushReady. Still at most one queued message per flush, still
-	-- paired with the query below.
+	-- If the head message can't go out this flush (it is IT_DISPLAY and displayFlushReady is false),
+	-- scan forward for the FIRST protocol message (itemType ~= IT_DISPLAY) and let it jump the queue
+	-- instead, removed from its own position with everything else left untouched - otherwise a
+	-- keepalive queued behind a display backlog would starve for the whole repaint. See
+	-- docs/config-lua-history.md#defect-b-a-keepalive-stuck-behind-a-display-backlog. Display messages
+	-- never reorder relative to each other - only a protocol message can jump ahead of ones still
+	-- waiting on displayFlushReady. Still at most one queued message per flush, still paired with the
+	-- query below.
 	if #pendingMessages > 0 then
 		local head = pendingMessages[1]
 		local headIsDisplay = (head[8] == IT_DISPLAY)
@@ -632,25 +492,21 @@ function flush_pending(includeQuery)
 			if m.outport then outPort = m.outport end
 			if isDisplay then
 				displayFlushReady = false
-				-- CLEAR SCREEN SETTLE GUARD: see displaySettleTicks'
-				-- declaration. A Clear Screen going out earns the next
-				-- draw MODE_SWITCH_SETTLE_TICKS extra ticks of quiet on
-				-- top of the ordinary one-per-tick pacing.
+				-- CLEAR SCREEN SETTLE GUARD: see displaySettleTicks' declaration. A Clear Screen going out
+				-- earns the next draw MODE_SWITCH_SETTLE_TICKS extra ticks of quiet on top of the ordinary
+				-- one-per-tick pacing.
 				if m[9] == DISP_CLEAR_SCREEN then displaySettleTicks = MODE_SWITCH_SETTLE_TICKS end
 			end
 			flushCounter = flushCounter + 1
-			-- CADENCE INSTRUMENTATION (2026-08-21): `tick=` ties this FLUSH to
-			-- controller_timer_trigger's tick print (the tick counter is a
-			-- plain global, incremented there) so a captured log can be
-			-- reduced to "tick N emitted region R, depth D" even though
-			-- flushes can also happen off-tick (inbound-frame flushes in
-			-- controller_midi_in, controller_select_patch) - a FLUSH whose
-			-- tick= repeats the previous FLUSH's is exactly one of those.
+			-- `tick=` ties this FLUSH to controller_timer_trigger's tick print, so a captured log reads as
+			-- 'tick N emitted region R, depth D' - flushes can also happen off-tick (inbound-frame flushes
+			-- in controller_midi_in, controller_select_patch); a FLUSH whose tick= repeats the previous
+			-- FLUSH's is exactly one of those.
 			print('[sllink] FLUSH #' .. flushCounter ..
-			      ' tick=' .. timerTicks ..
-			      ' regionId=' .. tostring(m.regionId or 'none') ..
-			      ' bytes=' .. #m ..
-			      ' queueDepthAfter=' .. #pendingMessages)
+				' tick=' .. timerTicks ..
+				' regionId=' .. tostring(m.regionId or 'none') ..
+				' bytes=' .. #m ..
+				' queueDepthAfter=' .. #pendingMessages)
 		end
 	end
 
@@ -665,11 +521,12 @@ end
 
 -- MARK: - Phase 2 CC dispatch (queue/emit; see the CC_MAP block near the top)
 
--- Coalesces into the pending-CC table, keyed by CONTROL (a CC_MAP key), not
--- by CC number. A second call for the same control before it flushes
--- REPLACES the pending value rather than queuing a duplicate - this is what
--- lets a fast encoder sweep collapse to one CC per control instead of one
--- per tick (see controller_midi_in's return path).
+-- Coalesces into the pending-CC table, keyed by CONTROL (a CC_MAP key), not by CC number. A second
+-- call for the same control before it flushes REPLACES the pending value rather than queuing a
+-- duplicate - this is what lets a fast encoder sweep collapse to one CC per control instead of one
+-- per tick (see controller_midi_in's return path). Encoders send this absolute 0-127 tracked value,
+-- not relative increments; switching to relative would mean changing the accumulate-and-clamp path
+-- that produces `value` and this replace-in-place coalescing, not just a constant.
 function queue_cc(control, value)
 	if value < 0 then value = 0 elseif value > 127 then value = 127 end
 	if pendingCC[control] == nil then
@@ -678,17 +535,15 @@ function queue_cc(control, value)
 	pendingCC[control] = value
 end
 
--- Buttons read as momentary in MainStage (127 then 0), but queue_cc's own
--- per-control coalescing means two queue_cc calls back to back for the same
--- control would just leave the release (0) pending - the press would never
--- reach a batch at all. So the release is NOT queued immediately behind the
--- press: this only queues 127 now and remembers the control in
--- pendingReleases; controller_midi_in queues each pending release's 0 at the
--- START of the NEXT round (the next inbound SL frame - in practice usually
--- within one Identification Query/reply round-trip, since that heartbeat
--- keeps inbound SL frames arriving even with no further user input), before
--- handling that frame's own event. Simpler than threading a delay through
--- the batching path, and "shortly after" is all momentary behaviour needs.
+-- Buttons read as momentary in MainStage (127 then 0), but queue_cc's own per-control coalescing
+-- means two queue_cc calls back to back for the same control would just leave the release (0)
+-- pending - the press would never reach a batch at all. So the release is NOT queued immediately
+-- behind the press: this only queues 127 now and remembers the control in pendingReleases;
+-- controller_midi_in queues each pending release's 0 at the START of the NEXT round (the next
+-- inbound SL frame - in practice usually within one Identification Query/reply round-trip, since
+-- that heartbeat keeps inbound SL frames arriving even with no further user input), before handling
+-- that frame's own event. Simpler than threading a delay through the batching path, and 'shortly
+-- after' is all momentary behaviour needs.
 function queue_momentary_cc(control)
 	queue_cc(control, 127)
 	pendingReleases[#pendingReleases + 1] = control
@@ -698,12 +553,11 @@ function build_cc_message(control, value)
 	return { 0xB0 + CC_CHANNEL, CC_MAP[control], value }
 end
 
--- Batches every pending CC into ONE { midi = {...} } table (outport-less,
--- like the old spike injection this replaces) and clears what it emits.
--- Capped at CC_BATCH_CAP controls (CC_BATCH_CAP * 3 bytes) - see that
--- constant's comment for why. A control past the cap is left in
--- pendingCC/pendingCCOrder for the next round rather than being dropped or
--- truncated into an oversized array.
+-- Batches every pending CC into ONE { midi = {...} } table (outport-less, like the old spike
+-- injection this replaces) and clears what it emits. Capped at CC_BATCH_CAP controls (CC_BATCH_CAP
+-- * 3 bytes) - see that constant's comment for why. A control past the cap is left in
+-- pendingCC/pendingCCOrder for the next round rather than being dropped or truncated into an
+-- oversized array.
 function flush_pending_cc()
 	local out = {}
 	local emitted = 0
@@ -721,7 +575,7 @@ function flush_pending_cc()
 	end
 	pendingCCOrder = remaining
 	print('[sllink] CC batch: ' .. emitted .. ' CC(s), ' .. #out .. ' bytes' ..
-	      (#remaining > 0 and (', ' .. #remaining .. ' deferred to next round') or ''))
+		(#remaining > 0 and (', ' .. #remaining .. ' deferred to next round') or ''))
 	return { midi = out }
 end
 
@@ -736,8 +590,7 @@ function sl_header()
 	return m
 end
 
--- ASCII-clamps to the SLMK2 font range and 0x00-terminates, matching
--- SLLinkEncoder.asciiTerminated.
+-- ASCII-clamps to the SLMK2 font range and 0x00-terminates, matching SLLinkEncoder.asciiTerminated.
 function append_text(msg, text, maxLength)
 	if text ~= nil then
 		local limit = math.min(#text, maxLength or 32)
@@ -757,8 +610,8 @@ function append_msb_lsb(msg, value)
 	table.insert(msg, value % 128)
 end
 
--- 8-bit RGB -> the 7-bit-per-channel form every SL Link colour field uses
--- (SLLinkEncoder.rgb7 drops the least significant bit).
+-- 8-bit RGB -> the 7-bit-per-channel form every SL Link colour field uses (SLLinkEncoder.rgb7 drops
+-- the least significant bit).
 function append_rgb(msg, r, g, b)
 	table.insert(msg, math.floor(r / 2))
 	table.insert(msg, math.floor(g / 2))
@@ -774,8 +627,8 @@ function msg_identification_request()
 	return m
 end
 
--- Sent purely to elicit a reply and thereby keep the session clock running -
--- see controller_timer_trigger.
+-- Sent purely to elicit a reply and thereby keep the session clock running - see
+-- controller_timer_trigger.
 function msg_identification_query()
 	local m = sl_header()
 	table.insert(m, IT_IDENTIFICATION)
@@ -784,18 +637,16 @@ function msg_identification_query()
 	return m
 end
 
--- flush_pending only ever dequeues ONE message per flush, and only if it fits
--- alongside the Identification Query it always reserves room for (see
--- flush_pending's comment) - a message that never fits is never sent AND
--- never dropped, which jams the queue and stalls the session clock forever.
--- append_text used to allow up to 96 characters with no relation to that
--- budget, so a ~48-char patch name was enough to hang the script.
+-- flush_pending only ever dequeues ONE message per flush, and only if it fits alongside the
+-- Identification Query it always reserves room for (see flush_pending's comment) - a message that
+-- never fits is never sent AND never dropped, which jams the queue and stalls the session clock
+-- forever. append_text used to allow up to 96 characters with no relation to that budget, so a
+-- ~48-char patch name was enough to hang the script.
 --
--- This cap is NOT the rule-4 "never truncate" violation: Max Width still does
--- the *visual* truncation in pixels, with its own "..." for anything that
--- doesn't fit on screen, regardless of how many characters were sent. This is
--- a transport limit only, computed from the query builder itself (not
--- hand-counted) so it stays correct if either message's shape ever changes.
+-- This cap is NOT the rule-4 'never truncate' violation: Max Width still does the *visual*
+-- truncation in pixels, with its own '...' for anything that doesn't fit on screen, regardless of
+-- how many characters were sent. This is a transport limit only, computed from the query builder
+-- itself (not hand-counted) so it stays correct if either message's shape ever changes.
 TEXT_STRING_CAP = FLUSH_BUDGET - #msg_identification_query() - WRITE_TEXT_OVERHEAD
 
 function msg_system(func)
@@ -828,9 +679,9 @@ function msg_write_text(text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, b
 	append_rgb(m, br, bg, bb)
 	if text ~= nil and #text > TEXT_STRING_CAP then
 		print('[sllink] msg_write_text: clamping "' .. text .. '" (' .. #text ..
-		      ' chars) to ' .. TEXT_STRING_CAP .. ' chars - transport limit (see' ..
-		      ' TEXT_STRING_CAP), not a visual-truncation change; Max Width still' ..
-		      ' does its own "..." truncation on screen.')
+			' chars) to ' .. TEXT_STRING_CAP .. ' chars - transport limit (see' ..
+			' TEXT_STRING_CAP), not a visual-truncation change; Max Width still' ..
+			' does its own "..." truncation on screen.')
 	end
 	append_text(m, text, TEXT_STRING_CAP)
 	table.insert(m, SL_END)
@@ -852,31 +703,25 @@ end
 
 -- MARK: - Per-region memoization
 --
--- Ported from SL-Link-Mainstage/SLLink/SLLinkDisplay.swift: draw_text/draw_rect remember the
--- full parameter tuple they last sent for a given caller-supplied id, and queue nothing when
--- a call repeats it unchanged. Mandatory, not an optimisation - at one message per ~100ms
--- flush, a full list repaint costs about a second; without this every self-heal repaint would
--- cost the same again.
+-- Ported from SL-Link-Mainstage/SLLink/SLLinkDisplay.swift: draw_text/draw_rect remember the full
+-- parameter tuple they last sent for a given caller-supplied id, and queue nothing when a call
+-- repeats it unchanged. Mandatory, not an optimisation - at one message per ~100ms flush, a full
+-- list repaint costs about a second; without this every self-heal repaint would cost the same
+-- again.
 --
--- NON-OVERLAP RULE (same as SLLinkDisplay's doc comment): every region id must own screen
--- pixels that no other id draws. A change to one id's memo does not invalidate any other id,
--- so a caller that layers draws - e.g. a filled rect under text - will corrupt the screen the
--- moment only the bottom layer changes and the top layer is skipped as unchanged; the device
--- has no concept of layers, it paints strictly in message order. Use invalidate(ids) to force
--- every id sharing an unavoidable overlap to be resent together as one unit - see
--- draw_text_with_erase() below for the one place this project needs that escape hatch (the
--- zoom screen's zset/zname/znext, which must draw at maxWidth=0 and so cannot self-clear).
+-- NON-OVERLAP RULE (same as SLLinkDisplay's doc comment): every region id must own screen pixels
+-- that no other id draws. A change to one id's memo does not invalidate any other id, so a caller
+-- that layers draws - e.g. a filled rect under text - will corrupt the screen the moment only the
+-- bottom layer changes and the top layer is skipped as unchanged; the device has no concept of
+-- layers, it paints strictly in message order. A caller that cannot avoid overlap must clear the
+-- shared ids' drawn[] entries together so they resend as one unit - see draw_text_with_erase()
+-- below for the one place this project needs that (the zoom screen's zset/zname/znext, which must
+-- draw at maxWidth=0 and so cannot self-clear).
 
 drawn = {}
 
 function invalidate_all()
 	drawn = {}
-end
-
-function invalidate(ids)
-	for i = 1, #ids do
-		drawn[ids[i]] = nil
-	end
 end
 
 function tuple_equal(a, b, n)
@@ -903,14 +748,12 @@ end
 
 -- MARK: - Screen
 --
--- Each element is queued as its own message and delivered across consecutive
--- flushes, because MainStage will not emit more than ~78 bytes at once (see
--- FLUSH_BUDGET). Concatenating a whole repaint is exactly what produced a
--- completely black screen in earlier attempts.
+-- Each element is queued as its own message and delivered across consecutive flushes, because
+-- MainStage will not emit more than ~78 bytes at once (see FLUSH_BUDGET). Concatenating a whole
+-- repaint is exactly what produced a completely black screen in earlier attempts.
 --
--- No manual string truncation: the SL Link spec sets no text-length limit, and
--- Max Width already truncates visually in pixels, appending '...' when needed.
--- Let the keyboard do it.
+-- No manual string truncation: the SL Link spec sets no text-length limit, and Max Width already
+-- truncates visually in pixels, appending '...' when needed. Let the keyboard do it.
 
 SCREEN_WIDTH = 320
 SCREEN_HEIGHT = 240
@@ -923,82 +766,51 @@ ROW_PITCH = 26
 ROW_X = 8
 ROW_MAXW = 304
 
--- FOUND ON HARDWARE (2026-08-19): a long patch name at SIZE_BIG with
--- maxWidth=304 rendered as a SINGLE LETTER followed by "...". The SL88's own
--- Max Width truncation is evidently unreliable at big size, so the zoom
--- screen's patch name still truncates itself (see truncate_text() and
--- paint_zoom_screen()) rather than relying on it. CONFIRMED WORKING at
--- SIZE_SMALL since - see the design doc's settled-facts table - which is why
--- every list row below uses a real, non-zero maxWidth instead.
+-- Max Width truncation is UNRELIABLE at SIZE_BIG - confirmed on hardware: a long patch name at
+-- maxWidth=304 rendered as a single letter followed by '...'. So the zoom screen's patch name
+-- truncates itself in Lua (truncate_text(), paint_zoom_screen()) rather than trusting the device.
+-- See docs/config-lua-history.md#max-width-truncation-broken-at-size_big. Confirmed working at
+-- SIZE_SMALL (see
+-- docs/config-lua-history.md#settled-facts-max-width-and-the-write-text-background-box), which is
+-- why every list row below uses a real, non-zero maxWidth instead. Do not switch zname/zset back to
+-- trusting Max Width without re-confirming on hardware first.
 --
--- FOUND ON HARDWARE (2026-08-20): wrapping the name across two lines (the
--- approach this constant originally served) instead left STALE TEXT on the
--- second line - a shorter name replacing a longer one did not fully
--- overwrite the old line's glyphs. Reverted to one truncated line.
---
--- HARDWARE-CALIBRATED BY EYE, not measured: nothing here reads actual glyph
--- widths. 20 is the count already confirmed to fit - "C05 Brassy Trombones"
--- (20 characters) renders in full at SIZE_BIG across the zoom screen's
--- width. Retune by eye against a name a couple of characters either side of
--- this constant if the geometry below changes (screen width, X margins,
--- font).
+-- HARDWARE-CALIBRATED BY EYE, not measured from real glyph widths. Retune by eye against a name a
+-- couple of characters either side of this constant if the geometry below changes (screen width, X
+-- margins, font).
 BIG_MAX_CHARS = 27
 
--- Same idea, for SIZE_MEDIUM text on the zoom screen. Only zset uses this now
--- (see that constant's comment above for why its geometry is an estimate) -
--- znext moved to SIZE_SMALL + trusted Max Width (see ZSET_TRUST_MAXWIDTH
--- below) on 2026-08-21 to cut it from 2 queued messages to 1, since it no
--- longer needs character-count truncation at all. SIZE_MEDIUM is smaller than
--- SIZE_BIG, so more characters fit in the same width; also unmeasured, retune
--- the same way as BIG_MAX_CHARS.
+-- Same idea, for SIZE_MEDIUM text (only zset uses this - znext draws SIZE_SMALL with a trusted Max
+-- Width instead, needing no character-count truncation). Also eye-calibrated; retune the same way
+-- as BIG_MAX_CHARS.
 MEDIUM_MAX_CHARS = 36
 
--- truncate_text() cuts zname/zset to exactly these character counts (when
--- ZSET_TRUST_MAXWIDTH is false, for zset - see that flag below; zname always
--- truncates itself) before they are drawn (see draw_text_with_erase() below
--- for how the vacated band is cleared). znext no longer calls truncate_text()
--- at all - see MEDIUM_MAX_CHARS's comment above. Assert the budget
--- relationship rather than assuming it: TEXT_STRING_CAP is msg_write_text's
--- hard transport clamp (FLUSH_BUDGET minus wire overhead - see
--- TEXT_STRING_CAP's comment), and if either MAX_CHARS constant is ever
--- retuned past it, msg_write_text would silently re-truncate the
--- already-truncated string, losing truncate_text()'s own "..." and cutting
--- mid-word.
+-- truncate_text() cuts zname/zset to exactly these character counts before they are drawn (see
+-- draw_text_with_erase() below for how the vacated band is cleared). znext no longer calls
+-- truncate_text() - see MEDIUM_MAX_CHARS's comment above. TEXT_STRING_CAP is msg_write_text's own
+-- hard transport clamp (a DIFFERENT limit - see that constant's comment); assert the relationship
+-- rather than assume it, since if either MAX_CHARS constant is ever retuned past TEXT_STRING_CAP,
+-- msg_write_text would silently re-truncate the already-truncated string, losing truncate_text()'s
+-- own '...' and cutting mid-word.
 assert(BIG_MAX_CHARS <= TEXT_STRING_CAP,
-       'BIG_MAX_CHARS must fit within TEXT_STRING_CAP or zname draws would be re-truncated on the wire')
+	'BIG_MAX_CHARS must fit within TEXT_STRING_CAP or zname draws would be re-truncated on the wire')
 assert(MEDIUM_MAX_CHARS <= TEXT_STRING_CAP,
-       'MEDIUM_MAX_CHARS must fit within TEXT_STRING_CAP or zset draws would be re-truncated on the wire')
+	'MEDIUM_MAX_CHARS must fit within TEXT_STRING_CAP or zset draws would be re-truncated on the wire')
 
--- MANUAL CENTERING for maxWidth=0 lines (2026-08-21 hardware report: every zoom-screen line was
--- supposed to be centred, but zset/zname rendered off-centre while the lines drawn at a real
--- maxWidth - zcnc, znext, zpos - looked right). CONFIRMED against the pinned upstream spec
--- (fetched fresh rather than assumed - see https://github.com/fatarsrl/sl-link at the pinned
--- commit, docs/display-messages.md): "In the selected area (the area between (X, Y) and
--- (X + Width, Y)) the string can be justified to the left, right or centre, according to the
--- proper alignment byte" - alignment is defined relative to that Width-wide area. At Width=0 the
--- area collapses to the single point X, leaving ALIGN_CENTER/ALIGN_RIGHT nothing to justify
--- within, which reads as exactly the observed symptom: the string draws pinned at X regardless of
--- the ALIGN byte, i.e. visually left-anchored.
+-- MANUAL CENTERING for maxWidth=0 lines. At Width=0 the SL88's own alignment area collapses to a
+-- single point, so ALIGN_CENTER/ALIGN_RIGHT have nothing to justify within and draw pinned left
+-- regardless of the align byte - confirmed against the pinned upstream spec's own wording.
+-- draw_text_with_erase() must keep maxWidth=0 (that's the whole reason it needs an explicit erase
+-- rect - see its own comment) and Max Width truncation is confirmed broken at SIZE_BIG
+-- (BIG_MAX_CHARS's comment), so switching to a real maxWidth to get alignment 'for free' would risk
+-- reintroducing that bug. Centring is computed in Lua instead: estimate the string's rendered pixel
+-- width and pick an X that lands it mid-screen, then draw ALIGN_LEFT at that X. See
+-- docs/config-lua-history.md#manual-centering-at-maxwidth-0.
 --
--- draw_text_with_erase() must keep maxWidth=0 - that is the whole reason it needs an explicit
--- erase rect at all (see its own comment), and Max Width truncation is confirmed broken at
--- SIZE_BIG and untested at SIZE_MEDIUM (BIG_MAX_CHARS/MEDIUM_MAX_CHARS's comments) - so switching
--- it to a real maxWidth to get alignment "for free" would risk reintroducing that truncation bug.
--- Centring is done in Lua instead: estimate the string's rendered pixel width and pick an X that
--- lands the glyphs in the middle of the screen, then draw ALIGN_LEFT at that X - the one
--- deterministic choice once maxWidth is 0 (see draw_text_with_erase()).
---
--- EYE-CALIBRATED, like BIG_MAX_CHARS/MEDIUM_MAX_CHARS - no real glyph-metrics table exists for
--- this font. CHAR_WIDTH_BIG is derived from BIG_MAX_CHARS itself (27 characters already confirmed
--- to fit within a 304px band at SIZE_BIG), not picked independently. CHAR_WIDTH_MEDIUM was
--- originally scaled from it by the SIZE table's pixel heights (33px/22px - see
--- docs/display-messages.md fetched at the pinned commit), giving a derived value of 7 - already
--- flagged here as narrower than the ~27px this project's own docs/implementing-sl-link.md
--- estimates for medium, and confirmed too narrow: a 2026-08-27 hardware check found the Zoom-mode
--- zset title rendering slightly right-of-center at 7, so it's retuned to 8 (closer to the
--- un-floored 7.33 = 11*22/33). Retune both alongside BIG_MAX_CHARS/MEDIUM_MAX_CHARS if the
--- geometry or font ever changes, the same way: by eye, against a name a few characters either
--- side of dead centre.
+-- EYE-CALIBRATED, like BIG_MAX_CHARS/MEDIUM_MAX_CHARS - no real glyph-metrics table exists for this
+-- font. Retune both alongside those two constants if geometry or font ever changes, the same way:
+-- by eye, against a name a few characters either side of dead centre. See
+-- docs/config-lua-history.md#char_width-calibration for how these two numbers were derived/retuned.
 CHAR_WIDTH_BIG = 11    -- floor(304 / 27)
 CHAR_WIDTH_MEDIUM = 8  -- retuned 2026-08-27 from derived 7 (11*22/33≈7.33) - hardware showed 7 rendering right-of-center
 
@@ -1009,113 +821,63 @@ function estimate_text_width_px(text, size)
 	return (text and #text or 0) * perChar
 end
 
--- SCROLL-OFF MARGIN (vim's `scrolloff`): a scroll TRIGGERS once the cursor
--- comes within SCROLL_MARGIN rows of an edge, so at least this many rows of
--- context stay visible beyond it - Jeroen's requirement that at least one
--- patch AFTER the current one is always on screen, so you can see what you
--- are changing to. 2, not 1: set headers occupy rows in a continuous list,
--- so a margin of 1 could leave the single visible row below the current
--- patch a set header - telling you the song ended but not what plays next.
--- A margin of 2 guarantees a real patch is visible even at a set boundary -
--- see the design doc's worked example. Asserted below rather than assumed:
--- SCROLL_MARGIN must stay under half the window or this rule and the final
--- clamp fight each other. What happens ONCE triggered is PAGE_OVERLAP's and
--- clamp_scroll's concern, not this constant's - see both below.
+-- SCROLL-OFF MARGIN (vim's `scrolloff`): a scroll TRIGGERS once the cursor comes within
+-- SCROLL_MARGIN rows of an edge, so at least this many rows of context stay visible beyond it -
+-- Jeroen's requirement that at least one patch AFTER the current one is always on screen. 2, not 1:
+-- set headers occupy rows in a continuous list, so a margin of 1 could leave the single visible row
+-- below the current patch a set header. See
+-- docs/config-lua-history.md#scroll_margin-and-the-worked-example. Asserted rather than assumed:
+-- SCROLL_MARGIN must stay under half the window or this rule and the final clamp in clamp_scroll()
+-- fight each other.
 SCROLL_MARGIN = 2
 assert(SCROLL_MARGIN < ROW_COUNT / 2,
-       'SCROLL_MARGIN must be less than ROW_COUNT / 2 or the margin and the final clamp fight each other')
+	'SCROLL_MARGIN must be less than ROW_COUNT / 2 or the margin and the final clamp fight each other')
 
--- PAGE JUMP (2026-08-21, replacing one-row edge-triggered scrolling - see
--- clamp_scroll's comment for the measured cost and why it was abandoned).
---
--- How many rows of the OLD window survive, unmoved, as the new window's own
--- leading rows (scrolling forward) or trailing rows (scrolling backward) -
--- some visual overlap so the eye has something familiar to re-anchor on when
--- the screen jumps, rather than every row changing at once with nothing to
--- orient by.
---
--- NOT an independently chosen 1-2 rows, even though that was the first
--- instinct: the cursor's landing position after a jump is NOT a free choice
--- once SCROLL_MARGIN and ROW_COUNT are fixed - see clamp_scroll's comment.
--- Landing the cursor right at the edge it jumped TO (the smallest possible
--- overlap) puts it back inside the OPPOSITE margin's trigger zone, and a
--- harness sweep caught this concretely: five page jumps fired back to back,
--- because a forward jump that lands at row 0 is, by definition, within
--- SCROLL_MARGIN of the TOP edge, so the very next step re-triggers a
--- BACKWARD jump, which lands at the last row - within SCROLL_MARGIN of the
--- BOTTOM edge - re-triggering forward again. That oscillation is a worse
--- version of the exact bug this change exists to fix, not a smaller overlap.
--- The only landing spot that is safe from BOTH margins at once is
--- SCROLL_MARGIN rows in from the edge just crossed, which forces
--- PAGE_OVERLAP = 2 * SCROLL_MARGIN (4 rows here, not 1-2) - derived, not
--- picked. See the design doc for the full derivation and the harness trace
--- that caught the oscillating version.
+-- PAGE_OVERLAP is DERIVED, not picked: the cursor's landing position after a page jump is not a
+-- free choice once SCROLL_MARGIN and ROW_COUNT are fixed. Landing at the edge just jumped to (the
+-- smallest possible overlap) puts the cursor back inside the OPPOSITE margin's trigger zone,
+-- causing every subsequent single-row step to re-trigger a jump the other way - oscillation, worse
+-- than the bug page-jumping exists to fix. The only landing spot safe from BOTH margins at once is
+-- SCROLL_MARGIN rows in from the edge just crossed, which forces PAGE_OVERLAP = 2 * SCROLL_MARGIN.
+-- Do not shrink this without re-running the oscillation check (see Tests/lua/harness.lua's
+-- clamp_scroll test) - a smaller value than this WILL oscillate. See
+-- docs/config-lua-history.md#page_overlap-derivation-and-the-oscillation-trace.
 PAGE_OVERLAP = 2 * SCROLL_MARGIN
 assert(PAGE_OVERLAP < ROW_COUNT,
-       'PAGE_OVERLAP must be less than ROW_COUNT or a jump does not move the window at all')
+	'PAGE_OVERLAP must be less than ROW_COUNT or a jump does not move the window at all')
 
--- Keeps scrollOffset such that cursorIndex is always inside the visible
--- window, with SCROLL_MARGIN rows of context beyond it wherever the list
--- itself allows.
+-- Keeps scrollOffset such that cursorIndex is always inside the visible window, with SCROLL_MARGIN
+-- rows of context beyond it wherever the list itself allows.
 --
--- ONE-ROW SHIFT, ABANDONED (2026-08-21, hardware report: list-mode patch
--- changes took up to ~2s and could drop the session). The original policy
--- here moved scrollOffset the MINIMUM amount needed to restore the margin -
--- and a hardware-report-driven audit (see docs/, and the harness this
--- function is tested against) found that minimum is USUALLY one row, and
--- landing the cursor with the minimum shift ALWAYS puts it exactly
--- SCROLL_MARGIN rows from the far edge (nowhere else it could land and still
--- satisfy the margin) - one row short of retriggering. During ordinary
--- monotonic browsing (advancing one patch at a time, the realistic gig
--- pattern) that meant EVERY SINGLE STEP once past the first couple of moves
--- re-triggered another one-row scroll, and a scroll costs a full
--- ROW_COUNT-row repaint (see the design doc's redraw cost table) where an
--- in-window cursor move costs 2 messages - so nearly every patch change was
--- paying for a full-window redraw it didn't need to.
+-- Once triggered, the window jumps by (ROW_COUNT - PAGE_OVERLAP) rows in the direction of travel,
+-- landing the cursor SCROLL_MARGIN rows in from the edge it just crossed - the landing spot with
+-- maximum runway in the direction of travel while staying clear of BOTH margins at once (see
+-- PAGE_OVERLAP's comment for why any other landing spot oscillates). Do NOT replace this with a
+-- one-row minimum-shift policy - that was tried and abandoned; see
+-- docs/config-lua-history.md#the-one-row-shift-abandoned.
 --
--- PAGE JUMP, now: once triggered, the window jumps by (ROW_COUNT -
--- PAGE_OVERLAP) rows in the direction of travel, landing the cursor
--- SCROLL_MARGIN rows in from the edge it just crossed - the FIRST safe row
--- (scrolling forward: row SCROLL_MARGIN) or the LAST safe row (scrolling
--- backward: row ROW_COUNT-1-SCROLL_MARGIN). That is the landing spot with
--- maximum runway in the direction of travel while staying clear of BOTH
--- margins at once (see PAGE_OVERLAP's comment for why the naive "land right
--- at the edge" version oscillates). With ROW_COUNT=8 and SCROLL_MARGIN=2
--- that is 4 safe steps before the next trigger - i.e. roughly one jump every
--- five advances, not one every single advance.
+-- The cursor's landing row is computed directly from cursorIndex, not as an offset from the OLD
+-- scrollOffset, so this is correct for a jump of any size (a single patch step, or the much bigger
+-- cursorIndex jump a set change or full repaint can produce) without a separate case for either.
+-- Still edge-triggered, NOT re-centring on every move - an in-window move costs nothing here
+-- (scrollOffset untouched, the cheap 2-message case).
 --
--- The cursor's landing row is computed directly from cursorIndex, not as an
--- offset from the OLD scrollOffset, so this is correct for a jump of any
--- size (a single patch step, or the much bigger cursorIndex jump a set
--- change or full repaint can produce) without a separate case for either.
--- Still edge-triggered, NOT re-centring on every move - only a trigger
--- crossing SCROLL_MARGIN causes any of this; an in-window move still costs
--- nothing here (scrollOffset untouched, the cheap 2-message case).
+-- The final clamp is what makes the list's own ends behave: near the top or bottom the landing
+-- guarantee can't always be honoured, so the offset pins at its limit and the cursor moves further
+-- into the window instead. This is also what keeps the LAST page a full ROW_COUNT-row window rather
+-- than a short one: scrollOffset can never exceed #listRows - ROW_COUNT.
 --
--- The final clamp is what makes the list's own ends behave: near the top or
--- bottom, the landing guarantee cannot always be honoured (there may not be
--- another full page beyond it), so the offset pins at its limit and the
--- cursor moves further into the window instead - same principle as the old
--- scrolloff clamp, just with a page-sized jump instead of a one-row one.
--- This is also what keeps the LAST page a full ROW_COUNT-row window rather
--- than a short one: scrollOffset can never exceed #listRows - ROW_COUNT, so
--- the window only ever shrinks by never existing (a list shorter than
--- ROW_COUNT), never by trailing off with blank rows at the end of a jump.
---
--- Standalone rather than inlined into controller_select_patch so Phase 2's
--- joystick-driven cursor movement can call it too instead of re-deriving the
--- same clamp arithmetic.
+-- Standalone rather than inlined into controller_select_patch so Phase 2's joystick-driven cursor
+-- movement can call it too instead of re-deriving the same clamp arithmetic.
 function clamp_scroll()
 	local m = SCROLL_MARGIN
 	if cursorIndex - m < scrollOffset then
-		-- Triggered scrolling BACKWARD: land SCROLL_MARGIN rows in from the
-		-- window's LAST row - symmetric with the forward branch below, and
-		-- the one landing spot that is safe from both margins (see
+		-- Triggered scrolling BACKWARD: land SCROLL_MARGIN rows in from the window's LAST row - symmetric
+		-- with the forward branch below, and the one landing spot that is safe from both margins (see
 		-- PAGE_OVERLAP's comment).
 		scrollOffset = cursorIndex - (ROW_COUNT - 1 - m)
 	elseif cursorIndex + m >= scrollOffset + ROW_COUNT then
-		-- Triggered scrolling FORWARD: land SCROLL_MARGIN rows in from the
-		-- window's FIRST row.
+		-- Triggered scrolling FORWARD: land SCROLL_MARGIN rows in from the window's FIRST row.
 		scrollOffset = cursorIndex - m
 	end
 	local maxOffset = math.max(0, #listRows - ROW_COUNT)
@@ -1123,14 +885,13 @@ function clamp_scroll()
 	if scrollOffset < 0 then scrollOffset = 0 end
 end
 
--- Three row states - deliberately fewer than the old four, because the
--- cursor is no longer a colour state at all (see draw_list_row()'s "> "
--- marker below): only what KIND of row it is, and whether it is the active
--- patch, affects colour now. { fr, fg, fb, br, bg, bb } per state - the
--- design doc's colour table. All channel values even (the wire format is
--- 7-bit per channel and halves these, dropping the low bit - odd values
--- silently round), except the conventional 255 used for "fully saturated"
--- throughout this file, which rounds to the same 127 as 254 so costs nothing.
+-- Three row states - deliberately fewer than the old four, because the cursor is no longer a colour
+-- state at all (see draw_list_row()'s '> ' marker below): only what KIND of row it is, and whether
+-- it is the active patch, affects colour now. { fr, fg, fb, br, bg, bb } per state - see
+-- docs/full-functionality-plan.md's colour table. All channel values even (the wire format is 7-bit
+-- per channel and halves these, dropping the low bit - odd values silently round), except the
+-- conventional 255 used for 'fully saturated' throughout this file, which rounds to the same 127 as
+-- 254 so costs nothing.
 ROW_HEADER = 0
 ROW_PATCH  = 1
 ROW_ACTIVE = 2
@@ -1141,53 +902,25 @@ ROW_COLORS = {
 	[ROW_ACTIVE] = {   0,   0,   0, 255, 170,  40 }, -- black on amber: unmistakable at distance
 }
 
--- MARK: - Encoder value popup (show-active-plan-sprightly-moon.md Part B)
+-- MARK: - Encoder value popup
 --
--- Shows a transient panel - "CC <n>" small and dim above, the 0-127 value big and centred, ringed
--- by a 20-segment LED dial - whenever ANY mapped encoder moves, so the value and its wire CC
--- number are visible without a MainStage round-trip. controller_midi_out was confirmed on
--- hardware to report nil name/valueString/color for the mapped CC itself (see the plan's
--- "Superseded 2026-08-27" note) - so this never attempts to show a MainStage parameter name, only
--- the CC number and value, both already known locally via CC_MAP/ENCODER_CC/encoderValue.
+-- Shows a transient panel - 'CC <n>' small and dim above, the 0-127 value big and centred, ringed
+-- by a 20-segment LED dial - whenever ANY mapped encoder moves, so the value and its wire CC number
+-- are visible without a MainStage round-trip. controller_midi_out was confirmed on hardware to
+-- report nil name/valueString/color for the mapped CC itself, so this never attempts to show a
+-- MainStage parameter name, only the CC number and value, both already known locally via
+-- CC_MAP/ENCODER_CC/encoderValue.
 --
--- Revised 2026-08-27 (v3): v1 was a ring with no centred value; v2 (hardware-tested) dropped the
--- ring for a plain amber-filled rect with a centred number, copying the Swift companion app's
--- SLLinkDemoScreen zone panels, but read as "screaming" at full-panel amber. v3 combines both: a
--- calm black panel, an orange ring whose lit-segment count encodes the value at a glance from
--- across the room, AND the exact numeric value legible in the ring's centre.
+-- A genuine full-screen display mode (displayMode == 'popup', alongside 'list'/'zoom'), not a
+-- floating overlay - see set_display_mode's 'popup' branch and paint_popup_screen below. Owning the
+-- whole screen means dismiss_popup() can reuse set_display_mode's proven double-Clear-Screen/
+-- invalidate sequence instead of an ad-hoc redraw, and there is nothing underneath to protect from
+-- overlap. This was not always true - see docs/config-lua-history.md#the-encoder-value-popup-v1-v5
+-- for the v1-v4 visual iteration and the placement trade-off v5's full-screen mode removed.
 --
--- PLACEMENT (superseded by v5 below - kept for history): centred on screen. Chosen over the old
--- top-right corner because no placement is free of both list-mode and zoom-mode's full-width erase
--- rects (both paint_list_screen and paint_zoom_screen's draw_text_with_erase calls erase
--- edge-to-edge), so overlap is unavoidable either way - a centred popup at least reads as a
--- deliberate modal rather than a corner decoration. Accepted trade-off, not fully eliminated:
--- dismiss_popup() (below) only invalidates the popup's OWN ids, never the content it covered, so a
--- stale panel can linger until whatever's underneath next redraws for its own reason (list scroll,
--- patch/set change, or the periodic self-heal repaint). This entire trade-off is now moot as of v5:
--- popup is a full-screen mode via set_display_mode, so dismissal goes through that function's own
--- proven invalidate-and-repaint sequence instead.
---
--- Revised 2026-08-27 (v4): visual pass to match the SL88's own native firmware overlays (e.g. its
--- AUDIO MASTER/ZONE LEVELS screens) rather than v3's original invented "12-segment full-circle
--- dial" look - more/thinner segments (12->20, 6px->3px) for a smoother ring, a 60deg gap centred
--- at the bottom like a real gauge instead of a closed circle, a lighter unlit-track colour (was
--- near-invisible dark grey, now a visible light grey), and a neutral light border colour instead
--- of reusing the ring's orange. Lit colour stays orange - that already matched the reference's
--- active-zone colouring.
---
--- Revised 2026-08-27 (v5): promoted from a small 160x160 card floating OVER the list/zoom content
--- to a genuine full-screen-takeover mode (see set_display_mode's 'popup' branch and
--- paint_popup_screen below) - modelled on the SL88's own native AUDIO MASTER overlay, which
--- occupies nearly the whole screen rather than a corner card. This sidesteps the old placement
--- trade-off entirely (the comment above about "no placement is free of both screens' erase rects"
--- no longer applies - popup mode now owns the whole screen, nothing to overlap) and lets
--- dismiss_popup() reuse set_display_mode's proven double-Clear-Screen/invalidate sequence instead
--- of the old ad-hoc invalidate_all()+paint_screen() pair. Card grown to 280x200 (20px margin on
--- every side of the 320x240 screen) and the ring/value geometry re-derived for the bigger card -
--- see the "Ring geometry" comment below for the new numbers and clearance arithmetic.
 -- How often controller_timer_trigger fires while the popup is up and idle, so
--- POPUP_DISMISS_IDLE_TICKS ticks at roughly this cadence instead of KEEPALIVE_MS's ~3s -
--- see rearm_timer's popupActive branch.
+-- POPUP_DISMISS_IDLE_TICKS ticks at roughly this cadence instead of KEEPALIVE_MS's ~3s - see
+-- rearm_timer's popupActive branch.
 POPUP_TICK_MS = 1000
 
 POPUP_W = 280
@@ -1202,57 +935,36 @@ POPUP_LABEL_Y = POPUP_Y + 12 -- small dim label, above the ring entirely (see ge
 
 POPUP_CENTER_X = POPUP_X + POPUP_W / 2
 -- Ring/value centre deliberately NOT the card's raw vertical midpoint (POPUP_Y + POPUP_H/2 = 120):
--- shifted down to POPUP_Y + 120 = 140 so the label has clear headroom above the ring without
--- shrinking the ring to match a symmetric top/bottom margin it doesn't need (the label only ever
--- occupies the top of the card, so the bottom margin can stay tighter than the top one). See the
--- "Ring geometry" comment below for the resulting clearances.
+-- shifted down so the label has headroom above the ring without shrinking the ring to match a
+-- symmetric top/bottom margin it doesn't need (the label only ever occupies the top of the card).
 POPUP_CENTER_Y = POPUP_Y + 120
 
--- Ring geometry. Radius/segment size/count/sweep chosen so that (a) every segment clears the value
--- text's bounding box below with margin at every angle, (b) every segment clears the panel
--- border's inner edge with margin, and (c) the ring's top edge clears the label's bottom edge with
--- margin - checked programmatically for this exact combination (all 20 segment positions checked
--- against both boxes for rectangle overlap), re-check if any of the numbers below change. The ring
--- no longer closes a full 360deg - POPUP_SWEEP_DEG (300) leaves a 60deg gap centred at the bottom
--- (90deg, i.e. 6 o'clock), gauge-style, matching the SL88's own native overlay screens. Segments
--- are spaced evenly across the sweep via POPUP_SWEEP_DEG / (POPUP_SEG_COUNT - 1) so the first and
--- last segments land exactly on the sweep's two endpoints (120deg and 420deg=60deg), keeping the
--- gap exactly 60deg wide and centred.
+-- Ring geometry. Radius/segment size/count/sweep were chosen so that every one of the 20 segment
+-- positions clears (a) the value text's bounding box, (b) the panel border's inner edge, and (c)
+-- the label's bottom edge - CHECKED PROGRAMMATICALLY for this exact combination (all 20 positions
+-- checked against both boxes for rectangle overlap). RE-RUN THAT CHECK if POPUP_W/POPUP_H/
+-- POPUP_RING_RADIUS/POPUP_SEG_SIZE/POPUP_SEG_COUNT ever change - do not eyeball a replacement. See
+-- docs/config-lua-history.md#popup-ring-geometry-derivation for the numbers and clearances this was
+-- verified against.
 --
--- Radius grown 48->68 and segment size 3->5 for the bigger 280x200 card (v4's 12->20/6->3 pass
--- already fixed the segment COUNT/shape - this keeps that, just scales the two size numbers up
--- for the extra room, per the v5 note above).
---
--- Tightest clearances at this combination (POPUP_SEG_IDS 1 and 20, angles 120deg/60deg, the two
--- segments nearest the bottom of the card, either side of the gap): 15px margin against the panel
--- border's inner edge (x:24-296, y:24-216) - well inside. Tightest value-box clearance (POPUP_SEG_IDS
--- 3 and 18, angles ~135.8deg/~44.2deg, just above the value box's top corners): 9px gap on the
--- separating axis against the value box's x:110-210,y:120-160 - comfortably more margin than the
--- 160x160 card's 1px worst case, since the card grew faster than the ring did. Every other segment
--- clears both boxes by a wider margin still.
+-- The ring does not close a full 360deg - POPUP_SWEEP_DEG (300) leaves a 60deg gap centred at the
+-- bottom (90deg, 6 o'clock), gauge-style. Segments are spaced evenly across the sweep via
+-- POPUP_SWEEP_DEG / (POPUP_SEG_COUNT - 1) so the first and last land exactly on the sweep's two
+-- endpoints, keeping the gap exactly 60deg wide and centred.
 POPUP_RING_RADIUS = 68
 POPUP_SEG_SIZE = 5
 POPUP_SEG_COUNT = 20
 POPUP_SWEEP_DEG = 300 -- full sweep in degrees; the remaining (360 - POPUP_SWEEP_DEG) is the gap
 POPUP_GAP_START_DEG = 270 - POPUP_SWEEP_DEG / 2 -- angle of segment 1 (see loop below)
 
--- Value text: SIZE_BIG, centred in the ring's open middle. 100px wide is comfortably inside the
--- ring's inner clearance (radius 68 minus half the 5px segment size minus slop, ~= 65px either
--- side of centre, i.e. ~130px total) and the box (x:110-210, y:120-160 assuming a big-font glyph
--- height on the order of 40px, unchanged from the previous card size since SIZE_BIG's pixel size
--- is fixed by the firmware, not by this card) clears every segment box per the note above.
+-- Value text: SIZE_BIG, centred in the ring's open middle. Width chosen to clear every segment box
+-- per the geometry note above - re-check alongside the ring if this changes.
 POPUP_VALUE_W = 100
 POPUP_VALUE_X = POPUP_CENTER_X - POPUP_VALUE_W / 2
 POPUP_VALUE_Y = POPUP_CENTER_Y - 20
 
--- Colours: calm black panel (matches this file's existing list-row background convention)
--- instead of v2's full-amber fill; true orange for lit ring segments, deliberately NOT
--- ROW_ACTIVE's amber/gold (255,170,40) so the ring reads as its own distinct "dial" idiom rather
--- than reusing the list's "this is the active row" colour; a light grey for unlit segments so the
--- ring's shape (all 20 positions) is visible even at value=0 (matching the SL88's own native
--- overlay screens, whose ring track reads light grey/white against black); white for the value
--- text so it doesn't visually merge with the orange ring; ROW_PATCH's grey for the label, matching
--- this file's existing dim/recessive-text convention.
+-- Lit ring segments are true orange, deliberately NOT ROW_ACTIVE's amber/gold - the ring reads as
+-- its own 'dial' idiom rather than reusing the list's 'this is the active row' colour.
 POPUP_BG_COLOR = { 0, 0, 0 }
 POPUP_SEG_LIT = { 255, 140, 0 } -- true orange, not amber/gold
 POPUP_SEG_UNLIT = { 180, 180, 180 } -- light grey track, clearly visible against the black panel - matches the SL88's own native overlay screens
@@ -1260,13 +972,13 @@ POPUP_VALUE_FG = { 255, 255, 255 }
 POPUP_LABEL_FG = { ROW_COLORS[ROW_PATCH][1], ROW_COLORS[ROW_PATCH][2], ROW_COLORS[ROW_PATCH][3] }
 POPUP_BORDER_COLOR = { 200, 210, 220 } -- thin light neutral border, matching the native overlay's frame - NOT orange, keep orange exclusive to the ring's active fill
 
---- Segment ids and their (x,y) top-left draw_rect positions, computed ONCE here at load time
---- (not per-draw) via math.cos/math.sin. Segment 1 sits at POPUP_GAP_START_DEG (120deg, just past
---- the gap's bottom-left edge) and segments proceed clockwise across POPUP_SWEEP_DEG, evenly spaced
---- every POPUP_SWEEP_DEG/(POPUP_SEG_COUNT-1) ~= 15.8 degrees, ending at segment 20 on the gap's
---- bottom-right edge (60deg) - a 60deg gap at the bottom (90deg, 6 o'clock), not a full circle.
---- Positions are top-left corners (draw_rect's convention - see msg_draw_rect), i.e. centre-on-circle
---- minus half the segment size.
+-- Segment ids and their (x,y) top-left draw_rect positions, computed ONCE here at load time (not
+-- per-draw) via math.cos/math.sin. Segment 1 sits at POPUP_GAP_START_DEG (120deg, just past the
+-- gap's bottom-left edge) and segments proceed clockwise across POPUP_SWEEP_DEG, evenly spaced
+-- every POPUP_SWEEP_DEG/(POPUP_SEG_COUNT-1) ~= 15.8 degrees, ending at segment 20 on the gap's
+-- bottom-right edge (60deg) - a 60deg gap at the bottom (90deg, 6 o'clock), not a full circle.
+-- Positions are top-left corners (draw_rect's convention - see msg_draw_rect), i.e.
+-- centre-on-circle minus half the segment size.
 POPUP_SEG_IDS = {}
 POPUP_SEG_POS = {}
 for i = 1, POPUP_SEG_COUNT do
@@ -1277,38 +989,26 @@ for i = 1, POPUP_SEG_COUNT do
 	POPUP_SEG_POS[i] = { math.floor(segX), math.floor(segY) }
 end
 
--- Every id this popup ever draws to - what dismiss_popup() invalidates.
-POPUP_REGION_IDS = {
-	'popupBg', 'popupLabel', 'popupValue',
-	'popupBorderTop', 'popupBorderBottom', 'popupBorderLeft', 'popupBorderRight',
-}
-for i = 1, POPUP_SEG_COUNT do
-	table.insert(POPUP_REGION_IDS, POPUP_SEG_IDS[i])
-end
-
 popupActive = false
-popupControl = nil -- CC_MAP key of whichever encoder's popup is currently showing
 -- Cached label/value for the CURRENTLY showing popup, updated by show_popup() and read by
 -- paint_popup_screen() - so a repaint triggered from elsewhere (paint_screen() dispatching to
 -- paint_popup_screen() because displayMode=='popup', or set_display_mode('popup') itself) can
 -- redraw the popup's content without needing the encoder id threaded through every call site.
 popupCcNumber = nil
 popupValue = 0
--- displayMode to restore when the popup dismisses - set by show_popup() to whatever displayMode
--- was BEFORE it switched to 'popup' (only on the transition into showing, never overwritten while
+-- displayMode to restore when the popup dismisses - set by show_popup() to whatever displayMode was
+-- BEFORE it switched to 'popup' (only on the transition into showing, never overwritten while
 -- already active - see show_popup's popupActive guard), consumed once by dismiss_popup().
 popupPreviousMode = nil
 popupLastActivityIdleTick = 0
 
--- Border: same "four non-overlapping edge-strip rects" idiom as the Swift
--- companion app's zone-selection outline (SLLinkDemoScreen.drawZoneBorder) -
--- top/bottom span the panel's full width, left/right span only the strip
--- between them, so no two edges cover the same pixel. The fill (popupBg,
--- below) is inset by the border's thickness so it never overlaps the border
--- either - each id owns pixels no other id touches, per SLLinkDisplay's
--- per-id-memoization rule (see this file's CLAUDE.md). Thickness picked thin
--- enough to stay clear of the ring/value geometry above, which already has
--- >=26px of margin between the ring's outer edge and the panel edge.
+-- Border: same 'four non-overlapping edge-strip rects' idiom as the Swift companion app's
+-- zone-selection outline (SLLinkDemoScreen.drawZoneBorder) - top/bottom span the panel's full
+-- width, left/right span only the strip between them, so no two edges cover the same pixel. The
+-- fill (popupBg, below) is inset by the border's thickness so it never overlaps the border either -
+-- each id owns pixels no other id touches, per SLLinkDisplay's per-id-memoization rule (see this
+-- file's CLAUDE.md). Thickness picked thin enough to stay clear of the ring/value geometry above,
+-- which already has >=26px of margin between the ring's outer edge and the panel edge.
 POPUP_BORDER_THICKNESS = 4
 
 function draw_popup_border()
@@ -1338,9 +1038,9 @@ function draw_popup_value(value)
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
--- Lit-segment count for a 0-127 value: linear scaling by value/127 (NOT value/128), so that
--- value=0 lights 0 segments and value=127 - the actual maximum - lights all 20 exactly, rather
--- than topping out at 19 the way a /128 divisor would (127/128*20 = 19.84, floors to 19).
+-- Lit-segment count for a 0-127 value: linear scaling by value/127 (NOT value/128), so that value=0
+-- lights 0 segments and value=127 - the actual maximum - lights all 20 exactly, rather than topping
+-- out at 19 the way a /128 divisor would (127/128*20 = 19.84, floors to 19).
 function popup_lit_count(value)
 	return math.floor(value * POPUP_SEG_COUNT / 127)
 end
@@ -1356,7 +1056,7 @@ end
 
 -- The popup's own content-painting function, in the same family as paint_zoom_screen()/
 -- paint_list_screen() - dispatched to from set_display_mode('popup') (the mode-switch path, once
--- per popup "session") and from paint_screen() (an ordinary content-driven repaint that lands while
+-- per popup 'session') and from paint_screen() (an ordinary content-driven repaint that lands while
 -- displayMode=='popup', e.g. a patch-name change arriving mid-popup - see paint_screen's 3-way
 -- branch). Reads popupCcNumber/popupValue rather than taking parameters, since both call sites
 -- dispatch generically by mode with no encoder id in hand. Safe to call repeatedly - every draw_*
@@ -1373,27 +1073,17 @@ end
 -- Call from handle_sl_frame's IT_ENCODER branch, right after encoderValue[eid] is updated, for
 -- every eid present in ENCODER_CC (looped there, not hardcoded - see that call site).
 --
--- FIRST call of a popup "session" (popupActive false -> true): remembers the mode to restore later
--- (popupPreviousMode) and runs the full set_display_mode('popup') mode-switch machinery ONCE - the
--- same double-Clear-Screen/drop_queued_display/invalidate_all/sacrificial-redraw sequence
--- 'zoom'/'list' already get, extended to a third mode rather than duplicated (see set_display_mode).
--- That call's own paint dispatch (mode=='popup' -> paint_popup_screen()) does the actual drawing,
--- so this function does not also call it on that path.
---
--- REPEAT calls while already active (continued scrubbing of the same or a different encoder): must
--- NOT re-run set_display_mode() - that would re-send the double Clear Screen and a full invalidate
--- on every single tick, which is wasteful and would likely flicker, defeating the point of this
--- file's per-region memoization. Instead calls paint_popup_screen() directly; its draw_* calls are
--- per-id memoized, so the background/border/label are no-ops past the first draw of a given control
--- (matches while popupControl is unchanged) and only a genuinely new value re-queues the value text
--- and whichever ring segments actually flipped lit/unlit - a DIFFERENT control taking over redraws
--- the label because its CC number differs, satisfying "one popup at a time, last-mover-wins" for
--- free, same as before v5.
+-- FIRST call of a popup 'session' (popupActive false -> true) runs the full
+-- set_display_mode('popup') machinery ONCE, whose own paint dispatch does the drawing. REPEAT calls
+-- (continued scrubbing) must NOT re-run set_display_mode() - that would re-send the double Clear
+-- Screen and a full invalidate on every tick. Instead call paint_popup_screen() directly: its
+-- draw_* calls are per-id memoized, so unchanged content (background/border/label while
+-- popupCcNumber matches) queues nothing and only a genuinely new value re-queues - a DIFFERENT
+-- control taking over redraws the label for free, since its CC number differs.
 function show_popup(eid)
 	local control = ENCODER_CC[eid]
 	if control == nil then return end
 
-	popupControl = control
 	popupCcNumber = CC_MAP[control]
 	popupValue = encoderValue[eid]
 	popupLastActivityIdleTick = idleTicks
@@ -1409,24 +1099,20 @@ function show_popup(eid)
 end
 
 -- ~1s-idle dismissal, quantised to the session clock's existing idle-tick counter (idleTicks,
--- incremented once per timer-tick while nothing is draining - see controller_timer_trigger).
--- While popupActive is true, rearm_timer() (below) arms the tick at POPUP_TICK_MS (~1s) instead of
--- the normal KEEPALIVE_MS (~3s), so POPUP_DISMISS_IDLE_TICKS=1 means "wait one ~1s tick" rather
--- than one ~3s tick - see rearm_timer's popupActive branch for the mechanism. This still reuses
--- the single existing timer rather than adding a second settriggertimer, which risks the same
--- starved-clock/dropped-repaint class of bug this file has already paid for once (see
--- timerPending's banner comment).
+-- incremented once per timer-tick while nothing is draining). While popupActive is true,
+-- rearm_timer() arms the tick at POPUP_TICK_MS (~1s) instead of the normal KEEPALIVE_MS (~3s), so
+-- POPUP_DISMISS_IDLE_TICKS=1 means 'wait one ~1s tick'. This reuses the single existing timer
+-- rather than adding a second settriggertimer, which risks the same starved-clock class of bug rule
+-- 6 in the banner fixes.
 POPUP_DISMISS_IDLE_TICKS = 1
 
--- v5: popup is now a full-screen mode (set_display_mode('popup')), so dismissal is just switching
--- BACK to whatever mode was active before the popup took over - reusing set_display_mode's own
--- proven double-Clear-Screen/drop_queued_display/invalidate_all/sacrificial-redraw sequence rather
--- than the old ad-hoc invalidate_all()+paint_screen() pair. popupActive/popupControl are cleared
--- BEFORE that call so show_popup's "is this a fresh popup" check (popupActive) is already correct
--- if a new popup is triggered again immediately after dismissal.
+-- Popup is a full-screen mode, so dismissal is just switching BACK to whatever mode was active
+-- before it took over - reusing set_display_mode's own proven double-Clear-Screen/
+-- drop_queued_display/invalidate_all/sacrificial-redraw sequence. popupActive is cleared BEFORE
+-- that call so show_popup's 'is this a fresh popup' check is already correct if a new popup is
+-- triggered again immediately after dismissal.
 function dismiss_popup()
 	popupActive = false
-	popupControl = nil
 	set_display_mode(popupPreviousMode)
 end
 
@@ -1437,22 +1123,21 @@ function check_popup_dismiss()
 	end
 end
 
--- Draws list row `i` (0-based, within the visible window) for `row` - one of
--- the flat, normalised listRows entries, or nil past the end of the list.
--- `isCursor` controls only the "> "/"  " marker column, never the colour:
+-- Draws list row `i` (0-based, within the visible window) for `row` - one of the flat, normalised
+-- listRows entries, or nil past the end of the list.
+-- `isCursor` controls only the '> '/'  ' marker column, never the colour:
 -- active state and cursor state are deliberately on separate channels (see
--- the design doc), so there is no combined case to special-case here - a row
--- that is both simply gets ROW_ACTIVE's colours with a "> " prefix, which
--- reads correctly with nothing extra written for it.
+-- docs/full-functionality-plan.md), so there is no combined case to special-case here - a row that
+-- is both simply gets ROW_ACTIVE's colours with a '> ' prefix, which reads correctly with nothing
+-- extra written for it.
 --
--- Every row - including a past-the-end blank one - draws at the SAME x and
--- maxWidth (ROW_X, ROW_MAXW), confirmed on hardware to make Write Text's
--- background fill the whole box (see the design doc's settled-facts table),
--- so every row is self-clearing: no erase rect, ever, on this screen.
--- Indentation is two literal leading spaces in the string, placed AFTER the
--- marker column, never a change to x - that is what keeps every row's
--- background box identical (so highlight bars line up) and the ">" pinned
--- to one character position regardless of row kind.
+-- Every row - including a past-the-end blank one - draws at the SAME x and maxWidth (ROW_X,
+-- ROW_MAXW), confirmed on hardware to make Write Text's background fill the whole box (see
+-- docs/config-lua-history.md#settled-facts-max-width-and-the-write-text-background-box), so every
+-- row is self-clearing: no erase rect, ever, on this screen. Indentation is two literal leading
+-- spaces in the string, placed AFTER the marker column, never a change to x - that is what keeps
+-- every row's background box identical (so highlight bars line up) and the '>' pinned to one
+-- character position regardless of row kind.
 function draw_list_row(i, row, isCursor)
 	local y = ROW_Y0 + ROW_PITCH * i
 	local id = 'row' .. i
@@ -1475,11 +1160,11 @@ function draw_list_row(i, row, isCursor)
 		c[1], c[2], c[3], c[4], c[5], c[6])
 end
 
--- Finds the flat, 0-based listRows index of the currently ACTIVE patch (the
--- one MainStage has loaded - activeSetIndex/activePatchIndex), or 0 if none
--- matches (e.g. before the first real patch selection). Used both to keep
--- cursorIndex tracking the active patch in Phase 1 (controller_select_patch)
--- and to find where the NEXT patch search should start (next_line_text()).
+-- Finds the flat, 0-based listRows index of the currently ACTIVE patch (the one MainStage has
+-- loaded - activeSetIndex/activePatchIndex), or 0 if none matches (e.g. before the first real patch
+-- selection). Used both to keep cursorIndex tracking the active patch in Phase 1
+-- (controller_select_patch) and to find where the NEXT patch search should start
+-- (next_line_text()).
 function find_active_row_index()
 	for i = 1, #listRows do
 		local row = listRows[i]
@@ -1490,13 +1175,13 @@ function find_active_row_index()
 	return 0
 end
 
--- The ACTIVE patch's 1-based ordinal position among patches in its OWN set (activeSetIndex),
--- and that set's total patch count - "patch 3 of 7 in this song", for the zoom screen's zpos
--- line (see paint_zoom_screen()). Counts only listRows entries with isPatch true AND
--- setIndex == activeSetIndex, in listRows order, which is the same order MainStage's own
--- patchlist uses within a set - so this is a real "position in the setlist", not a derived
--- index. Returns 0, 0 if activeSetIndex has no patches (listRows empty, or a state before the
--- first real patch selection), matching the graceful "0/0" this replaced.
+-- The ACTIVE patch's 1-based ordinal position among patches in its OWN set (activeSetIndex), and
+-- that set's total patch count - 'patch 3 of 7 in this song', for the zoom screen's zpos line (see
+-- paint_zoom_screen()). Counts only listRows entries with isPatch true AND setIndex ==
+-- activeSetIndex, in listRows order, which is the same order MainStage's own patchlist uses within
+-- a set - so this is a real 'position in the setlist', not a derived index. Returns 0, 0 if
+-- activeSetIndex has no patches (listRows empty, or a state before the first real patch selection),
+-- matching the graceful '0/0' this replaced.
 function zoom_position_in_set()
 	local pos, total = 0, 0
 	for i = 1, #listRows do
@@ -1509,10 +1194,9 @@ function zoom_position_in_set()
 	return pos, total
 end
 
--- Finds the label of the nearest set header at or before cursorIndex, for
--- the context bar. Phase 1's cursor always sits on a patch row (it tracks
--- the active patch - see controller_select_patch), so this always finds a
--- real header unless the list itself is empty.
+-- Finds the label of the nearest set header at or before cursorIndex, for the context bar. Phase
+-- 1's cursor always sits on a patch row (it tracks the active patch - see controller_select_patch),
+-- so this always finds a real header unless the list itself is empty.
 function cursor_set_label()
 	for i = cursorIndex + 1, 1, -1 do
 		local row = listRows[i]
@@ -1521,43 +1205,33 @@ function cursor_set_label()
 	return ''
 end
 
--- "concert - set": the context bar's content. A plain ASCII hyphen, not the
--- design doc's "·" - the SLMK2 font only covers 0x20-0x80 (see
--- append_text), so a middle dot would render as two spaces.
+-- 'concert - set': the context bar's content. A plain ASCII hyphen, NOT a middle dot - the SLMK2
+-- font only covers 0x20-0x80 (see append_text), so a middle dot would render as two spaces. See
+-- docs/config-lua-history.md#typography-substitutions-non-ascii-glyphs.
 function ctx_text()
 	return currentConcert .. ' - ' .. cursor_set_label()
 end
 
--- The context bar: y=2, dim grey, replacing the old per-set header. In a
--- continuous list you routinely scroll past a set header and lose track of
--- which set you are in - this shows it in one line, and redraws only when
--- its CONTENT changes, for free, via the same per-region memoization every
--- other draw uses here (which is exactly "only when the cursor crosses into
--- a different set", since that is the only thing that can change
--- cursor_set_label()'s result while browsing within a set).
+-- The context bar: y=2, dim grey, replacing the old per-set header. In a continuous list you
+-- routinely scroll past a set header and lose track of which set you are in - this shows it in one
+-- line, and redraws only when its CONTENT changes, for free, via the same per-region memoization
+-- every other draw uses here (which is exactly "only when the cursor crosses into a different set",
+-- since that is the only thing that can change cursor_set_label()'s result while browsing within a
+-- set).
 function draw_ctx()
 	draw_text('ctx', ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 end
 
--- Draws the list screen's current model, memoized per region - repeat calls
--- with nothing changed queue nothing. No trailing sacrificial here - both
--- update_screen and paint_screen add it themselves, after calling this, via
--- queue_sacrificial_redraw() (see that function for why it now covers both
--- paths).
--- FIX 3 AUDIT (2026-08-21 hardware report: "every list line must be left-aligned, including the
--- n/N position counter in the header, which is currently right-aligned"). Every list-mode draw
--- call already passes ALIGN_LEFT - draw_ctx() and draw_list_row() (both the header/context bar
--- and every row, including the blank past-end-of-list row) - so no code change was needed for
--- the alignment itself.
---
--- The n/N counter this report describes DOES NOT EXIST in this codebase's list header: the
--- two-line header with a right-aligned n/N was docs/full-functionality-plan.md's ORIGINAL design
--- (see its "Resolved layout" section), superseded by the single-line ctx bar (draw_ctx(), "concert
--- - set", ALIGN_LEFT) when the list became one continuous interleaved view - see displayMode's
--- declaration and the "Continuous patch list" commit. Flagging rather than guessing: if this is
--- still seen on hardware, the more likely explanation is FIX 5 (stale content left behind by an
--- unreliable mode-switch erase) rather than a genuine list-screen element - worth checking
--- specifically for that on the next run before assuming a counter needs to be added here.
+-- Draws the list screen's current model, memoized per region - repeat calls with nothing changed
+-- queue nothing. No trailing sacrificial here - both update_screen and paint_screen add it
+-- themselves, after calling this, via queue_sacrificial_redraw() (see that function for why it now
+-- covers both paths). Every list-mode draw call passes ALIGN_LEFT (draw_ctx() and draw_list_row(),
+-- including the blank past-end-of-list row) - the single-line ctx bar replaced an older two-line
+-- header with a right-aligned n/N counter, which no longer exists in this codebase. If a
+-- right-aligned counter is ever reported as visible on hardware, suspect stale content from an
+-- unreliable mode-switch erase (see
+-- docs/config-lua-history.md#fix-5-audit-the-first-switch-anomaly) before assuming one needs to be
+-- added here.
 function paint_list_screen()
 	draw_ctx()
 	for i = 0, ROW_COUNT - 1 do
@@ -1567,12 +1241,11 @@ function paint_list_screen()
 	end
 end
 
--- Truncates `text` to at most `maxChars` characters, cutting to
--- maxChars - 3 and appending "..." (plain ASCII full stops - the SLMK2 font
--- only covers 0x20-0x80, see append_text) when it doesn't fit. Used instead
--- of the SL88's own Max Width truncation, which is confirmed broken at
--- SIZE_BIG (see BIG_MAX_CHARS's comment above) - both the patch name and the
--- set name are truncated here in the script and drawn with maxWidth=0.
+-- Truncates `text` to at most `maxChars` characters, cutting to maxChars - 3 and appending '...'
+-- (plain ASCII full stops - the SLMK2 font only covers 0x20-0x80, see append_text) when it doesn't
+-- fit. Used instead of the SL88's own Max Width truncation, which is confirmed broken at SIZE_BIG
+-- (see BIG_MAX_CHARS's comment above) - both the patch name and the set name are truncated here in
+-- the script and drawn with maxWidth=0.
 function truncate_text(text, maxChars)
 	text = text or ''
 	if #text <= maxChars then
@@ -1581,63 +1254,35 @@ function truncate_text(text, maxChars)
 	return text:sub(1, maxChars - 3) .. '...'
 end
 
--- FOUND ON HARDWARE (2026-08-20): a new patch name shorter than the old one
--- left the old name's tail on screen. CAUSE: Write Text's opaque background
--- fills the MAX WIDTH BOX, not the glyph run. zname/zset draw with
--- maxWidth=0 ("print it all" per docs/implementing-sl-link.md) because Max
--- Width truncation is confirmed broken at SIZE_BIG - see BIG_MAX_CHARS's
--- comment, and it is not trusted for SIZE_MEDIUM either - but with
--- maxWidth=0 that box is only as wide as the glyphs actually drawn, so a
--- shorter string can't overwrite what a longer one painted before it.
---
--- FIRST FIX TRIED, AND REJECTED - do not reintroduce it: padding the
--- (already truncate_text()'d) string with spaces out to a CONSTANT character
--- count (BIG_MAX_CHARS/MEDIUM_MAX_CHARS) before drawing, on the theory that a
--- constant character count makes the background box a constant width. Failed
--- on hardware for two independent reasons, both confirmed by eye:
---   1. The SLMK2 font is PROPORTIONAL. N characters of space are
---      pixel-narrower than N characters of the letters they replaced, so a
---      shorter name still left a stale tail - "m.23 A32 Ready patch" ->
---      "m.31 A18 Flutes" left "tch" on screen.
---   2. Padding is symmetric in CHARACTERS, not pixels, so it also broke
---      ALIGN_CENTER's actual centring - the visible glyphs no longer sat
---      centred in the box.
---
--- REAL FIX: draw an explicit black msg_draw_rect over the full band BEFORE
--- the text, sized independently of the string's glyph width, so it clears
--- the whole line regardless of what any previous string painted - see
--- draw_text_with_erase() below.
+-- Write Text's opaque background fills the MAX WIDTH BOX, not the glyph run - so at maxWidth=0
+-- ('print it all') that box is only as wide as the glyphs actually drawn, and a shorter string
+-- can't overwrite what a longer one painted before it. DO NOT 'fix' this by padding the string with
+-- spaces to a constant character count - that was tried and fails for two independent reasons
+-- (proportional font; padding is symmetric in characters, not pixels, so it also breaks
+-- ALIGN_CENTER). See docs/config-lua-history.md#rejected-approaches. The real fix is an explicit
+-- erase rect, below.
 
--- Draws `text` preceded by an explicit black erase rect spanning its full
--- band, sized independently of the string's glyph width - the real fix for
--- the stale-tail/off-centre bug in the comment above. Memoized as ONE region
--- under `id`, using an id..':rect'/id..':text' coalescing-key split
--- (base_region_id() already knows how to unwind it for drop_queued_display),
--- so an unchanged name queues NOTHING and a changed name always queues both
--- halves together, in order. bg is always black to match the erase rect's
--- fill.
+-- Draws `text` preceded by an explicit black erase rect spanning its full band, sized independently
+-- of the string's glyph width - the real fix for the stale-tail/off-centre bug in the comment
+-- above. Memoized as ONE region under `id`, using an id..':rect'/id..':text' coalescing-key split
+-- (base_region_id() already knows how to unwind it for drop_queued_display), so an unchanged name
+-- queues NOTHING and a changed name always queues both halves together, in order. bg is always
+-- black to match the erase rect's fill.
 --
--- The rect and text are two SEPARATE queue_message() calls and therefore two
--- separate flushes under flush_pending's one-display-message-per-tick pacing
--- (see FLUSH_SOON_MS/displayFlushReady) - do NOT try to bundle them into one
--- flush to save the flicker. Two display messages back-to-back in one flush
--- is exactly the pattern that dropped alternating rows on hardware (rule 5
--- in the FIVE RULES banner at the top of this file), and they would not fit
--- anyway: a 21-byte rect plus a max-length Write Text (25 + up to
--- BIG_MAX_CHARS chars) plus the Identification Query flush_pending always
--- reserves room for exceeds FLUSH_BUDGET on its own.
---
--- COST, accepted: one extra message and, at FLUSH_SOON_MS, a ~100ms visible
--- blank band per name change. This is the price of maxWidth=0, itself
--- required because Max Width truncation is broken at SIZE_BIG (see
--- BIG_MAX_CHARS's comment).
--- `x`/`align` as given are used verbatim for ALIGN_LEFT/ALIGN_RIGHT callers. For ALIGN_CENTER,
--- `x` is IGNORED and recomputed here instead - see CHAR_WIDTH_BIG's comment above for why:
--- maxWidth=0 gives the device's own ALIGN_CENTER no area to centre within, so the centred X is
--- estimated in Lua and drawn ALIGN_LEFT, the one deterministic choice at maxWidth=0. The memo
--- tuple below intentionally excludes x/align - both are pure functions of `text`/`size` here
--- (either the caller's fixed values, or the deterministic estimate), so text+colour alone is
--- still sufficient to detect "nothing changed".
+-- The rect and text are two SEPARATE queue_message() calls and therefore two separate flushes under
+-- flush_pending's one-display-message-per-tick pacing (see FLUSH_SOON_MS/displayFlushReady) - do
+-- NOT bundle them into one flush. Two display messages back-to-back in one flush is exactly the
+-- pattern that dropped alternating rows on hardware (rule 5 in the SIX RULES banner), and they
+-- would not fit anyway: a 21-byte rect plus a max-length Write Text plus the Identification Query
+-- flush_pending always reserves room for exceeds FLUSH_BUDGET on its own. Accepted cost: one extra
+-- message and a brief visible blank band per name change - the price of maxWidth=0, itself required
+-- because Max Width truncation is broken at SIZE_BIG. `x`/`align` as given are used verbatim for
+-- ALIGN_LEFT/ALIGN_RIGHT callers. For ALIGN_CENTER, `x` is IGNORED and recomputed here instead -
+-- see CHAR_WIDTH_BIG's comment above for why: maxWidth=0 gives the device's own ALIGN_CENTER no
+-- area to centre within, so the centred X is estimated in Lua and drawn ALIGN_LEFT, the one
+-- deterministic choice at maxWidth=0. The memo tuple below intentionally excludes x/align - both
+-- are pure functions of `text`/`size` here (either the caller's fixed values, or the deterministic
+-- estimate), so text+colour alone is still sufficient to detect 'nothing changed'.
 function draw_text_with_erase(id, text, x, y, align, size, fr, fg, fb, eraseX, eraseY, eraseW, eraseH)
 	local t = { text, fr, fg, fb }
 	if tuple_equal(drawn[id], t, #t) then return end
@@ -1653,42 +1298,11 @@ function draw_text_with_erase(id, text, x, y, align, size, fr, fg, fb, eraseX, e
 	queue_message(msg_write_text(text, drawX, y, 0, drawAlign, size, fr, fg, fb, 0, 0, 0), id .. ':text')
 end
 
--- Governs zset ONLY (renamed from ZSET_ZNEXT_TRUST_MAXWIDTH on 2026-08-21,
--- when znext moved off this flag entirely - see below). SAFE default: false,
--- i.e. zset keeps using draw_text_with_erase() (maxWidth=0, explicit erase
--- rect) exactly like zname. Max Width truncation is only CONFIRMED broken at
--- SIZE_BIG (see BIG_MAX_CHARS's comment) - it has never been tested at
--- SIZE_MEDIUM, which is what zset uses. If a hardware check confirms it
--- truncates correctly at SIZE_MEDIUM too, flip this to true: zset then draws
--- with draw_text() at a real, non-zero maxWidth (self-clearing, like every
--- list row - see draw_list_row()), no erase rect, no truncate_text() call
--- (the device does its own pixel-exact "..." truncation, same as list rows),
--- halving its cost from 2 messages to 1 and removing the ~100ms blank-band
--- flicker on every set change. WHAT TO LOOK FOR on hardware after flipping
--- it: a long set name should truncate cleanly with a trailing "..." (not a
--- single letter, which is the SIZE_BIG failure mode) and a shorter name
--- replacing a longer one must not leave a stale tail. Flip back immediately
--- if either happens.
---
--- znext DELIBERATELY moved off this flag on 2026-08-21 (hardware report: the
--- NEXT line reads as too visually prominent, and every zoom-screen patch
--- change was paying for a second queued message it did not need). It now
--- always draws SIZE_SMALL through the ordinary self-clearing draw_text() path
--- - no truncate_text() call, no erase rect - trusting Max Width
--- unconditionally rather than gating it behind a flag: Max Width truncation
--- is only CONFIRMED broken at SIZE_BIG (see BIG_MAX_CHARS's comment above),
--- and every list row already trusts it at SIZE_SMALL without incident, which
--- is why SIZE_SMALL is the one regime where trusting it needs no hardware
--- check first. This drops znext from 2 queued messages to 1 on every patch
--- change.
-ZSET_TRUST_MAXWIDTH = false
-
--- "NEXT" line for the zoom screen: the next listRows entry after the ACTIVE
--- patch with isPatch true, skipping set headers - i.e. what you are about to
--- change to. The prompt word itself carries whether that patch starts a new
--- song (rather than trying to also fit the set's name on the line), since a
--- song boundary matters more mid-performance than the destination set's
--- name. Returns the no-next form at the end of the concert.
+-- 'NEXT' line for the zoom screen: the next listRows entry after the ACTIVE patch with isPatch
+-- true, skipping set headers - i.e. what you are about to change to. The prompt word itself carries
+-- whether that patch starts a new song (rather than trying to also fit the set's name on the line),
+-- since a song boundary matters more mid-performance than the destination set's name. Returns the
+-- no-next form at the end of the concert.
 function next_line_text()
 	local activeIndex = find_active_row_index()
 	for i = activeIndex + 2, #listRows do
@@ -1698,97 +1312,66 @@ function next_line_text()
 			return word .. '  ' .. row.label
 		end
 	end
-	-- End of the concert: no next patch. An em dash isn't in the SLMK2 font
-	-- range (append_text clamps anything outside 0x20-0x80 to a space), so
-	-- this uses a plain ASCII substitute instead of the design doc's "—".
+	-- End of the concert: no next patch. NOT an em dash - the SLMK2 font range is 0x20-0x80 (see
+	-- append_text) - a plain ASCII substitute instead. See
+	-- docs/config-lua-history.md#typography-substitutions-non-ascii-glyphs.
 	return 'NEXT  --'
 end
 
--- Draws the zoom screen's current model, memoized per region. Shows the
--- ACTIVE patch, not the cursor - "what am I playing right now" - plus, on
--- znext, what you are about to change to.
+-- Draws the zoom screen's current model, memoized per region. Shows the ACTIVE patch, not the
+-- cursor - 'what am I playing right now' - plus, on znext, what you are about to change to. Single
+-- truncated line, not two wrapped lines - wrapping was tried and left stale text on the second line
+-- (see docs/config-lua-history.md#max-width-truncation-broken-at-size_big).
 --
--- REVERTED (2026-08-20) from a two-line wrapped patch name back to one
--- truncated line: on hardware, the multi-line repaint left stale text on the
--- second line when a shorter name replaced a longer one (see BIG_MAX_CHARS's
--- comment).
---
--- zname always truncates itself via truncate_text() and draws through
--- draw_text_with_erase() (maxWidth=0) - Max Width truncation is CONFIRMED
--- broken at SIZE_BIG, so there is no flag for it. zset does the same UNLESS
--- ZSET_TRUST_MAXWIDTH is flipped on (see that flag above), in which case it
--- draws self-clearing at a real maxWidth like list rows. znext (2026-08-21)
--- always draws SIZE_SMALL, self-clearing, at a real maxWidth, unconditionally
--- - see ZSET_TRUST_MAXWIDTH's comment for why it no longer shares zset's flag.
--- Revised layout (design doc): zcnc y=12, zset y=44, zname y=100, znext
--- y=170, zpos y=210 - bands 12-33 / 44-71 / 100-133 / 170-191 / 210-231, all
--- non-overlapping (znext's band shrank from SIZE_MEDIUM's ~27px to
--- SIZE_SMALL's 21px on 2026-08-21, still clear of zname above and zpos
--- below). Retune together with ROW_Y0-style constants if the layout ever
--- moves again.
+-- zname and zset both truncate themselves via truncate_text() and draw through
+-- draw_text_with_erase() (maxWidth=0) - Max Width truncation is CONFIRMED broken at SIZE_BIG and
+-- untested at SIZE_MEDIUM (zset's size), so neither trusts it. znext always draws SIZE_SMALL,
+-- self-clearing, at a real maxWidth, unconditionally. Layout (docs/full-functionality-plan.md):
+-- zcnc y=12, zset y=44, zname y=100, znext y=170, zpos y=210 - bands 12-33 / 44-71 / 100-133 /
+-- 170-191 / 210-231, all non-overlapping. Retune together with ROW_Y0-style constants if the layout
+-- ever moves again.
 function paint_zoom_screen()
 	draw_text('zcnc', currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 
-	if ZSET_TRUST_MAXWIDTH then
-		draw_text('zset', setName, 8, 44, SCREEN_WIDTH - 16, ALIGN_CENTER, SIZE_MEDIUM,
-			110, 170, 230, 0, 0, 0)
-	else
-		draw_text_with_erase('zset', truncate_text(setName, MEDIUM_MAX_CHARS),
-			8, 44, ALIGN_CENTER, SIZE_MEDIUM, 110, 170, 230,
-			0, 44, SCREEN_WIDTH, 27)
-	end
+	-- zset uses maxWidth=0 plus an explicit erase rect: Max Width truncation is confirmed broken at
+	-- SIZE_BIG and untested at SIZE_MEDIUM (zset's size). If hardware ever confirms it works at
+	-- SIZE_MEDIUM, draw_text() at a real maxWidth would halve this to 1 message and drop the flicker.
+	draw_text_with_erase('zset', truncate_text(setName, MEDIUM_MAX_CHARS),
+		8, 44, ALIGN_CENTER, SIZE_MEDIUM, 110, 170, 230,
+		0, 44, SCREEN_WIDTH, 27)
 
 	draw_text_with_erase('zname', truncate_text(patchName, BIG_MAX_CHARS),
 		8, 100, ALIGN_CENTER, SIZE_BIG, 255, 255, 255,
 		0, 100, SCREEN_WIDTH, 33)
 
-	-- SIZE_SMALL + trusted Max Width, unconditionally - no flag, no
-	-- truncate_text(), no erase rect. See ZSET_TRUST_MAXWIDTH's comment for
-	-- why znext no longer shares zset's gated path: SIZE_SMALL is the one
-	-- regime list rows already trust Max Width in, so it needs no hardware
-	-- check first. One queued message instead of two.
+	-- SIZE_SMALL + trusted Max Width, unconditionally - no truncate_text(), no erase rect, unlike
+	-- zname/zset above: SIZE_SMALL is the one regime list rows already trust Max Width in, so it needs
+	-- no hardware check first. One queued message instead of two.
 	draw_text('znext', next_line_text(), 8, 170, SCREEN_WIDTH - 16, ALIGN_CENTER, SIZE_SMALL,
 		80, 200, 120, 0, 0, 0)
 
-	-- n/N: the ACTIVE patch's ordinal position among patches in its OWN set -
-	-- "patch 3 of 7 in this song", matching what the zoom screen actually
-	-- shows (the active set/patch, not the cursor). CHANGED 2026-08-21
-	-- (hardware report): this used to be the cursor's flat position across
-	-- ALL listRows including every other set's headers and patches and every
-	-- OTHER set's rows too - "row 41 of 98" - which does not answer the
-	-- question this counter exists to answer. See zoom_position_in_set().
+	-- n/N: the ACTIVE patch's ordinal position among patches in its OWN set - 'patch 3 of 7 in this
+	-- song', matching what the zoom screen actually shows (the active set/patch, not the cursor - a
+	-- flat position across ALL listRows, 'row 41 of 98', does not answer the question this counter
+	-- exists to answer). See zoom_position_in_set().
 	local n, total = zoom_position_in_set()
 	draw_text('zpos', n .. '/' .. total, 8, 210, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 end
 
--- Ordinary content-driven redraw: draws the current model, memoized per
--- region, and queues NOTHING beyond whatever actually changed (2 messages
--- for a patch change within a set, 9 for a set change, 0 if nothing
--- differs - see the design doc's redraw cost table) PLUS the trailing
--- sacrificial redraw below when anything real was queued, so a patch change
--- costs one more than that table and a set change costs one more still.
--- Used to be documented as deliberately having no trailing sacrificial, on
--- the theory that only the FULL, invalidate_all()-preceded repaint in
--- paint_screen (login, restart, the periodic self-heal) was at risk of
--- losing its last message. That theory doesn't hold: the drop was never
--- shown to depend on message count or size, only on being last in a flush,
--- and an ordinary patch/set change is exactly that shape - a short burst
--- ending in a ROW write. Losing that last message leaves a stale highlight
--- on screen, which is the failure this feature exists to prevent, so the
--- same one-message insurance now applies here too. See
--- queue_sacrificial_redraw() and paint_screen's comment for the finding.
+-- Ordinary content-driven redraw: draws the current model, memoized per region, and queues NOTHING
+-- beyond whatever actually changed (2 messages for a patch change within a set, 9 for a set change,
+-- 0 if nothing differs - see docs/mainstage-integration.md's redraw cost figures) PLUS the trailing
+-- sacrificial redraw below when anything real was queued - see queue_sacrificial_redraw()'s comment
+-- for why this MUST run here too, not only from paint_screen's full repaint.
 --
--- No longer calls drop_queued_display() at the top. That used to be how a
--- newer paint superseded an older, still-undrained one - but it worked by
--- throwing everything away and re-queuing from scratch, which is exactly the
--- treadmill that starved rows under rapid patch changes (see queue_message's
--- coalescing comment). Superseding a stale queued region now happens for
--- free, in place, inside draw_text/draw_row's own queue_message() call.
+-- Does NOT call drop_queued_display() at the top - per-region coalescing in queue_message()
+-- supersedes a stale queued region in place, so nothing needs to be thrown away first. Do not
+-- reintroduce a "drop everything, then re-queue" step here; it starves rows under rapid patch
+-- changes (see queue_message's coalescing comment).
 function update_screen()
-	-- 3-way dispatch (added for the v5 full-screen popup mode) - see paint_screen's identical
-	-- branch for why: this is in fact the more likely place to hit "content change arrives while a
-	-- popup is showing" in practice, since this is the function controller_select_patch() calls on
-	-- every MainStage patch/set change, not paint_screen().
+	-- 3-way dispatch, matching paint_screen's - a content change (patch/set change from MainStage) can
+	-- land while displayMode=='popup' and must redraw the popup's own content, not incorrectly paint
+	-- list/zoom underneath a mode that's still supposed to be showing.
 	local before = queuedDisplayOps
 	if displayMode == 'popup' then
 		paint_popup_screen()
@@ -1800,46 +1383,33 @@ function update_screen()
 	if queuedDisplayOps > before then
 		queue_sacrificial_redraw()
 	end
-	screenDirty = false
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
 	print('[sllink] update queued (' .. #pendingMessages .. ' msgs) mode=' .. displayMode ..
-	      ' "' .. patchName .. '"')
+		' "' .. patchName .. '"')
 end
 
--- Undoes queue_message's id..':rect' / id..':text' split (see draw_row) so
--- drop_queued_display can find its way back to the single drawn[] memo entry
--- both halves share, regardless of which of the two coalescing keys a given
--- queued message actually carries. Plain ids (no backing rect in play) pass
--- through unchanged.
+-- Undoes queue_message's id..':rect' / id..':text' split (see draw_row) so drop_queued_display can
+-- find its way back to the single drawn[] memo entry both halves share, regardless of which of the
+-- two coalescing keys a given queued message actually carries. Plain ids (no backing rect in play)
+-- pass through unchanged.
 function base_region_id(id)
 	return id:match('^(.*):rect$') or id:match('^(.*):text$') or id
 end
 
--- Repaints the screen. The SL88 keeps no display state across Standby, so this
--- is also what a Restart triggers.
--- Drops display messages still sitting in the queue. Used only where the
--- queue's content is genuinely garbage, not merely stale-but-wanted - see
--- set_display_mode, its one remaining caller: switching modes vacates the
--- whole screen, so anything still queued for the outgoing mode cannot be
--- coalesced into anything the new mode will ever draw. update_screen() and
--- paint_screen() no longer call this - per-region coalescing in
--- queue_message() now supersedes stale queued work in place instead of
--- discarding and re-queuing everything, so the "drop everything" step they
--- used to take here is no longer needed for them.
--- Protocol messages (identification, logout, ...) are preserved.
+-- Drops display messages still sitting in the queue. Used only where the queue's content is
+-- genuinely garbage, not merely stale-but-wanted - see set_display_mode, its one remaining caller:
+-- switching modes vacates the whole screen, so anything still queued for the outgoing mode cannot
+-- be coalesced into anything the new mode will ever draw. Protocol messages (identification,
+-- logout, ...) are preserved.
 --
--- FOUND ON HARDWARE: draw_text/draw_rect record drawn[id] the moment they
--- QUEUE a message, not when it is actually sent - but this function can
--- discard that same message before it ever goes out. Left alone, drawn[id]
--- permanently claims the region was painted, so it is never re-queued: the
--- memo and the physical screen diverge for good. This one bug explained
--- three separate symptoms seen on the SL88 - rows that should have reverted
--- from orange to grey staying orange forever, a re-selected row that looked
--- like it "toggled", and rows left blank/black after a repaint raced a drop.
--- Fix: undo the memo for exactly the id(s) this function discards, so the
--- next paint re-queues them. Do not reintroduce "update the memo at queue
--- time" without also undoing it here on drop.
+-- MUST undo the memo for exactly the id(s) it discards (drawn[base_region_id(...)] = nil), so the
+-- next paint re-queues them. draw_text/draw_rect record drawn[id] the moment they QUEUE a message,
+-- not when it is actually sent - without this undo, a message discarded here before it ever goes
+-- out leaves drawn[id] permanently claiming the region was painted, and the memo and the physical
+-- screen diverge for good. Do not reintroduce 'update the memo at queue time' without also undoing
+-- it here on drop. See
+-- docs/config-lua-history.md#drop_queued_display-and-the-memo-vs-screen-divergence-bug.
 function drop_queued_display()
 	local keep = {}
 	for i = 1, #pendingMessages do
@@ -1853,41 +1423,23 @@ function drop_queued_display()
 	pendingMessages = keep
 end
 
--- TRAILING SACRIFICIAL REDRAW, shared by paint_screen and update_screen.
+-- TRAILING SACRIFICIAL REDRAW, shared by paint_screen, update_screen AND set_display_mode - all
+-- three MUST call this after queuing real content.
 --
--- Empirically the FINAL flush of a repaint never takes effect: whichever
--- display message ends up last is silently lost, and swapping the draw
--- order just moves the loss to whatever is now last. It is not about the
--- message's content, size, position, or what it is bundled with - a lone
--- 43-byte Write Text as the last flush is dropped just the same as one
--- paired with a keepalive. Anything with a further transmission after it
--- renders reliably.
+-- Empirically the FINAL flush of a repaint never takes effect: whichever display message ends up
+-- last is silently lost, regardless of content, size, or what it's bundled with - swapping the draw
+-- order just moves the loss to whatever is now last. See
+-- docs/config-lua-history.md#the-trailing-sacrificial-redraw. So end any real screen update with a
+-- harmless duplicate: re-drawing the concert line is idempotent, so it costs one extra message and
+-- is safe to lose, while everything that matters now has something following it. Every caller gates
+-- this on having actually queued something real - an all-memoized no-op call has no 'last real
+-- message' that needs a harmless successor.
 --
--- So end any real screen update with a harmless duplicate. Re-drawing the
--- concert line is idempotent (identical pixels, same coordinates), so it
--- costs one extra message and is safe to lose - which it duly is, while
--- everything that matters now has something following it.
---
--- Originally this lived only at the end of paint_screen's FULL repaint, on
--- the theory that only a full, invalidate_all()-preceded repaint was at
--- risk. That theory doesn't hold - the drop was never shown to depend on
--- message count or size, only on being last - so update_screen calls this
--- too. Both callers gate the call on having actually queued something: an
--- all-memoized no-op call has no "last real message" that needs a harmless
--- successor, so it correctly still queues zero.
---
--- Builds and queues the message DIRECTLY, bypassing draw_text(), and with NO
--- regionId - not an oversight, a requirement now that queue_message()
--- coalesces by regionId. The real ctx/zcnc draw almost always sits earlier
--- in this exact same paint's queue (draw_ctx/paint_zoom_screen run first);
--- routing this through draw_text('ctx', ...) would hand it that SAME
--- regionId and coalesce it into that earlier entry instead of appending a
--- distinct trailing message - collapsing the one thing this mechanism exists
--- to guarantee (a disposable duplicate strictly AFTER everything real) back
--- into whatever position the real draw happened to queue at. A nil regionId
--- always appends (see queue_message), which is exactly "trailing". No memo
--- bookkeeping needed here either: drawn['ctx']/['zcnc'] already holds the
--- correct content from the real draw this call is shadowing.
+-- MUST build and queue the message DIRECTLY, bypassing draw_text(), and with NO regionId. A nil
+-- regionId always appends (see queue_message) - routing this through draw_text('ctx', ...) would
+-- instead hand it the SAME regionId as the real ctx/zcnc draw earlier in this same paint's queue
+-- and coalesce into that entry, collapsing the one thing this mechanism must guarantee (a
+-- disposable duplicate strictly AFTER everything real).
 function queue_sacrificial_redraw()
 	if displayMode == 'zoom' then
 		queue_message(msg_write_text(currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL,
@@ -1898,49 +1450,25 @@ function queue_sacrificial_redraw()
 	end
 end
 
--- FULL repaint: draws everything for the current mode, relying on the
--- caller having invalidated first (handle_login, handle_restart, and the
--- self-heal branch in handle_sl_frame all call invalidate_all() before this)
--- so every region actually resends rather than being skipped as unchanged.
--- Ordinary content-driven updates (a patch/set change from MainStage) go
--- through update_screen() instead, which also ends with
--- queue_sacrificial_redraw() - see that function's comment for why both
--- paths need it.
--- No longer calls drop_queued_display() at the top - see update_screen's
--- comment on the same change. A full, invalidate_all()-preceded repaint just
--- means every region's queue_message() call is guaranteed to find a stale
--- entry to coalesce (if one is still queued) or append fresh (if not);
--- either way nothing needs to be thrown away first.
+-- FULL repaint: draws everything for the current mode, relying on the caller having invalidated
+-- first (handle_login, handle_restart, and the self-heal branch in handle_sl_frame all call
+-- invalidate_all() before this) so every region actually resends rather than being skipped as
+-- unchanged. Ordinary content-driven updates (a patch/set change from MainStage) go through
+-- update_screen() instead, which also ends with queue_sacrificial_redraw() - see that function's
+-- comment for why both paths need it. Does NOT call drop_queued_display() at the top - see
+-- update_screen's comment on why that's unnecessary once invalidate_all() has run.
+--
+-- The SL88 keeps no display state across Standby, so this is also what a Restart triggers.
 function paint_screen()
-	-- NO Clear Screen.
-	--
-	-- With a clear at the head of the repaint, exactly one text line went
-	-- missing every time - but WHICH line varied between runs (patch, then set,
-	-- then concert) even with the message order and flush shape held constant.
-	-- That randomness reads like a race rather than a protocol rule: a
-	-- full-screen fill plausibly takes the SL88 a while, and any text arriving
-	-- while it is still painting gets wiped.
-	--
-	-- The clear is not needed anyway. The spec is explicit that Write Text
-	-- "will completely overwrite any existing content on the screen pixels
-	-- within the area where the text is printed" (docs/display-messages.md), so
-	-- redrawing the same regions is self-cleaning.
+	-- NO Clear Screen here (rule 3 in the banner) - Write Text "completely overwrites any existing
+	-- content on the screen pixels within the area where the text is printed"
+	-- (sl-link/docs/display-messages.md), so redrawing the same regions is self-cleaning. See
+	-- docs/config-lua-history.md#the-clear-screen-ban-and-its-lift for what this ban was protecting
+	-- against.
 
-	-- No longer carries a znameErase step (a black rect over y=80-180, queued
-	-- only from this FULL-repaint path). That rect existed to catch stale
-	-- pixels left by a since-reverted TWO-LINE patch-name layout's second
-	-- line (roughly y=124-157) - a build no longer in this codebase.
-	-- draw_text_with_erase() (see paint_zoom_screen()) now erases zname's own
-	-- band on EVERY draw, full repaint or ordinary update alike, so the
-	-- current single-line layout never needs a separate one-time pass. If a
-	-- keyboard is still showing residue from that old two-line build, one
-	-- manual full-screen clear (e.g. cycle set_display_mode, which paints a
-	-- 0,0-320,240 black rect) clears it for good; that is a one-off migration
-	-- concern, not something worth carrying as permanent code.
-	-- 3-way dispatch (added for the v5 full-screen popup mode): if an ordinary content-driven
-	-- repaint lands while a popup happens to be showing (e.g. a patch change arriving mid-popup),
-	-- this must redraw the POPUP's own content again, not incorrectly repaint list/zoom underneath
-	-- a mode that's still supposed to be showing.
+	-- 3-way dispatch: if an ordinary content-driven repaint lands while a popup happens to be showing
+	-- (e.g. a patch change arriving mid-popup), this must redraw the POPUP's own content again, not
+	-- incorrectly repaint list/zoom underneath a mode that's still supposed to be showing.
 	local before = queuedDisplayOps
 	if displayMode == 'popup' then
 		paint_popup_screen()
@@ -1955,100 +1483,38 @@ function paint_screen()
 		queue_sacrificial_redraw()
 	end
 
-	screenDirty = false
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
 	print('[sllink] paint queued (' .. #pendingMessages .. ' msgs) mode=' .. displayMode ..
-	      ' "' .. patchName .. '"')
+		' "' .. patchName .. '"')
 end
 
--- Mode switching. Wired to the Zoom button (BID_ZOOM, confirmed on hardware -
--- see handle_zoom_button).
+-- Mode switching. Wired to the Zoom button (BID_ZOOM, confirmed on hardware - see
+-- handle_zoom_button).
 --
--- CLEAR SCREEN EXPERIMENT (2026-08-21): this is now the ONE place in the
--- file that sends Clear Screen - see the file-header rule 3 for why it stays
--- banned everywhere else. HARDWARE REPORT: the previous full-screen black
--- msg_draw_rect left visible text remnants of the outgoing screen after a
--- mode switch - either the SL88 ignores/drops a rect that large, or paints
--- it too slowly for the repaint that follows not to race it. Clear Screen's
--- original ban came from a since-superseded finding (one text line missing
--- per repaint, later understood to be the display-pacing bug
--- displayFlushReady fixed - see that flag's declaration), so this is the
--- deliberate re-test now that the pacing bug is fixed, not a reversal of the
--- ban itself. Queued as its own discrete message with no regionId - never
--- coalesced, never bundled into an array with a Write Text, since the old
--- failure mode was always a clear bundled with drawing - and paired with a
--- SETTLE guard (see displaySettleTicks) since a full-screen clear plausibly
--- takes longer to paint than a text line. FALLBACK if remnants or dropped
--- lines return on hardware: revert to the full-screen black
--- msg_draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0) this replaced.
+-- The ONE place in the file that sends Clear Screen (rule 3 in the banner bans it everywhere else).
+-- MUST stay queued as its own discrete message with no regionId - never coalesced, never bundled
+-- into an array with a Write Text - and paired with the SETTLE guard (displaySettleTicks). See
+-- docs/config-lua-history.md#the-clear-screen-ban-and-its-lift for why, and the documented fallback
+-- (a full-screen black msg_draw_rect) if remnants or dropped lines return on hardware.
 --
--- FIX 5 AUDIT (2026-08-21 hardware report: the FIRST switch to list left old
--- text on screen; later switches were fine; switching to zoom was "not always"
--- fine either). Two specific hypotheses were checked and both came back
--- clean, so they are not the cause:
---   - invalidate_all() (called above, before the repaint) unconditionally
---     replaces `drawn` wholesale (drawn = {}), which every draw_text/
---     draw_rect/draw_text_with_erase call consults by id - there is no path
---     by which a list-screen region's memo could survive it.
---   - A blank list row draws an EMPTY string at a REAL, non-zero maxWidth
---     (draw_list_row's row==nil branch, ROW_MAXW) - confirmed on hardware
---     (docs/implementing-sl-link.md, "the text background fills the whole
---     Max Width box... an empty string drawn with a coloured background
---     still painted a visible full-width bar"), so a row going blank DOES
---     paint over whatever was there before; it does not silently no-op.
--- Raised MODE_SWITCH_SETTLE_TICKS (1 -> 3) as the concrete fix for the
--- underlying race this report points at, but WHY specifically the FIRST
--- switch differs from later ones was not pinned down - every switch runs
--- this exact same function, and nothing here branches on "is this the first
--- one". The one candidate not yet ruled out: the FIRST switch follows
--- handle_login()'s own paint_screen() (the initial zoom paint, which unlike
--- this function sends no Clear Screen and has no settle gap before it) with
--- no guarantee that repaint has finished draining - drop_queued_display()
--- above only discards what is still QUEUED, not a message already flushed
--- but possibly still mid-paint on the panel. NEXT HARDWARE RUN: capture
--- /tmp/lua.log across a first-switch and a later-switch and compare
--- has_pending()/draining state (the timer-tick line already prints both) at
--- the moment the Clear Screen for each switch is queued - if the first one
--- is queued while the login repaint is still draining and later ones are
--- not, that timing difference is the lead to follow.
+-- An unexplained 'first switch differs from later ones' anomaly was chased here and not root-caused
+-- - see docs/config-lua-history.md#fix-5-audit-the-first-switch-anomaly before assuming this
+-- function branches correctly on 'is this the first switch' (it doesn't - nothing here does).
 function set_display_mode(mode)
 	if mode ~= 'list' and mode ~= 'zoom' and mode ~= 'popup' then return end
 	displayMode = mode
 	drop_queued_display()
 	invalidate_all()
-	-- DOUBLE CLEAR (2026-08-21 hardware report: mode switches intermittently -
-	-- in BOTH directions, not just the first switch - left old text on
-	-- screen). /tmp/lua.log traced this to flush_pending: it always appends
-	-- the Identification Query to whatever it emits, so this Clear Screen
-	-- goes out bundled with the query in one MIDI array (confirmed: FLUSH #268
-	-- tick=149, 13 Clear Screen bytes + 10 query bytes, one array). That is
-	-- the exact shape already on record as unreliable - see the
-	-- NOTES-STARVE-THE-CLOCK-adjacent finding above controller_timer_trigger's
-	-- send_keepalive() branch: [text, keepalive] in one array was NOT
-	-- rendered, only [display, query] alone or [display] first ever reliably
-	-- painted. So the clear itself is sometimes dropped by the panel, which
-	-- reads back as "old text remains" - not a settle-timing problem
-	-- (MODE_SWITCH_SETTLE_TICKS is fine) but a delivery problem.
-	--
-	-- flush_pending cannot be made to emit this Clear Screen alone: the
-	-- caller that ultimately drains it is sometimes controller_timer_trigger
-	-- itself (tick=149 above IS a timer-tick flush, not an inbound-frame
-	-- one), and that function's own settriggertimer call is a confirmed
-	-- no-op from inside itself - the query's reply landing at
-	-- controller_midi_in is the ONLY thing that re-arms the session clock
-	-- after such a tick (see the SESSION CLOCK note above
-	-- controller_midi_in). Dropping the query from that flush risks
-	-- stalling the clock for up to KEEPALIVE_MS with nothing to rescue it -
-	-- request_quick_rearm() does not run from that call site. So: queue the
-	-- Clear Screen TWICE instead, as two separate messages with no
-	-- regionId (queue_message never coalesces without one - see its
-	-- comment), each earning its own flush. It is idempotent, and a dropped
-	-- copy costs nothing but one extra ~50-70ms flush. flush_pending's
-	-- settle-guard (displaySettleTicks) resets on EVERY Clear Screen it
-	-- emits, so the settle window still lands after the LAST one. Do not
-	-- collapse this back to one queue_message() call - that is exactly the
-	-- unreliable shape this finding is about.
+	-- MUST queue the Clear Screen TWICE, as two SEPARATE messages with no regionId (queue_message
+	-- never coalesces without one), each earning its own flush. Do not collapse this back to one
+	-- queue_message() call. flush_pending always appends the Identification Query to whatever it
+	-- emits, so a single Clear Screen goes out bundled with the query in one MIDI array - confirmed on
+	-- hardware to be an unreliable shape (only [display, query] alone, or [display] first, ever
+	-- reliably painted; see docs/config-lua-history.md#the-double-clear-screen). It is idempotent, and
+	-- a dropped copy costs nothing but one extra flush. flush_pending's settle-guard
+	-- (displaySettleTicks) resets on EVERY Clear Screen it emits, so the settle window still lands
+	-- after the LAST one.
 	queue_message(msg_clear_screen(0, 0, 0))
 	queue_message(msg_clear_screen(0, 0, 0))
 	local before = queuedDisplayOps
@@ -2059,22 +1525,17 @@ function set_display_mode(mode)
 	else
 		paint_list_screen()
 	end
-	-- AUDIT FIX (2026-08-21): this repaint had no trailing sacrificial
-	-- redraw, unlike paint_screen/update_screen - meaning the LAST message of
-	-- a mode switch (zpos in zoom, or the last visible row in list) was
-	-- exposed to the established "final flush of a repaint is silently
-	-- dropped" hardware finding (see queue_sacrificial_redraw's comment).
-	-- Same gate those two callers use: only queue it if this call actually
-	-- queued real content.
+	-- MUST end with the same trailing sacrificial redraw paint_screen/ update_screen use - see
+	-- queue_sacrificial_redraw()'s comment; without it the LAST message of a mode switch (zpos in
+	-- zoom, or the last visible row in list) is exposed to the same "final flush is silently dropped"
+	-- finding. Same gate: only queue it if real content was queued.
 	if queuedDisplayOps > before then
 		queue_sacrificial_redraw()
 	end
-	screenDirty = false
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
-	-- FIX 1 (2026-08-21): always has real content queued (Clear Screen plus a
-	-- guaranteed-non-empty repaint, since invalidate_all() above forces every
-	-- region to resend) - see request_quick_rearm's comment.
+	-- Always has real content queued here (Clear Screen plus a guaranteed-non-empty repaint, since
+	-- invalidate_all() above forces every region to resend) - see request_quick_rearm's comment.
 	request_quick_rearm()
 	print('[sllink] display mode -> ' .. mode)
 end
@@ -2086,62 +1547,49 @@ function start_identification()
 	state = STATE_IDENTIFYING
 	queue_message(msg_identification_request())
 	print('[sllink] -> Identification Request as (' ..
-	      string.format('%02X %02X', SL_HOST_ID, instanceID) .. ') on outport=' .. SL_PORT)
+		string.format('%02X %02X', SL_HOST_ID, instanceID) .. ') on outport=' .. SL_PORT)
 end
 
 function handle_identification_approved()
 	state = STATE_LISTED
-	-- Cleanly cancels any pending reidentify-wait: this instanceID is now
-	-- confirmed good, so a LATER rejection (a fresh re-init down the line)
-	-- should get the full retry budget again, not whatever was left over.
+	-- Cleanly cancels any pending reidentify-wait: this instanceID is now confirmed good, so a LATER
+	-- rejection (a fresh re-init down the line) should get the full retry budget again, not whatever
+	-- was left over.
 	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
 	print('[sllink] <- IDENTIFICATION APPROVED as ' ..
-	      string.format('%02X %02X', SL_HOST_ID, instanceID) ..
-	      ' - now in the SL88 APP list; select it there to activate')
+		string.format('%02X %02X', SL_HOST_ID, instanceID) ..
+		' - now in the SL88 APP list; select it there to activate')
 end
 
--- Reason 0x00 = DeviceID taken/reserved.
---
--- docs/mainstage-integration.md "Open issues": on a MainStage-driven
--- re-init, this rejection usually means the SL88 is still holding OUR OWN
--- previous incarnation's registration under this same instanceID (no Logout
--- Request was sent - controller_finalize has no return path). Bumping to a
--- new id immediately would "solve" the rejection by registering as a
--- DIFFERENT app, silently losing the user's APP-list selection.
---
--- So: wait out REIDENTIFY_WAIT_MS (longer than the keyboard's ~5s host
--- timeout) for that stale registration to expire, then retry the SAME id -
--- reclaiming our own identity rather than creating a new one. Only after
--- MAX_SAME_ID_RETRIES failed retries (by then a genuine collision, e.g. the
--- OTHER script instance, which is actually alive and keepaliving and will
--- reject us every time) fall back to bumping the instance byte, as before.
+-- Reason 0x00 = DeviceID taken/reserved - usually OUR OWN previous incarnation's still-live
+-- registration after a MainStage-driven re-init (see REIDENTIFY_WAIT_MS's comment for why bumping
+-- the id immediately would be wrong here). Wait out REIDENTIFY_WAIT_MS and retry the SAME id first;
+-- only fall back to bumping the instance byte after MAX_SAME_ID_RETRIES failed retries. See
+-- docs/config-lua-history.md#identification-and-instance-id-collisions.
 function handle_identification_rejected(reason)
 	print('[sllink] <- IDENTIFICATION REJECTED (reason ' ..
-	      string.format('%02X', reason or 0) .. ') for instance ' ..
-	      string.format('%02X', instanceID))
+		string.format('%02X', reason or 0) .. ') for instance ' ..
+		string.format('%02X', instanceID))
 
 	if reidentifyRetriesLeft > 0 then
 		reidentifyRetriesLeft = reidentifyRetriesLeft - 1
 		state = STATE_REIDENTIFY_WAIT
-		-- Not rearm_timer() - this must WIN over the FLUSH_SOON_MS/KEEPALIVE_MS
-		-- that inbound traffic would otherwise re-arm it to (see rearm_timer's
-		-- STATE_REIDENTIFY_WAIT guard, which is what stops that overwrite from
-		-- happening on every subsequent inbound frame during the wait).
+		-- Not rearm_timer() - this must WIN over the FLUSH_SOON_MS/KEEPALIVE_MS that inbound traffic
+		-- would otherwise re-arm it to (see rearm_timer's STATE_REIDENTIFY_WAIT guard, which is what
+		-- stops that overwrite from happening on every subsequent inbound frame during the wait).
 		settriggertimer(REIDENTIFY_WAIT_MS)
-		-- This call genuinely arms a fresh one-shot (unlike
-		-- controller_timer_trigger's own top-of-function call - see
-		-- timerPending's declaration), so timerPending must reflect that: keeps
-		-- rearm_timer's gating honest once the wait ends and normal inbound
-		-- traffic resumes calling it.
+		-- This call genuinely arms a fresh one-shot (unlike controller_timer_trigger's own
+		-- top-of-function call - see timerPending's declaration), so timerPending must reflect that:
+		-- keeps rearm_timer's gating honest once the wait ends and normal inbound traffic resumes calling
+		-- it.
 		timerPending = true
-		-- Not KEEPALIVE_MS: request_quick_rearm() must never shorten THIS wait
-		-- (see its own STATE_REIDENTIFY_WAIT guard, which is belt-and-suspenders
-		-- for the same reason - this value alone already keeps its
-		-- `timerArmedInterval == KEEPALIVE_MS` check from matching).
+		-- Not KEEPALIVE_MS: request_quick_rearm() must never shorten THIS wait (see its own
+		-- STATE_REIDENTIFY_WAIT guard, which is belt-and-suspenders for the same reason - this value
+		-- alone already keeps its `timerArmedInterval == KEEPALIVE_MS` check from matching).
 		timerArmedInterval = REIDENTIFY_WAIT_MS
 		print('[sllink] re-identify retry ' ..
-		      (MAX_SAME_ID_RETRIES - reidentifyRetriesLeft) .. '/' .. MAX_SAME_ID_RETRIES ..
-		      ' as (' .. string.format('%02X %02X', SL_HOST_ID, instanceID) .. ')')
+			(MAX_SAME_ID_RETRIES - reidentifyRetriesLeft) .. '/' .. MAX_SAME_ID_RETRIES ..
+			' as (' .. string.format('%02X %02X', SL_HOST_ID, instanceID) .. ')')
 		return
 	end
 
@@ -2149,17 +1597,16 @@ function handle_identification_rejected(reason)
 	if instanceID > 0x7E then instanceID = 0x10 end
 	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
 	print('[sllink] bumping instance to ' ..
-	      string.format('%02X %02X', SL_HOST_ID, instanceID) .. ' after ' ..
-	      MAX_SAME_ID_RETRIES .. ' failed retries')
+		string.format('%02X %02X', SL_HOST_ID, instanceID) .. ' after ' ..
+		MAX_SAME_ID_RETRIES .. ' failed retries')
 	start_identification()
 end
 
 function handle_login()
 	state = STATE_ACTIVE
 	print('[sllink] <- LOGIN - session active')
-	-- Fresh/re-confirmed session: make sure everything is resent rather than
-	-- trusting our memo, which may record draws sent before the keyboard had
-	-- actually identified/confirmed us.
+	-- Fresh/re-confirmed session: make sure everything is resent rather than trusting our memo, which
+	-- may record draws sent before the keyboard had actually identified/confirmed us.
 	invalidate_all()
 	paint_screen()
 end
@@ -2172,9 +1619,8 @@ end
 function handle_restart()
 	state = STATE_ACTIVE
 	print('[sllink] <- RESTART - repainting (SL88 retains no screen state)')
-	invalidate_all() -- SLLinkDisplay.swift: the SLMK2 forgets everything across Standby;
-	                  -- without this every id's memo would wrongly think its last
-	                  -- content is still on screen and skip resending it.
+	invalidate_all() -- SLLinkDisplay.swift: the SLMK2 forgets everything across Standby; without this
+		-- every id's memo would wrongly think its last content is still on screen and skip resending it.
 	paint_screen()
 end
 
@@ -2189,10 +1635,9 @@ function send_keepalive()
 end
 
 -- True if a Device Notification is already queued and not yet flushed. See
--- controller_timer_trigger's unconditional-keepalive comment for why this
--- guard exists: protocol messages are never coalesced by queue_message, so
--- calling send_keepalive() on every tick without this check would pile up a
--- duplicate behind an already-queued-but-undrained keepalive.
+-- controller_timer_trigger's unconditional-keepalive comment for why this guard exists: protocol
+-- messages are never coalesced by queue_message, so calling send_keepalive() on every tick without
+-- this check would pile up a duplicate behind an already-queued-but-undrained keepalive.
 function has_keepalive_queued()
 	for i = 1, #pendingMessages do
 		local m = pendingMessages[i]
@@ -2205,13 +1650,13 @@ end
 
 -- MARK: - Inbound decoding
 --
--- controller_midi_in receives the SL88's traffic, SysEx included (the VAX77
--- reference matches F0 in its own controller_midi_in the same way).
+-- controller_midi_in receives the SL88's traffic, SysEx included (the VAX77 reference matches F0 in
+-- its own controller_midi_in the same way).
 
 function is_our_sl_frame(e)
 	return e[0] == 0xF0
-	   and e[1] == 0x00 and e[2] == 0x20 and e[3] == 0x1A and e[4] == 0x16
-	   and e[5] == SL_HOST_ID and e[6] == instanceID
+		and e[1] == 0x00 and e[2] == 0x20 and e[3] == 0x1A and e[4] == 0x16
+		and e[5] == SL_HOST_ID and e[6] == instanceID
 end
 
 function handle_sl_frame(e)
@@ -2224,19 +1669,17 @@ function handle_sl_frame(e)
 		elseif func == ID_REJECTED then
 			handle_identification_rejected(e[9])
 		elseif func == ID_QUERY then
-			-- The reply to our own keepalive query. Receiving it is what
-			-- re-arms the timer, but its result byte is also the most reliable
-			-- session signal we get - far more dependable than waiting for a
-			-- LOGIN CONFIRMATION, which the keyboard only sends on a *fresh*
-			-- login and skips entirely if it still remembers us.
+			-- The reply to our own keepalive query. Receiving it is what re-arms the timer, but its result
+			-- byte is also the most reliable session signal we get - far more dependable than waiting for a
+			-- LOGIN CONFIRMATION, which the keyboard only sends on a *fresh* login and skips entirely if it
+			-- still remembers us.
 			if e[9] == 0x00 then
 				print('[sllink] <- query: not identified; re-identifying')
 				state = STATE_IDLE
 				start_identification()
 			else
-				-- Identified. Treat this as "the session is up" regardless of
-				-- whether we ever saw APPROVED/LOGIN, and make sure the screen
-				-- actually reflects the current patch.
+				-- Identified. Treat this as 'the session is up' regardless of whether we ever saw
+				-- APPROVED/LOGIN, and make sure the screen actually reflects the current patch.
 				if state == STATE_IDENTIFYING or state == STATE_LISTED then
 					state = STATE_ACTIVE
 				end
@@ -2244,11 +1687,9 @@ function handle_sl_frame(e)
 					local stale = (lastPaintedPatch ~= patchName)
 					local due = (idleTicks - lastPaintTick) >= REPAINT_EVERY_IDLE_TICKS
 					if due then
-						-- Memoization means an unchanged repaint would emit ZERO
-						-- messages and heal nothing, defeating the entire point of
-						-- this periodic repaint (the SL88 wipes its own screen on
-						-- APP-list selection with no reliable signal for it) -
-						-- force every region to resend.
+						-- Memoization means an unchanged repaint would emit ZERO messages and heal nothing, defeating
+						-- the entire point of this periodic repaint (the SL88 wipes its own screen on APP-list
+						-- selection with no reliable signal for it) - force every region to resend.
 						invalidate_all()
 					end
 					if stale or due then paint_screen() end
@@ -2301,31 +1742,28 @@ function handle_sl_frame(e)
 	end
 end
 
--- SHORT toggles the display mode; LONG forces a full repaint of whichever
--- mode is currently showing. LONG must never be silently dropped - the
--- project rule (see CLAUDE.md's demo-screen interaction model: LONG_PRESSION
--- is confirmed delivered on real hardware, and every button case must give
--- it a distinct effect or run the same action as SHORT) - so it gets its
--- own, always-safe effect: a manual on-demand version of the periodic
--- self-heal repaint above (paint_screen() after invalidate_all()), useful if
--- the SL88's screen has drifted from what the script thinks it last painted.
+-- SHORT toggles the display mode; LONG forces a full repaint of whichever mode is currently
+-- showing. LONG must never be silently dropped - the project rule (see CLAUDE.md's demo-screen
+-- interaction model: LONG_PRESSION is confirmed delivered on real hardware, and every button case
+-- must give it a distinct effect or run the same action as SHORT) - so it gets its own, always-safe
+-- effect: a manual on-demand version of the periodic self-heal repaint above (paint_screen() after
+-- invalidate_all()), useful if the SL88's screen has drifted from what the script thinks it last
+-- painted.
 --
--- v5 popup interaction: SHORT's plain (displayMode=='zoom') and 'list' or 'zoom' toggle assumes
--- displayMode is one of exactly those two - false while a popup is showing (displayMode=='popup'),
--- where it would compute newMode='zoom' regardless of what was actually showing before the popup,
--- ignoring popupPreviousMode and leaving popupActive/popupControl stale-true while displayMode has
--- already moved on. Simplest safe choice: treat a Zoom-button SHORT while a popup is up as "dismiss
--- the popup" rather than a raw list<->zoom toggle - dismiss_popup() already restores
--- popupPreviousMode via set_display_mode, which is exactly the mode the toggle would otherwise need
--- to reason about. LONG needs no special case: invalidate_all()+paint_screen() already redraws
--- whatever displayMode currently is, popup included, via paint_screen's 3-way dispatch.
+-- Popup interaction: the plain SHORT toggle ('list' <-> 'zoom') assumes displayMode is one of
+-- exactly those two - false while a popup is showing, where it would compute newMode='zoom'
+-- regardless of what was showing before the popup, ignoring popupPreviousMode and leaving
+-- popupActive stale-true. So a Zoom-button SHORT while a popup is up must instead dismiss the popup
+-- - dismiss_popup() already restores popupPreviousMode via set_display_mode. LONG needs no special
+-- case: invalidate_all()+paint_screen() already redraws whatever displayMode currently is, popup
+-- included, via paint_screen's 3-way dispatch.
 function handle_zoom_button(pressKind)
 	if pressKind == PRESS_LONG then
 		print('[sllink] <- BUTTON zoom LONG - forcing full repaint of mode=' .. displayMode)
 		invalidate_all()
 		paint_screen()
-		-- FIX 1 (2026-08-21): invalidate_all() above guarantees this repaint
-		-- queues real content - see request_quick_rearm's comment.
+		-- invalidate_all() above guarantees this repaint queues real content - see request_quick_rearm's
+		-- comment.
 		request_quick_rearm()
 	elseif displayMode == 'popup' then
 		print('[sllink] <- BUTTON zoom SHORT - dismissing popup (mode=popup)')
@@ -2341,11 +1779,10 @@ end
 
 function controller_initialize(applicationName, deviceNewlyDetected)
 	settriggertimer(KEEPALIVE_MS)
-	-- This is the very first arm for a fresh script instance - nothing was
-	-- outstanding before it, and this call genuinely arms a timer (unlike
-	-- controller_timer_trigger's own top-of-function call), so timerPending
-	-- must say so or the first rearm_timer() from inbound traffic would
-	-- wrongly re-arm on top of it.
+	-- This is the very first arm for a fresh script instance - nothing was outstanding before it, and
+	-- this call genuinely arms a timer (unlike controller_timer_trigger's own top-of-function call),
+	-- so timerPending must say so or the first rearm_timer() from inbound traffic would wrongly re-arm
+	-- on top of it.
 	timerPending = true
 	timerArmedInterval = KEEPALIVE_MS
 	state = STATE_IDLE
@@ -2375,16 +1812,12 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	return flush_pending()
 end
 
--- NOTE: deliberately does NOT send a Logout Request.
---
--- MainStage tears this script down and re-initialises it repeatedly (observed:
--- init -> finalize -> init -> ... within seconds, partly because the script is
--- loaded once per matched USB-MIDI interface). An earlier version sent a
--- Logout Request here, which meant every one of those spurious teardowns
--- actively removed us from the SL88's APP list - guaranteeing the "showed up
--- briefly, then disappeared" symptom. Staying quiet lets the entry survive a
--- churn; if the script really is going away for good, the keyboard's own ~5s
--- keepalive timeout removes us anyway.
+-- MUST NOT send a Logout Request. MainStage tears this script down and re-initialises it repeatedly
+-- (init -> finalize -> init -> ... within seconds - partly because the script is loaded once per
+-- matched USB-MIDI interface). A Logout Request here actively removes the app from the SL88's APP
+-- list on every one of those spurious teardowns. Staying quiet lets the entry survive a churn; if
+-- the script really is going away for good, the keyboard's own ~5s keepalive timeout removes it
+-- anyway. See docs/config-lua-history.md#controller_finalize-sends-no-logout-request.
 function controller_finalize()
 	print('[sllink] controller_finalize (no logout sent - see note)')
 	pendingMessages = {}
@@ -2392,146 +1825,84 @@ function controller_finalize()
 	return nil
 end
 
--- Periodic. Re-arms itself so it keeps firing for as long as the device stays
--- selected. This is the only clock the session has, so the keepalive cadence
--- depends on it.
+-- Periodic. Re-arms itself so it keeps firing for as long as the device stays selected. This is the
+-- only clock the session has, so the keepalive cadence depends on it.
 timerTicks = 0
 
 function controller_timer_trigger()
-	-- The one-shot has just fired, so nothing is outstanding any more - clear
-	-- this BEFORE the settriggertimer call below, which (per the SESSION
-	-- CLOCK note further down, established on hardware) does NOT actually
-	-- re-arm anything when called from inside this function. Leaving
-	-- timerPending false here is what is factually correct AND what lets the
-	-- real re-arm - rearm_timer(), from the next inbound frame, almost always
-	-- the reply to the Identification Query this function's own return
-	-- flushes - go ahead instead of being gated out by a flag claiming a
+	-- The one-shot has just fired, so nothing is outstanding any more - clear this BEFORE the
+	-- settriggertimer call below, which (per the SESSION CLOCK note further down, established on
+	-- hardware) does NOT actually re-arm anything when called from inside this function. Leaving
+	-- timerPending false here is what is factually correct AND what lets the real re-arm -
+	-- rearm_timer(), from the next inbound frame, almost always the reply to the Identification Query
+	-- this function's own return flushes - go ahead instead of being gated out by a flag claiming a
 	-- timer is already pending when none actually is.
 	timerPending = false
 	settriggertimer(KEEPALIVE_MS)
 	timerTicks = timerTicks + 1
 
-	-- DEFECT A FIX: grant this tick's one-display-message permit. See
-	-- displayFlushReady's declaration for why this exists and what it fixes.
-	-- If nothing is queued this tick simply arrives and leaves unconsumed -
-	-- harmless, and means the next thing queued gets to go out immediately
-	-- rather than waiting for a tick it had nothing to do with.
-	--
-	-- CLEAR SCREEN SETTLE GUARD (2026-08-21, see displaySettleTicks'
-	-- declaration and set_display_mode's comment): withhold this tick's
-	-- grant while a Clear Screen is still settling, so the draw that follows
-	-- one gets roughly two tick periods of quiet instead of one. Protocol
-	-- messages and the trailing Identification Query are unaffected - they
-	-- are never gated by displayFlushReady in the first place (see
-	-- flush_pending's comment) - so the session clock keeps running through
-	-- the settle regardless.
+	-- Grant this tick's one-display-message permit (see displayFlushReady's declaration). Withhold it
+	-- while a Clear Screen is still settling (displaySettleTicks), so the draw that follows one gets
+	-- roughly two tick periods of quiet instead of one. Protocol messages and the trailing
+	-- Identification Query are never gated by displayFlushReady, so the session clock keeps running
+	-- through the settle regardless.
 	if displaySettleTicks > 0 then
 		displaySettleTicks = displaySettleTicks - 1
 	else
 		displayFlushReady = true
 	end
-	-- Only ticks that arrive at the full keepalive cadence count towards the
-	-- periodic refresh; fast drain ticks must not.
+	-- Only ticks that arrive at the full keepalive cadence count towards the periodic refresh; fast
+	-- drain ticks must not.
 	local draining = has_pending()
 	if not draining then idleTicks = idleTicks + 1 end
 	check_popup_dismiss()
-	-- CADENCE INSTRUMENTATION (2026-08-21): pending/draining here, plus this
-	-- tick's number, is what lets a captured hardware log (LUA_DEBUG ->
-	-- /tmp/lua.log, timestamped at capture time - see the FLUSH_SOON_MS sweep
-	-- comment below for the reduction one-liner) be read as "N drain ticks
-	-- elapsed while M messages went out": pair this line's tick number against
-	-- the `tick=` field the FLUSH print (below, in flush_pending) now carries.
-	-- No new print statements - this is the existing tick line, extended.
+	-- `tick=`/`pending=`/`draining=` here let a captured hardware log be read as 'N drain ticks
+	-- elapsed while M messages went out' - pair against the `tick=` field flush_pending's own FLUSH
+	-- print carries.
 	print('[sllink] timer tick #' .. timerTicks .. ' (idle ' .. idleTicks .. ') state=' .. state ..
-	      ' pending=' .. #pendingMessages .. ' draining=' .. tostring(draining))
+		' pending=' .. #pendingMessages .. ' draining=' .. tostring(draining))
 
-	-- Keepalive UNCONDITIONALLY once we have sent an Identification Request.
-	--
-	-- Originally this only fired in LISTED/ACTIVE, i.e. only after seeing an
-	-- IDENTIFICATION APPROVED come back. That stalled: if the keyboard still
-	-- remembers us from a previous run it sends neither APPROVED nor LOGIN, so
-	-- the state machine sat in IDENTIFYING, no keepalive went out, and the
-	-- entry aged out of the APP list after ~5s - "MainStage showed up briefly,
-	-- then disappeared". (SysEx *is* delivered to controller_midi_in; an
-	-- earlier note here claiming otherwise was wrong. The query reply is the
-	-- reliable session signal - see handle_sl_frame's ID_QUERY branch.)
-	--
-	-- So announce ourselves regardless of what we have observed. Harmless if
-	-- the keyboard already has us logged in, and it is what keeps us listed if
-	-- it does not.
+	-- Announce unconditionally once an Identification Request has been sent, regardless of what we've
+	-- observed back: if the keyboard still remembers us from a previous run it sends neither APPROVED
+	-- nor LOGIN, so gating this on having seen APPROVED first stalls the state machine in IDENTIFYING
+	-- with no keepalive going out - the entry ages out of the APP list after ~5s. The query reply is
+	-- the reliable session signal (see handle_sl_frame's ID_QUERY branch), not APPROVED/LOGIN.
 	if state == STATE_IDLE then
 		start_identification()
 	elseif state == STATE_REIDENTIFY_WAIT then
-		-- This tick firing at all means REIDENTIFY_WAIT_MS actually elapsed
-		-- (rearm_timer() refuses to shorten it while waiting - see there), so
-		-- this is the retry, not an ordinary keepalive tick. Falling through
-		-- to the send_keepalive() branch below would be wrong here: it would
-		-- announce the still-rejected instanceID instead of retrying it.
+		-- This tick firing at all means REIDENTIFY_WAIT_MS actually elapsed (rearm_timer() refuses to
+		-- shorten it while waiting - see there), so this is the retry, not an ordinary keepalive tick.
+		-- Falling through to the send_keepalive() branch below would be wrong here: it would announce the
+		-- still-rejected instanceID instead of retrying it.
 		start_identification()
 	else
-		-- SECOND FIX, same hardware session as rule 6 (2026-08-20): send the
-		-- keepalive UNCONDITIONALLY on every keepalive-cadence tick, even
-		-- while display work is still queued.
+		-- MUST send the keepalive UNCONDITIONALLY on every keepalive-cadence tick, even while display
+		-- work is still queued - do not gate this on `not has_pending()`. A display message paces at one
+		-- per tick (displayFlushReady), so a multi-message repaint can leave has_pending() true for
+		-- several ticks in a row; gating the keepalive on an empty queue starves it for the whole
+		-- repaint, an independent route to the same ~5s APP-list timeout rule 6 fixes. See
+		-- docs/config-lua-history.md#the-unconditional-keepalive for the measurement that ruled out the
+		-- alternative (bundling the keepalive into the same array as a Write Text, which the SL88
+		-- discards).
 		--
-		-- This used to be gated on `not has_pending()`, on the theory that
-		-- bundling a System Device Notification (00/00) into the same array
-		-- as a Write Text makes the SL88 discard the drawing - measured
-		-- repeatedly, a repaint drained as
-		--     F1 [clear, text]            -> rendered
-		--     F2 [text, query 7F/03]      -> rendered
-		--     F3 [text, keepalive 00/00]  -> NOT rendered
-		-- That finding is still true and still matters, but gating the
-		-- keepalive on an EMPTY queue was the wrong fix for it: a display
-		-- message paces at one per tick (displayFlushReady), so a multi-
-		-- message repaint can leave has_pending() true for several ticks in a
-		-- row - and for every one of those ticks, no keepalive went out
-		-- either. That is a second, independent route to the exact same ~5s
-		-- APP-list timeout rule 6 fixes: a mid-repaint session could starve
-		-- the keepalive without a single note being played.
-		--
-		-- This is safe to do unconditionally because send_keepalive() queues
-		-- a PROTOCOL message (itemType IT_SYSTEM, regionId nil), and
-		-- flush_pending never gates non-display messages behind
-		-- displayFlushReady - they dequeue every flush regardless, jumping
-		-- ahead of any display backlog sitting in front of them if necessary
-		-- (see flush_pending's DEFECT B FIX comment: it scans past a gated
-		-- display message at the head to find the first protocol message,
-		-- rather than only ever looking at the head). So a keepalive never
-		-- waits for, or consumes, the one-display-message-per-tick permit a
-		-- Write Text needs - it neither competes with the repaint's own
-		-- pacing nor risks reintroducing the bundled-drop finding above (it
-		-- is queued as its own discrete message, never appended into the
-		-- same array as a Write Text).
-		--
-		-- has_keepalive_queued() guards against PILE-UP: protocol messages
-		-- are deliberately never coalesced by queue_message (two
-		-- Identification Queries must both survive - see queue_message's
-		-- comment), so without this guard a keepalive that is queued but not
-		-- yet flushed would get ANOTHER one appended behind it on every
-		-- subsequent tick, growing without bound. flush_pending's scan-
-		-- forward fix now lets a queued keepalive jump ahead of a display
-		-- backlog and go out on the very next flush rather than waiting for
-		-- the whole backlog to drain, but it still emits at most one queued
-		-- message per flush - this guard is what stops a rarer same-tick or
-		-- budget-miss race from ever growing the queue.
+		-- Safe unconditionally because send_keepalive() queues a PROTOCOL message (itemType IT_SYSTEM,
+		-- regionId nil), and flush_pending never gates non-display messages behind displayFlushReady -
+		-- they jump ahead of any display backlog if necessary (flush_pending's scan-forward fix).
+		-- has_keepalive_queued() guards against PILE-UP: protocol messages are deliberately never
+		-- coalesced, so without this guard a keepalive queued-but-not-yet-flushed would get another one
+		-- appended behind it on every subsequent tick, growing without bound.
 		if not has_keepalive_queued() then
 			send_keepalive()
 		end
 	end
 
-	if screenDirty then
-		paint_screen()
-	end
-
-	-- Also send an Identification Query. Its only purpose is to make the
-	-- keyboard send something back: `settriggertimer` is a ONE-SHOT that
-	-- cannot be re-armed from inside this callback (established on hardware,
-	-- see the SESSION CLOCK note above controller_midi_in), so the only thing
-	-- that keeps the clock running is inbound MIDI arriving at
-	-- controller_midi_in. The query's reply is that inbound event, which
-	-- re-arms the timer and schedules the next tick - a self-sustaining
-	-- request/response heartbeat that does not depend on anyone playing.
-	-- flush_pending appends the query itself and reserves budget for it.
+	-- Also send an Identification Query. Its only purpose is to make the keyboard send something back:
+	-- `settriggertimer` is a ONE-SHOT that cannot be re-armed from inside this callback (established
+	-- on hardware, see the SESSION CLOCK note above controller_midi_in), so the only thing that keeps
+	-- the clock running is inbound MIDI arriving at controller_midi_in. The query's reply is that
+	-- inbound event, which re-arms the timer and schedules the next tick - a self-sustaining
+	-- request/response heartbeat that does not depend on anyone playing. flush_pending appends the
+	-- query itself and reserves budget for it.
 	return flush_pending(true)
 end
 
@@ -2547,69 +1918,51 @@ function dump_event(e)
 	return table.concat(parts, ' ')
 end
 
--- SESSION CLOCK (established on hardware 2026-08-19)
+-- SESSION CLOCK: `settriggertimer` is a ONE-SHOT that does NOT re-arm when called from inside
+-- controller_timer_trigger - confirmed on hardware, that callback fires exactly once per script
+-- instance no matter what. It DOES re-arm when called from here (controller_midi_in). Do not assume
+-- controller_timer_trigger can free-run; it cannot.
 --
--- `settriggertimer` is a ONE-SHOT, and crucially it does NOT re-arm when
--- called from inside controller_timer_trigger - that callback fired exactly
--- once per script instance no matter what. It DOES re-arm when called from
--- here. (VAX77, the one reference using a repeating timer, arms it from
--- controller_midi_in for exactly this reason.)
+-- So the heartbeat is: timer tick -> send keepalive + Identification Query -> keyboard replies ->
+-- that reply lands here -> re-arm -> next tick. Without the query there is nothing to reply, the
+-- chain stops after one tick, and the SL88 drops the host from its APP list after ~5s. See
+-- docs/config-lua-history.md#settriggertimer-is-a-one-shot-and-does-not-self-renew-from-inside-the-tick-handler.
 --
--- So the heartbeat is: timer tick -> send keepalive + Identification Query ->
--- keyboard replies -> that reply lands here -> re-arm -> next tick. Without
--- the query there is nothing to reply, the chain stops after one tick, and the
--- SL88 drops us from its APP list after ~5s - which is exactly the
--- "showed up briefly, then disappeared" symptom.
--- Re-arms the one-shot timer. Called at the END of controller_midi_in, after
--- any queued output has been drained, so the interval reflects what is still
--- outstanding rather than what was outstanding on entry.
+-- Re-arms the one-shot timer. Called at the END of controller_midi_in, after any queued output has
+-- been drained, so the interval reflects what is still outstanding rather than what was outstanding
+-- on entry.
 --
--- NOTES-STARVE-THE-CLOCK FIX (rule 6 in the banner, established on hardware
--- 2026-08-20): controller_midi_in calls this on EVERY inbound MIDI event,
--- including every note on/off - not just SL frames. settriggertimer is a
--- ONE-SHOT: each call cancels and restarts whatever is already pending.
--- While the user plays, notes arrive far faster than the timer period, so an
--- unconditional settriggertimer() call here just kept pushing the deadline
--- back forever and controller_timer_trigger never fired - no tick, no
--- keepalive, and the SL88 drops a host that goes quiet for ~5s. That
--- explained the display dropping out WHILE PLAYING and recovering the
--- moment playing stopped.
---
--- Fix: only actually call settriggertimer when timerPending is false, i.e.
--- no one-shot is currently outstanding, and set it true when this does arm
--- one. A note arriving while a timer is already pending now leaves it alone
--- and passes straight through untouched (see controller_midi_in) - the
--- first inbound frame after a tick fires (in practice almost always the
--- Identification Query's reply, which arrives within ~2ms of the tick - see
--- the SESSION CLOCK note below) is what gets to choose the next interval,
--- exactly as before; only the REPEATED re-arming on every subsequent frame
--- is gone.
+-- MUST only actually call settriggertimer when timerPending is false (rule 6 in the banner):
+-- controller_midi_in calls this on EVERY inbound MIDI event, including every note on/off, and
+-- settriggertimer cancels-and-restarts whatever is pending on each call - an ungated call here
+-- starves the clock while the user plays. See
+-- docs/config-lua-history.md#rule-6-notes-starve-the-clock. A note arriving while a timer is
+-- already pending leaves it alone and passes straight through untouched; the first inbound frame
+-- after a tick fires (almost always the Identification Query's reply) is what chooses the next
+-- interval.
 function rearm_timer()
 	if state == STATE_REIDENTIFY_WAIT then
-		-- CRITICAL: rearm_timer() runs on EVERY inbound frame. The rejection
-		-- handler sets the one-shot timer to REIDENTIFY_WAIT_MS to wait out the
-		-- SL88's ~5s host timeout (see handle_identification_rejected) - if this
-		-- function touched the timer here too, that wait would be overwritten
-		-- with FLUSH_SOON_MS/KEEPALIVE_MS by the very next inbound frame,
-		-- typically within milliseconds, and the wait would never actually
-		-- happen. Leave the pending timer alone until the wait state ends.
+		-- CRITICAL: rearm_timer() runs on EVERY inbound frame. The rejection handler sets the one-shot
+		-- timer to REIDENTIFY_WAIT_MS to wait out the SL88's ~5s host timeout (see
+		-- handle_identification_rejected) - if this function touched the timer here too, that wait would
+		-- be overwritten with FLUSH_SOON_MS/KEEPALIVE_MS by the very next inbound frame, typically within
+		-- milliseconds, and the wait would never actually happen. Leave the pending timer alone until the
+		-- wait state ends.
 		return
 	end
 	if timerPending then
-		-- A one-shot is already outstanding; it will fire on its own. This is
-		-- the notes-starve-the-clock fix - see this function's comment above.
+		-- A one-shot is already outstanding; it will fire on its own. This is the notes-starve-the-clock
+		-- fix - see this function's comment above.
 		return
 	end
 	if has_pending() then
 		settriggertimer(FLUSH_SOON_MS) -- still draining a repaint; come back soon
 		timerArmedInterval = FLUSH_SOON_MS
 	elseif popupActive then
-		-- POPUP_TICK_MS FIX (2026-08-27): while the encoder value popup is showing and nothing
-		-- is draining, arm the ~1s popup tick instead of the ~3s keepalive tick, so
-		-- POPUP_DISMISS_IDLE_TICKS (an idleTicks count, not a literal duration - see its
-		-- declaration in the popup section) actually dismisses after ~1s instead of ~3s. Only
-		-- reached once has_pending() is false, so this never delays the popup's own draw burst -
-		-- only the idle wait afterward, before dismissal.
+		-- While the popup is showing and nothing is draining, arm the ~1s popup tick instead of the ~3s
+		-- keepalive tick, so POPUP_DISMISS_IDLE_TICKS (an idleTicks count, not a literal duration)
+		-- actually dismisses after ~1s. Only reached once has_pending() is false, so this never delays
+		-- the popup's own draw burst - only the idle wait afterward, before dismissal.
 		settriggertimer(POPUP_TICK_MS)
 		timerArmedInterval = POPUP_TICK_MS
 	else
@@ -2619,31 +1972,16 @@ function rearm_timer()
 	timerPending = true
 end
 
--- QUICK-REARM FIX (2026-08-21 hardware report - see timerArmedInterval's declaration for the
--- measured symptom). If a one-shot is currently outstanding AND it was armed at the LONG
--- (keepalive) interval, shorten it to FLUSH_SOON_MS instead of leaving newly-queued display work
--- to wait out however much of KEEPALIVE_MS is left. Call ONCE per queueing burst - from
--- controller_select_patch's update, set_display_mode, and the button handlers - never from
--- queue_message() itself, which would fire it many times over a single repaint.
+-- If a one-shot is currently outstanding AND it was armed at either LONG interval (KEEPALIVE_MS or
+-- POPUP_TICK_MS - matching both matters, see docs/config-lua-history.md#quick-rearm-2026-08-21 for
+-- the responsiveness regression that motivated adding POPUP_TICK_MS here), shorten it to
+-- FLUSH_SOON_MS instead of leaving newly-queued display work to wait out whatever is left. Call
+-- ONCE per queueing burst - from controller_select_patch's update, set_display_mode, and the button
+-- handlers - never from queue_message() itself, which would fire it many times over a single
+-- repaint.
 --
 -- Shares rearm_timer's STATE_REIDENTIFY_WAIT guard: that wait must never be shortened (see
--- handle_identification_rejected), though in practice timerArmedInterval already being
--- REIDENTIFY_WAIT_MS (not KEEPALIVE_MS) would keep the check below from matching anyway - this
--- is belt-and-suspenders, not the only thing stopping it.
---
--- CONFIRMED ON HARDWARE (2026-08-21): settriggertimer DOES re-arm when called from
--- controller_select_patch/set_display_mode/a button handler, the same as it is confirmed to from
--- controller_midi_in (and confirmed NOT to from inside controller_timer_trigger itself - see the
--- SESSION CLOCK note above controller_midi_in). Every quick-rearm log line that day was followed
--- by a timer tick ~55ms later, not ~3s - i.e. FLUSH_SOON_MS, not KEEPALIVE_MS. grep
--- '[sllink] quick-rearm' /tmp/lua.log against the timer tick line that follows to re-check.
---
--- POPUP_TICK_MS FOLLOW-ON FIX (2026-08-27): rearm_timer's popupActive branch (see there) can now
--- leave timerArmedInterval == POPUP_TICK_MS instead of KEEPALIVE_MS. Without also matching that
--- value here, a second encoder move landing while a POPUP_TICK_MS wait is already pending (e.g.
--- continued scrubbing within the same ~1s dismiss window) would fail this guard and be left to
--- wait out up to ~1000ms instead of being shortened to FLUSH_SOON_MS - a responsiveness regression
--- during continuous scrubbing versus the pre-popup-tick behaviour. Match either long interval.
+-- handle_identification_rejected).
 function request_quick_rearm()
 	if state == STATE_REIDENTIFY_WAIT then return end
 	if timerPending and (timerArmedInterval == KEEPALIVE_MS or timerArmedInterval == POPUP_TICK_MS) then
@@ -2659,10 +1997,9 @@ function controller_midi_in(midiEvent, portName)
 	end
 
 	if is_our_sl_frame(midiEvent) then
-		-- Release any momentary CC presses queued LAST round before handling
-		-- THIS frame, so a button press on this frame queues its own release
-		-- for the round after, not this one - see queue_momentary_cc's
-		-- comment for why the release can't just follow the press directly.
+		-- Release any momentary CC presses queued LAST round before handling THIS frame, so a button
+		-- press on this frame queues its own release for the round after, not this one - see
+		-- queue_momentary_cc's comment for why the release can't just follow the press directly.
 		if #pendingReleases > 0 then
 			for i = 1, #pendingReleases do
 				queue_cc(pendingReleases[i], 0)
@@ -2672,30 +2009,26 @@ function controller_midi_in(midiEvent, portName)
 
 		handle_sl_frame(midiEvent)
 
-		-- Phase 2 (every SL88 control emits its own CC): a batch queued by
-		-- the release-drain above and/or this frame's own button/encoder
-		-- event takes priority this round, mirroring the old Q1a spike's
-		-- proven injection shape - return it ALONE, never call
-		-- flush_pending, never dequeue pendingMessages and discard the
-		-- result. Anything already queued for the SL88 (display/protocol
-		-- traffic) is untouched and drains on a later flush; rearm_timer()
-		-- below still runs unconditionally, so skipping the Identification
-		-- Query this round does not stall the session clock (this inbound
-		-- frame is itself the "reply" the clock needs - see the SESSION
-		-- CLOCK note above rearm_timer).
+		-- Phase 2 (every SL88 control emits its own CC): a batch queued by the release-drain above and/or
+		-- this frame's own button/encoder event takes priority this round, mirroring the old Q1a spike's
+		-- proven injection shape - return it ALONE, never call flush_pending, never dequeue
+		-- pendingMessages and discard the result. Anything already queued for the SL88 (display/protocol
+		-- traffic) is untouched and drains on a later flush; rearm_timer() below still runs
+		-- unconditionally, so skipping the Identification Query this round does not stall the session
+		-- clock (this inbound frame is itself the 'reply' the clock needs - see the SESSION CLOCK note
+		-- above rearm_timer).
 		if #pendingCCOrder > 0 then
 			local out = flush_pending_cc()
 			rearm_timer()
 			return out
 		end
 
-		-- Protocol traffic, not music: swallow it, and use the opportunity to
-		-- flush whatever the handler queued. Do NOT include the Identification
-		-- Query while state == STATE_REIDENTIFY_WAIT: flush_pending(true)
-		-- appends it unconditionally, and the SL88 would truthfully answer
-		-- "not identified" for an id it just rejected - which the ID_QUERY
-		-- branch in handle_sl_frame treats as licence to re-identify right
-		-- away, defeating the wait handle_identification_rejected just started.
+		-- Protocol traffic, not music: swallow it, and use the opportunity to flush whatever the handler
+		-- queued. Do NOT include the Identification Query while state == STATE_REIDENTIFY_WAIT:
+		-- flush_pending(true) appends it unconditionally, and the SL88 would truthfully answer 'not
+		-- identified' for an id it just rejected - which the ID_QUERY branch in handle_sl_frame treats as
+		-- licence to re-identify right away, defeating the wait handle_identification_rejected just
+		-- started.
 		local out = flush_pending(state ~= STATE_REIDENTIFY_WAIT)
 		rearm_timer()
 		if out ~= nil then return out end
@@ -2708,14 +2041,14 @@ function controller_midi_in(midiEvent, portName)
 		return { midi = {} } -- swallow Program Change (patchselector handles it)
 	end
 
-	-- Musical traffic must pass through untouched - never swallow it just to
-	-- piggyback pending output, or notes will hang.
+	-- Musical traffic must pass through untouched - never swallow it just to piggyback pending output,
+	-- or notes will hang.
 	return nil
 end
 
--- Resolves a patchlist entry's label across the plausible field-name
--- spellings MainStage might use (the design doc assumed .Label; an earlier
--- version of this code assumed .Name; neither alone was safe to trust).
+-- Resolves a patchlist entry's label across the plausible field-name spellings MainStage might use
+-- (docs/full-functionality-plan.md assumed .Label; an earlier version of this code assumed .Name;
+-- neither alone was safe to trust).
 function patch_label(entry)
 	local candidates = { 'Label', 'Name', 'label', 'name', 'PatchName', 'patchname' }
 	if type(entry) == 'table' then
@@ -2727,10 +2060,10 @@ function patch_label(entry)
 	return tostring(entry)
 end
 
--- Same idea for the fields the list model depends on (IsPatch/SetIndex/
--- PatchIndex): tries the capitalised spelling (per the design doc) then the
--- all-lowercase one. Returns nil (not false) when neither variant is
--- present, so a genuinely-false IsPatch is distinguishable from a missing key.
+-- Same idea for the fields the list model depends on (IsPatch/SetIndex/ PatchIndex): tries the
+-- capitalised spelling (per docs/full-functionality-plan.md) then the all-lowercase one. Returns
+-- nil (not false) when neither variant is present, so a genuinely-false IsPatch is distinguishable
+-- from a missing key.
 function patch_field(entry, field)
 	if type(entry) ~= 'table' then return nil end
 	local candidates = { field, field:lower() }
@@ -2741,51 +2074,40 @@ function patch_field(entry, field)
 	return nil
 end
 
--- ARGUMENT HIERARCHY SHIFT: MainStage reuses this same callback for
--- selections in Edit mode that are NOT a patch - selecting a SET or the
--- CONCERT there shifts the argument hierarchy up one level, the selected
--- thing arriving as patchname and its PARENT arriving as setname:
---   select a set:      patchname="2. Jacob & Sons / Joseph's Coat"  setname="Joseph key2"   (setname is actually the CONCERT)
---   select the concert: patchname="Joseph key2"                    setname=""
--- A DEFECT B FIX here used to detect that shift (via currentSetIndex/
--- currentPatchIndex plus patchlist's IsPatch/SetIndex/PatchIndex fields,
--- resolved through patch_field() above) and refuse to display anything for a
--- non-patch selection, keeping the last real patch on screen instead.
---
--- REVERTED 2026-08-20 - deliberate product decision, not an oversight: the
--- user wants the selected value shown in the patch slot regardless of what
--- level of the hierarchy it came from - selecting a set shows the set's
--- name, selecting the concert shows the concert's name. controller_select_patch
--- below now trusts patchname/setname/concertname unconditionally again. Do
--- not reintroduce a "refuse non-patch selections" guard without checking
--- first.
+-- ARGUMENT HIERARCHY SHIFT: MainStage reuses this same callback for selections in Edit mode that
+-- are NOT a patch - selecting a SET or the CONCERT there shifts the argument hierarchy up one
+-- level, the selected thing arriving as patchname and its PARENT arriving as setname:
+--   select a set:      patchname="2. Jacob & Sons / Joseph's Coat"  setname='Joseph key2'
+--                       (setname is actually the CONCERT)
+--   select the concert: patchname='Joseph key2'                    setname=''
+-- controller_select_patch below trusts patchname/setname/concertname UNCONDITIONALLY - this is a
+-- deliberate product decision (the user wants the selected value shown in the patch slot regardless
+-- of hierarchy level), not an oversight. Do NOT reintroduce a 'refuse non-patch selections' guard
+-- without checking with Jeroen first - see docs/config-lua-history.md#rejected-approaches.
 function controller_select_patch(programchangeNumber, patchname, setname, concertname,
-                                 patchlist, currentSetIndex, currentPatchIndex)
+	patchlist, currentSetIndex, currentPatchIndex)
 	local p, s, c = patchname or '', setname or '', concertname or ''
 
-	-- CRASH-SAFETY GUARD ONLY (not the reverted "refuse non-patch selections"
-	-- behaviour above - see the ARGUMENT HIERARCHY SHIFT comment): MainStage's
-	-- very first call happens before the concert has loaded, with patchlist
-	-- nil/empty. There is nothing to browse yet, so bail out before touching
-	-- displayed state rather than painting a blank/bogus name or letting the
-	-- patchlist loop below run against nothing.
+	-- CRASH-SAFETY GUARD ONLY (not the reverted 'refuse non-patch selections' behaviour above - see
+	-- the ARGUMENT HIERARCHY SHIFT comment): MainStage's very first call happens before the concert
+	-- has loaded, with patchlist nil/empty. There is nothing to browse yet, so bail out before
+	-- touching displayed state rather than painting a blank/bogus name or letting the patchlist loop
+	-- below run against nothing.
 	if patchlist == nil or (type(patchlist) == 'table' and next(patchlist) == nil) then
 		print('[sllink] controller_select_patch: patchlist not yet available - keeping last' ..
-		      ' displayed patch "' .. patchName .. '"')
+			' displayed patch "' .. patchName .. '"')
 		return nil
 	end
 
-	-- MainStage calls this repeatedly with identical values (observed 5x for
-	-- one patch change, partly because the script is loaded once per USB-MIDI
-	-- interface). Repainting each time would waste a lot of MIDI - a full
-	-- repaint is several messages - so only redraw on a real change.
+	-- MainStage calls this repeatedly with identical values (observed 5x for one patch change, partly
+	-- because the script is loaded once per USB-MIDI interface). Repainting each time would waste a
+	-- lot of MIDI - a full repaint is several messages - so only redraw on a real change.
 	--
-	-- Extended beyond the original name-only check to also compare
-	-- currentSetIndex/currentPatchIndex: two identically named patches in
-	-- different sets or positions must still move the highlight, which a
-	-- name-only comparison would miss entirely.
+	-- Extended beyond the original name-only check to also compare currentSetIndex/currentPatchIndex:
+	-- two identically named patches in different sets or positions must still move the highlight,
+	-- which a name-only comparison would miss entirely.
 	if p == patchName and s == setName and c == currentConcert
-	   and currentSetIndex == activeSetIndex and currentPatchIndex == activePatchIndex then
+		and currentSetIndex == activeSetIndex and currentPatchIndex == activePatchIndex then
 		return nil
 	end
 
@@ -2793,14 +2115,12 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 	activeSetIndex = currentSetIndex or activeSetIndex
 	activePatchIndex = currentPatchIndex or activePatchIndex
 
-	-- Rebuild the flat, interleaved list. ipairs(), NOT pairs(): the visual
-	-- order of the continuous list IS patchlist's own array order (sets and
-	-- patches interleaved as MainStage displays them - see the design doc),
-	-- so this must preserve it, unlike the old per-set filter where scan
-	-- order never mattered. Field names resolved via patch_label()/
-	-- patch_field() above rather than trusted directly (that's what made the
-	-- highlight bar blank on an earlier hardware run - see those functions'
-	-- comments). patchIndex falls back to the array position when
+	-- Rebuild the flat, interleaved list. ipairs(), NOT pairs(): the visual order of the continuous
+	-- list IS patchlist's own array order (sets and patches interleaved as MainStage displays them -
+	-- see docs/mainstage-integration.md), so this must preserve it, unlike the old per-set filter
+	-- where scan order never mattered. Field names resolved via patch_label()/patch_field() above
+	-- rather than trusted directly (that's what made the highlight bar blank on an earlier hardware
+	-- run - see those functions' comments). patchIndex falls back to the array position when
 	-- PatchIndex/patchindex is genuinely absent.
 	listRows = {}
 	if patchlist ~= nil then
@@ -2817,45 +2137,39 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 		end
 	end
 
-	-- Phase 1 has no independent browsing/cursor input yet (deferred to
-	-- Phase 2's joystick handling) - the cursor simply tracks the active
-	-- patch's position in the flat list.
+	-- Phase 1 has no independent browsing/cursor input yet (deferred to Phase 2's joystick handling) -
+	-- the cursor simply tracks the active patch's position in the flat list.
 	cursorIndex = find_active_row_index()
 
-	-- currentConcert/setName added alongside the existing fields so a blank
-	-- concert line on the SL88 screen can be told apart from a draw failure
-	-- (2026-08-19 hardware run: concert line never appeared, cause unknown).
+	-- currentConcert/setName logged alongside the existing fields so a blank concert line on the SL88
+	-- screen can be told apart from a draw failure.
 	print('[sllink] controller_select_patch: "' .. patchName .. '" (' .. #listRows .. ' rows total)' ..
-	      ' concert="' .. currentConcert .. '" set="' .. setName .. '"' ..
-	      ' activeSetIndex=' .. tostring(activeSetIndex) .. ' activePatchIndex=' .. tostring(activePatchIndex) ..
-	      ' instance=' .. string.format('%02X', instanceID))
+		' concert="' .. currentConcert .. '" set="' .. setName .. '"' ..
+		' activeSetIndex=' .. tostring(activeSetIndex) .. ' activePatchIndex=' .. tostring(activePatchIndex) ..
+		' instance=' .. string.format('%02X', instanceID))
 
-	-- Keep the visible window on the newly-set cursor - must run after
-	-- listRows/cursorIndex are rebuilt above (clamp_scroll's upper bound
-	-- depends on #listRows) and before the repaint below.
+	-- Keep the visible window on the newly-set cursor - must run after listRows/cursorIndex are
+	-- rebuilt above (clamp_scroll's upper bound depends on #listRows) and before the repaint below.
 	clamp_scroll()
 
 	if state == STATE_REIDENTIFY_WAIT then
-		-- Don't queue or flush anything while waiting to retry identification
-		-- (see handle_identification_rejected) - a flush here would send an
-		-- Identification Query under an instanceID the SL88 just rejected,
-		-- which would defeat the wait (see controller_midi_in's comment on the
-		-- same hazard). The bookkeeping above (patchName/listRows/etc.) still
-		-- ran, so once we are re-identified the ID_QUERY self-heal branch in
-		-- handle_sl_frame finds lastPaintedPatch stale and repaints for real.
+		-- Don't queue or flush anything while waiting to retry identification (see
+		-- handle_identification_rejected) - a flush here would send an Identification Query under an
+		-- instanceID the SL88 just rejected, which would defeat the wait (see controller_midi_in's
+		-- comment on the same hazard). The bookkeeping above (patchName/listRows/etc.) still ran, so once
+		-- we are re-identified the ID_QUERY self-heal branch in handle_sl_frame finds lastPaintedPatch
+		-- stale and repaints for real.
 		return nil
 	end
 
-	-- Draw whenever MainStage says the patch changed, without waiting to be
-	-- sure we are logged in: a LOGIN CONFIRMATION only arrives on a *fresh*
-	-- login, and the keyboard harmlessly ignores drawing we are not entitled
-	-- to do. The ID_QUERY branch repaints again once the session is confirmed.
+	-- Draw whenever MainStage says the patch changed, without waiting to be sure we are logged in: a
+	-- LOGIN CONFIRMATION only arrives on a *fresh* login, and the keyboard harmlessly ignores drawing
+	-- we are not entitled to do. The ID_QUERY branch repaints again once the session is confirmed.
 	local opsBefore = queuedDisplayOps
 	update_screen()
 	if queuedDisplayOps > opsBefore then
-		-- FIX 1 (2026-08-21 hardware report): this is the exact call site the
-		-- 2s-delay was measured against - see timerArmedInterval's declaration
-		-- and request_quick_rearm's comment.
+		-- See request_quick_rearm's comment and docs/config-lua-history.md#quick-rearm-2026-08-21 - this
+		-- is the exact call site the multi-second patch-change delay was measured against.
 		request_quick_rearm()
 	end
 	return flush_pending(true)
@@ -2863,10 +2177,9 @@ end
 
 -- MARK: - Device declaration
 
--- Items describe MIDI the SL88 **actually transmits**, captured live on
--- 2026-08-19 (notes, pitch bend, modulation, second stick, sustain - all on
--- LINK, none on CTRL). Ports use the short names for the same reason outport
--- does; see the banner at the top of this file.
+-- Items describe MIDI the SL88 **actually transmits**, captured live (notes, pitch bend,
+-- modulation, second stick, sustain - all on LINK, none on CTRL). Ports use the short names for the
+-- same reason outport does; see the banner at the top of this file.
 function controller_info()
 	return {
 		model = 'SL',
@@ -2879,18 +2192,18 @@ function controller_info()
 
 		items = {
 			{name='Keyboard', label='SL88', objectType='Keyboard', midiType='Keyboard',
-			 startKey=21, numberKeys=88, midi={0x90,MIDI_Wildcard,MIDI_Wildcard},
-			 inport='LINK', outport='LINK'},
+				startKey=21, numberKeys=88, midi={0x90,MIDI_Wildcard,MIDI_Wildcard},
+				inport='LINK', outport='LINK'},
 
 			{name='Pitch Bend', label='Pitch', objectType='Wheel', midi={0xE0,MIDI_MSB,MIDI_LSB},
-			 inport='LINK', outport='LINK'},
+				inport='LINK', outport='LINK'},
 			{name='Modulation', label='Mod', objectType='Wheel', midi={0xB0,0x01,MIDI_LSB},
-			 inport='LINK', outport='LINK'},
+				inport='LINK', outport='LINK'},
 			{name='Stick 2', label='Stick2', objectType='Wheel', midi={0xB0,0x10,MIDI_LSB},
-			 inport='LINK', outport='LINK'},
+				inport='LINK', outport='LINK'},
 
 			{name='Sustain Pedal', label='Sustain', objectType='Sustain Pedal', midiType='Momentary',
-			 midi={0xB0,0x40,MIDI_LSB}, inport='LINK', outport='LINK'},
+				midi={0xB0,0x40,MIDI_LSB}, inport='LINK', outport='LINK'},
 		}
 	}
 end

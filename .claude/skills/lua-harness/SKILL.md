@@ -85,8 +85,14 @@ Note `main.swift` must be named exactly that for top-level code (same reason
 
 ## Working style
 
-- Put harnesses in `/tmp`, not the repo — they are throwaway. `Scripts/run-codec-tests.sh` is the
-  permanent home for anything worth keeping, and it must keep passing.
+- **`Scripts/run-lua-tests.sh` (running `Tests/lua/harness.lua`) is the permanent, checked-in
+  suite** — run it first, and add new assertions there rather than starting from scratch. It covers
+  flush budget/pacing, queue convergence, MIDI passthrough, the CC batch cap, `clamp_scroll`,
+  repaint rate, timer re-arm intervals, and golden byte vectors for every `msg_*` builder. It must
+  keep passing.
+- Put a harness in `/tmp` only for a genuinely one-off exploratory probe — reproducing a single
+  hardware report, poking at a hypothesis — not for anything worth re-running later. If it turns out
+  to be worth keeping, fold it into `Tests/lua/harness.lua` instead of leaving it in `/tmp`.
 - Filter the noise when running: `lua /tmp/t.lua 2>&1 | grep -vE "^\\[sllink\\] (<-|timer)"`.
 - Clean up `/tmp/sl-mainstage-bridge-*.bin` afterwards — `write_frame` still attempts file writes, and
   a stale file can confuse a later test.

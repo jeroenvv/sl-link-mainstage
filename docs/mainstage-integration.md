@@ -392,3 +392,39 @@ value popup" above), which replaced the old ad-hoc dismiss path (`invalidate_all
 with this new dismiss path did not reproduce the STANDBY correlation. That is one clean test, not a
 fix confirmed — this is **not** being called resolved, just not re-observed yet under the new
 mechanism.
+
+## Refactor verification: dead-code removal + comment triage (2026-08-28)
+
+The `feature/lua-maintainability` refactor (dead-code removal + comment triage on `config.lua`) was
+verified against the real SL88 MK2 with MainStage running a live concert ("Joseph key2", 163
+patchlist rows). This is a **regression check, not new feature verification** — the dead-code phase
+removed only unreachable code and the comment phases changed no executable line at all, confirmed by
+diff. The result is the expected one: behaviour-identical on hardware.
+
+Totals for the run: 345 timer ticks, 562 flushes, **0 Lua errors, 0 unhandled SL frames**.
+
+Confirmed working:
+
+- **Session lifecycle** — reached `state=active` unaided and held it for the entire run. The full
+  session-clock chain worked on every tick: timer tick -> 10-byte Identification Query -> SL88 replied
+  `F0 00 20 1A 16 03 6D 7F 03 01 F7` (identified) -> that reply re-armed the one-shot. Identified as
+  `(03 6D)` on `outport=LINK`.
+- **Patch changes** — 10 real `controller_select_patch` changes, each repainting.
+- **Zoom button** — 4 SHORT presses, toggling list<->zoom in both directions (2 each way).
+- **Popup** — raised once by an encoder, painted all 27 regions (`popupBg`, 4 border strips,
+  `popupLabel`, `popupValue`, and all 20 of 20 ring segments), then auto-dismissed back to `list`,
+  correctly restoring the pre-popup mode.
+- **CC dispatch** — 22 CC batches, every one coalesced to exactly 1 CC / 3 bytes; nothing near
+  `CC_BATCH_CAP`.
+- **Queue** — drained to depth 0; no flush exceeded budget. The popup's ~30-message burst drained at
+  one display message per tick as designed.
+- **Region coverage** — across the three modes every drawable region in the file was exercised: all 8
+  list rows plus the `ctx` bar, all 5 zoom regions (`zcnc`/`zset`/`zname`/`znext`/`zpos`), and the
+  complete popup.
+
+Not yet exercised, so treat as unproven — neither is a regression, both were already unproven before
+this branch:
+
+- **Zoom LONG press** (the force-full-repaint path in `handle_zoom_button`).
+- **The re-identification wait path** (`STATE_REIDENTIFY_WAIT`, `handle_identification_rejected`) —
+  needs a deliberate DeviceID collision.
