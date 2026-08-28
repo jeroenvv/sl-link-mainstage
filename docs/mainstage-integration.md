@@ -331,3 +331,64 @@ per-control coalescing collapses a fast sweep to one send per flush round rather
 session dropout occurred during or around the sweep; the session's few re-logins in this run were
 minutes apart with the queue idle beforehand, consistent with reselecting the app on the keyboard
 rather than anything code-induced. Closes the CC-mapping plan's outstanding verification step.
+
+## Encoder value popup (2026-08-27)
+
+Turning any mapped encoder (any `eid` present in `ENCODER_CC`) shows a full-screen popup on the SL88's
+display, on the theory that the value and its wire CC number should be visible without a round-trip
+through MainStage. Implemented in `config.lua` — search "MARK: - Encoder value popup".
+
+- **A genuine third display mode**, not a floating overlay. `'popup'` sits alongside `'list'`/`'zoom'`
+  as a `displayMode` value, entered and exited via `set_display_mode()` — the same
+  double-Clear-Screen mode-switch machinery already hardware-proven for the list/zoom toggle, rather
+  than an ad-hoc draw-over-the-top-and-invalidate pair. This also means the popup owns the whole
+  screen while showing, so it never has to worry about overlapping list/zoom content underneath it.
+- **Content**: `CC <n>` in small, dim text; the 0–127 value in bold white, centred inside a
+  gauge-style ring — 20 segments swept over ~300° with a gap at the bottom (like a speedometer dial),
+  orange for the lit segments up to the current value and light grey for the rest — inside a
+  bordered black card. The look is modelled on the SL88's own native "Audio Master"/"Zone Levels"
+  overlay screens, not on the Swift companion app's `SLLinkDemoScreen`.
+- **No MainStage feedback involved.** `controller_midi_out` was confirmed on hardware to report
+  `nil` name/valueString/color for the mapped CC itself (see the CC-mapping section above), so the
+  popup never asks MainStage for anything — the CC number and value are both already known locally
+  via `CC_MAP`/`ENCODER_CC`/`encoderValue`.
+- **Dismissal**: automatic after ~1s of no further encoder activity. While the popup is active,
+  `rearm_timer()`'s `popupActive` branch arms the shared session timer at `POPUP_TICK_MS` (~1s)
+  instead of the normal ~3s keepalive cadence, so `POPUP_DISMISS_IDLE_TICKS` (1 tick) actually means
+  about a second rather than about three. `check_popup_dismiss()`, run once per timer tick, then
+  calls `dismiss_popup()`, which restores `displayMode` to whatever was showing before the popup
+  (`popupPreviousMode`) via the same `set_display_mode()` path used to enter it.
+
+**Status: confirmed on hardware (2026-08-28).** Shows and dismisses cleanly, with no leftover content
+from the screen underneath. One observation worth recording, not a filed bug: the popup's initial
+appearance was noted as "a bit slow" on this test — not investigated further this session.
+
+## Encoder value popup: a STANDBY correlated with the dismiss repaint (2026-08-27)
+
+The encoder value popup (`config.lua`, "MARK: - Encoder value popup") sends a burst of display
+messages when `dismiss_popup()` fires (`invalidate_all()` + a full `paint_screen()`). A hardware test
+this session captured that burst immediately followed by the SL88 itself sending a Standby
+notification (`<- STANDBY`, decoded from `F0 00 20 1A 16 03 6D 00 04 F7`). Jeroen confirmed he had not
+navigated the SL88's own menu away from the MainStage app at that moment, so this is not the ordinary
+standby-on-app-switch case.
+
+The session recovered on its own shortly after — the log shows `state=active` again a short time
+later, ticking normally — so this is a transient, self-recovering dropout, not a permanent failure.
+
+This looks like a recurrence of the unresolved dropout documented in the now-reverted joystick
+browse/jump feature (`325218b`, later reverted in `10dbd2a`; superseded by this popup feature), which
+was investigated exhaustively at the time — session tracking, instance ID, and macOS's own CoreMIDI
+log all showed **no evidence of a software fault at any layer** — and never root-caused. It's now
+resurfacing under a different trigger (a display repaint burst, rather than rapid encoder scrolling).
+
+Per Jeroen's decision this session, this is being **shelved as a known open issue**, not chased
+further right now — the visual redesign of the popup took priority. Not root-caused yet, not
+"impossible" — the right diagnostic angle (rate-limiting repaint bursts, as the reverted feature's own
+next-steps note suggested) just hasn't been tried here yet.
+
+**Postscript (2026-08-28):** the popup was subsequently promoted to a full-screen mode (see "Encoder
+value popup" above), which replaced the old ad-hoc dismiss path (`invalidate_all()` + a full
+`paint_screen()`) with `set_display_mode()`'s proven double-Clear-Screen sequence. A hardware round
+with this new dismiss path did not reproduce the STANDBY correlation. That is one clean test, not a
+fix confirmed — this is **not** being called resolved, just not re-observed yet under the new
+mechanism.

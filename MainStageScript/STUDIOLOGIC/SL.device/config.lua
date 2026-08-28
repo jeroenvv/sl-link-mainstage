@@ -990,15 +990,17 @@ assert(MEDIUM_MAX_CHARS <= TEXT_STRING_CAP,
 --
 -- EYE-CALIBRATED, like BIG_MAX_CHARS/MEDIUM_MAX_CHARS - no real glyph-metrics table exists for
 -- this font. CHAR_WIDTH_BIG is derived from BIG_MAX_CHARS itself (27 characters already confirmed
--- to fit within a 304px band at SIZE_BIG), not picked independently. CHAR_WIDTH_MEDIUM is scaled
--- from it by the SIZE table's pixel heights (33px/22px - see docs/display-messages.md fetched at
--- the pinned commit; note this is narrower than the ~27px this project's own
--- docs/implementing-sl-link.md estimates for medium, which was never confirmed against the spec
--- text itself - worth reconciling separately, out of scope for this fix). Retune both alongside
--- BIG_MAX_CHARS/MEDIUM_MAX_CHARS if the geometry or font ever changes, the same way: by eye,
--- against a name a few characters either side of dead centre.
+-- to fit within a 304px band at SIZE_BIG), not picked independently. CHAR_WIDTH_MEDIUM was
+-- originally scaled from it by the SIZE table's pixel heights (33px/22px - see
+-- docs/display-messages.md fetched at the pinned commit), giving a derived value of 7 - already
+-- flagged here as narrower than the ~27px this project's own docs/implementing-sl-link.md
+-- estimates for medium, and confirmed too narrow: a 2026-08-27 hardware check found the Zoom-mode
+-- zset title rendering slightly right-of-center at 7, so it's retuned to 8 (closer to the
+-- un-floored 7.33 = 11*22/33). Retune both alongside BIG_MAX_CHARS/MEDIUM_MAX_CHARS if the
+-- geometry or font ever changes, the same way: by eye, against a name a few characters either
+-- side of dead centre.
 CHAR_WIDTH_BIG = 11    -- floor(304 / 27)
-CHAR_WIDTH_MEDIUM = 7  -- CHAR_WIDTH_BIG scaled by 22/33 (SIZE_MEDIUM/SIZE_BIG pixel heights)
+CHAR_WIDTH_MEDIUM = 8  -- retuned 2026-08-27 from derived 7 (11*22/33≈7.33) - hardware showed 7 rendering right-of-center
 
 -- Estimated total rendered pixel width of `text` at `size`, for the manual centering above only -
 -- NOT used for truncation (truncate_text() already owns that, by character count).
@@ -1138,6 +1140,302 @@ ROW_COLORS = {
 	[ROW_PATCH]  = { 150, 150, 150,   0,   0,   0 }, -- grey on black: recessive, the bulk of the list
 	[ROW_ACTIVE] = {   0,   0,   0, 255, 170,  40 }, -- black on amber: unmistakable at distance
 }
+
+-- MARK: - Encoder value popup (show-active-plan-sprightly-moon.md Part B)
+--
+-- Shows a transient panel - "CC <n>" small and dim above, the 0-127 value big and centred, ringed
+-- by a 20-segment LED dial - whenever ANY mapped encoder moves, so the value and its wire CC
+-- number are visible without a MainStage round-trip. controller_midi_out was confirmed on
+-- hardware to report nil name/valueString/color for the mapped CC itself (see the plan's
+-- "Superseded 2026-08-27" note) - so this never attempts to show a MainStage parameter name, only
+-- the CC number and value, both already known locally via CC_MAP/ENCODER_CC/encoderValue.
+--
+-- Revised 2026-08-27 (v3): v1 was a ring with no centred value; v2 (hardware-tested) dropped the
+-- ring for a plain amber-filled rect with a centred number, copying the Swift companion app's
+-- SLLinkDemoScreen zone panels, but read as "screaming" at full-panel amber. v3 combines both: a
+-- calm black panel, an orange ring whose lit-segment count encodes the value at a glance from
+-- across the room, AND the exact numeric value legible in the ring's centre.
+--
+-- PLACEMENT (superseded by v5 below - kept for history): centred on screen. Chosen over the old
+-- top-right corner because no placement is free of both list-mode and zoom-mode's full-width erase
+-- rects (both paint_list_screen and paint_zoom_screen's draw_text_with_erase calls erase
+-- edge-to-edge), so overlap is unavoidable either way - a centred popup at least reads as a
+-- deliberate modal rather than a corner decoration. Accepted trade-off, not fully eliminated:
+-- dismiss_popup() (below) only invalidates the popup's OWN ids, never the content it covered, so a
+-- stale panel can linger until whatever's underneath next redraws for its own reason (list scroll,
+-- patch/set change, or the periodic self-heal repaint). This entire trade-off is now moot as of v5:
+-- popup is a full-screen mode via set_display_mode, so dismissal goes through that function's own
+-- proven invalidate-and-repaint sequence instead.
+--
+-- Revised 2026-08-27 (v4): visual pass to match the SL88's own native firmware overlays (e.g. its
+-- AUDIO MASTER/ZONE LEVELS screens) rather than v3's original invented "12-segment full-circle
+-- dial" look - more/thinner segments (12->20, 6px->3px) for a smoother ring, a 60deg gap centred
+-- at the bottom like a real gauge instead of a closed circle, a lighter unlit-track colour (was
+-- near-invisible dark grey, now a visible light grey), and a neutral light border colour instead
+-- of reusing the ring's orange. Lit colour stays orange - that already matched the reference's
+-- active-zone colouring.
+--
+-- Revised 2026-08-27 (v5): promoted from a small 160x160 card floating OVER the list/zoom content
+-- to a genuine full-screen-takeover mode (see set_display_mode's 'popup' branch and
+-- paint_popup_screen below) - modelled on the SL88's own native AUDIO MASTER overlay, which
+-- occupies nearly the whole screen rather than a corner card. This sidesteps the old placement
+-- trade-off entirely (the comment above about "no placement is free of both screens' erase rects"
+-- no longer applies - popup mode now owns the whole screen, nothing to overlap) and lets
+-- dismiss_popup() reuse set_display_mode's proven double-Clear-Screen/invalidate sequence instead
+-- of the old ad-hoc invalidate_all()+paint_screen() pair. Card grown to 280x200 (20px margin on
+-- every side of the 320x240 screen) and the ring/value geometry re-derived for the bigger card -
+-- see the "Ring geometry" comment below for the new numbers and clearance arithmetic.
+-- How often controller_timer_trigger fires while the popup is up and idle, so
+-- POPUP_DISMISS_IDLE_TICKS ticks at roughly this cadence instead of KEEPALIVE_MS's ~3s -
+-- see rearm_timer's popupActive branch.
+POPUP_TICK_MS = 1000
+
+POPUP_W = 280
+POPUP_H = 200
+POPUP_X = math.floor((SCREEN_WIDTH - POPUP_W) / 2)
+POPUP_Y = math.floor((SCREEN_HEIGHT - POPUP_H) / 2)
+POPUP_PAD = 10 -- inset for the label, so it doesn't touch the panel's top edge
+
+POPUP_CONTENT_X = POPUP_X + POPUP_PAD
+POPUP_CONTENT_W = POPUP_W - 2 * POPUP_PAD
+POPUP_LABEL_Y = POPUP_Y + 12 -- small dim label, above the ring entirely (see geometry check below)
+
+POPUP_CENTER_X = POPUP_X + POPUP_W / 2
+-- Ring/value centre deliberately NOT the card's raw vertical midpoint (POPUP_Y + POPUP_H/2 = 120):
+-- shifted down to POPUP_Y + 120 = 140 so the label has clear headroom above the ring without
+-- shrinking the ring to match a symmetric top/bottom margin it doesn't need (the label only ever
+-- occupies the top of the card, so the bottom margin can stay tighter than the top one). See the
+-- "Ring geometry" comment below for the resulting clearances.
+POPUP_CENTER_Y = POPUP_Y + 120
+
+-- Ring geometry. Radius/segment size/count/sweep chosen so that (a) every segment clears the value
+-- text's bounding box below with margin at every angle, (b) every segment clears the panel
+-- border's inner edge with margin, and (c) the ring's top edge clears the label's bottom edge with
+-- margin - checked programmatically for this exact combination (all 20 segment positions checked
+-- against both boxes for rectangle overlap), re-check if any of the numbers below change. The ring
+-- no longer closes a full 360deg - POPUP_SWEEP_DEG (300) leaves a 60deg gap centred at the bottom
+-- (90deg, i.e. 6 o'clock), gauge-style, matching the SL88's own native overlay screens. Segments
+-- are spaced evenly across the sweep via POPUP_SWEEP_DEG / (POPUP_SEG_COUNT - 1) so the first and
+-- last segments land exactly on the sweep's two endpoints (120deg and 420deg=60deg), keeping the
+-- gap exactly 60deg wide and centred.
+--
+-- Radius grown 48->68 and segment size 3->5 for the bigger 280x200 card (v4's 12->20/6->3 pass
+-- already fixed the segment COUNT/shape - this keeps that, just scales the two size numbers up
+-- for the extra room, per the v5 note above).
+--
+-- Tightest clearances at this combination (POPUP_SEG_IDS 1 and 20, angles 120deg/60deg, the two
+-- segments nearest the bottom of the card, either side of the gap): 15px margin against the panel
+-- border's inner edge (x:24-296, y:24-216) - well inside. Tightest value-box clearance (POPUP_SEG_IDS
+-- 3 and 18, angles ~135.8deg/~44.2deg, just above the value box's top corners): 9px gap on the
+-- separating axis against the value box's x:110-210,y:120-160 - comfortably more margin than the
+-- 160x160 card's 1px worst case, since the card grew faster than the ring did. Every other segment
+-- clears both boxes by a wider margin still.
+POPUP_RING_RADIUS = 68
+POPUP_SEG_SIZE = 5
+POPUP_SEG_COUNT = 20
+POPUP_SWEEP_DEG = 300 -- full sweep in degrees; the remaining (360 - POPUP_SWEEP_DEG) is the gap
+POPUP_GAP_START_DEG = 270 - POPUP_SWEEP_DEG / 2 -- angle of segment 1 (see loop below)
+
+-- Value text: SIZE_BIG, centred in the ring's open middle. 100px wide is comfortably inside the
+-- ring's inner clearance (radius 68 minus half the 5px segment size minus slop, ~= 65px either
+-- side of centre, i.e. ~130px total) and the box (x:110-210, y:120-160 assuming a big-font glyph
+-- height on the order of 40px, unchanged from the previous card size since SIZE_BIG's pixel size
+-- is fixed by the firmware, not by this card) clears every segment box per the note above.
+POPUP_VALUE_W = 100
+POPUP_VALUE_X = POPUP_CENTER_X - POPUP_VALUE_W / 2
+POPUP_VALUE_Y = POPUP_CENTER_Y - 20
+
+-- Colours: calm black panel (matches this file's existing list-row background convention)
+-- instead of v2's full-amber fill; true orange for lit ring segments, deliberately NOT
+-- ROW_ACTIVE's amber/gold (255,170,40) so the ring reads as its own distinct "dial" idiom rather
+-- than reusing the list's "this is the active row" colour; a light grey for unlit segments so the
+-- ring's shape (all 20 positions) is visible even at value=0 (matching the SL88's own native
+-- overlay screens, whose ring track reads light grey/white against black); white for the value
+-- text so it doesn't visually merge with the orange ring; ROW_PATCH's grey for the label, matching
+-- this file's existing dim/recessive-text convention.
+POPUP_BG_COLOR = { 0, 0, 0 }
+POPUP_SEG_LIT = { 255, 140, 0 } -- true orange, not amber/gold
+POPUP_SEG_UNLIT = { 180, 180, 180 } -- light grey track, clearly visible against the black panel - matches the SL88's own native overlay screens
+POPUP_VALUE_FG = { 255, 255, 255 }
+POPUP_LABEL_FG = { ROW_COLORS[ROW_PATCH][1], ROW_COLORS[ROW_PATCH][2], ROW_COLORS[ROW_PATCH][3] }
+POPUP_BORDER_COLOR = { 200, 210, 220 } -- thin light neutral border, matching the native overlay's frame - NOT orange, keep orange exclusive to the ring's active fill
+
+--- Segment ids and their (x,y) top-left draw_rect positions, computed ONCE here at load time
+--- (not per-draw) via math.cos/math.sin. Segment 1 sits at POPUP_GAP_START_DEG (120deg, just past
+--- the gap's bottom-left edge) and segments proceed clockwise across POPUP_SWEEP_DEG, evenly spaced
+--- every POPUP_SWEEP_DEG/(POPUP_SEG_COUNT-1) ~= 15.8 degrees, ending at segment 20 on the gap's
+--- bottom-right edge (60deg) - a 60deg gap at the bottom (90deg, 6 o'clock), not a full circle.
+--- Positions are top-left corners (draw_rect's convention - see msg_draw_rect), i.e. centre-on-circle
+--- minus half the segment size.
+POPUP_SEG_IDS = {}
+POPUP_SEG_POS = {}
+for i = 1, POPUP_SEG_COUNT do
+	POPUP_SEG_IDS[i] = 'popupSeg' .. i
+	local angleRad = math.rad(POPUP_GAP_START_DEG + (i - 1) * (POPUP_SWEEP_DEG / (POPUP_SEG_COUNT - 1)))
+	local segX = POPUP_CENTER_X + POPUP_RING_RADIUS * math.cos(angleRad) - POPUP_SEG_SIZE / 2
+	local segY = POPUP_CENTER_Y + POPUP_RING_RADIUS * math.sin(angleRad) - POPUP_SEG_SIZE / 2
+	POPUP_SEG_POS[i] = { math.floor(segX), math.floor(segY) }
+end
+
+-- Every id this popup ever draws to - what dismiss_popup() invalidates.
+POPUP_REGION_IDS = {
+	'popupBg', 'popupLabel', 'popupValue',
+	'popupBorderTop', 'popupBorderBottom', 'popupBorderLeft', 'popupBorderRight',
+}
+for i = 1, POPUP_SEG_COUNT do
+	table.insert(POPUP_REGION_IDS, POPUP_SEG_IDS[i])
+end
+
+popupActive = false
+popupControl = nil -- CC_MAP key of whichever encoder's popup is currently showing
+-- Cached label/value for the CURRENTLY showing popup, updated by show_popup() and read by
+-- paint_popup_screen() - so a repaint triggered from elsewhere (paint_screen() dispatching to
+-- paint_popup_screen() because displayMode=='popup', or set_display_mode('popup') itself) can
+-- redraw the popup's content without needing the encoder id threaded through every call site.
+popupCcNumber = nil
+popupValue = 0
+-- displayMode to restore when the popup dismisses - set by show_popup() to whatever displayMode
+-- was BEFORE it switched to 'popup' (only on the transition into showing, never overwritten while
+-- already active - see show_popup's popupActive guard), consumed once by dismiss_popup().
+popupPreviousMode = nil
+popupLastActivityIdleTick = 0
+
+-- Border: same "four non-overlapping edge-strip rects" idiom as the Swift
+-- companion app's zone-selection outline (SLLinkDemoScreen.drawZoneBorder) -
+-- top/bottom span the panel's full width, left/right span only the strip
+-- between them, so no two edges cover the same pixel. The fill (popupBg,
+-- below) is inset by the border's thickness so it never overlaps the border
+-- either - each id owns pixels no other id touches, per SLLinkDisplay's
+-- per-id-memoization rule (see this file's CLAUDE.md). Thickness picked thin
+-- enough to stay clear of the ring/value geometry above, which already has
+-- >=26px of margin between the ring's outer edge and the panel edge.
+POPUP_BORDER_THICKNESS = 4
+
+function draw_popup_border()
+	local t = POPUP_BORDER_THICKNESS
+	local c = POPUP_BORDER_COLOR
+	draw_rect('popupBorderTop', POPUP_X, POPUP_Y, POPUP_W, t, c[1], c[2], c[3])
+	draw_rect('popupBorderBottom', POPUP_X, POPUP_Y + POPUP_H - t, POPUP_W, t, c[1], c[2], c[3])
+	draw_rect('popupBorderLeft', POPUP_X, POPUP_Y + t, t, POPUP_H - 2 * t, c[1], c[2], c[3])
+	draw_rect('popupBorderRight', POPUP_X + POPUP_W - t, POPUP_Y + t, t, POPUP_H - 2 * t, c[1], c[2], c[3])
+end
+
+function draw_popup_bg()
+	local t = POPUP_BORDER_THICKNESS
+	draw_rect('popupBg', POPUP_X + t, POPUP_Y + t, POPUP_W - 2 * t, POPUP_H - 2 * t,
+		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
+end
+
+function draw_popup_label(ccNumber)
+	draw_text('popupLabel', 'CC ' .. ccNumber, POPUP_CONTENT_X, POPUP_LABEL_Y, POPUP_CONTENT_W,
+		ALIGN_CENTER, SIZE_SMALL, POPUP_LABEL_FG[1], POPUP_LABEL_FG[2], POPUP_LABEL_FG[3],
+		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
+end
+
+function draw_popup_value(value)
+	draw_text('popupValue', tostring(value), POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
+		ALIGN_CENTER, SIZE_BIG, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
+		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
+end
+
+-- Lit-segment count for a 0-127 value: linear scaling by value/127 (NOT value/128), so that
+-- value=0 lights 0 segments and value=127 - the actual maximum - lights all 20 exactly, rather
+-- than topping out at 19 the way a /128 divisor would (127/128*20 = 19.84, floors to 19).
+function popup_lit_count(value)
+	return math.floor(value * POPUP_SEG_COUNT / 127)
+end
+
+function draw_popup_ring(value)
+	local litCount = popup_lit_count(value)
+	for i = 1, POPUP_SEG_COUNT do
+		local pos = POPUP_SEG_POS[i]
+		local color = (i <= litCount) and POPUP_SEG_LIT or POPUP_SEG_UNLIT
+		draw_rect(POPUP_SEG_IDS[i], pos[1], pos[2], POPUP_SEG_SIZE, POPUP_SEG_SIZE, color[1], color[2], color[3])
+	end
+end
+
+-- The popup's own content-painting function, in the same family as paint_zoom_screen()/
+-- paint_list_screen() - dispatched to from set_display_mode('popup') (the mode-switch path, once
+-- per popup "session") and from paint_screen() (an ordinary content-driven repaint that lands while
+-- displayMode=='popup', e.g. a patch-name change arriving mid-popup - see paint_screen's 3-way
+-- branch). Reads popupCcNumber/popupValue rather than taking parameters, since both call sites
+-- dispatch generically by mode with no encoder id in hand. Safe to call repeatedly - every draw_*
+-- call underneath is per-id memoized (drawn[]), so a call that changes nothing queues nothing (see
+-- show_popup's repeat-call path, which relies on exactly this).
+function paint_popup_screen()
+	draw_popup_bg()
+	draw_popup_border()
+	draw_popup_label(popupCcNumber)
+	draw_popup_value(popupValue)
+	draw_popup_ring(popupValue)
+end
+
+-- Call from handle_sl_frame's IT_ENCODER branch, right after encoderValue[eid] is updated, for
+-- every eid present in ENCODER_CC (looped there, not hardcoded - see that call site).
+--
+-- FIRST call of a popup "session" (popupActive false -> true): remembers the mode to restore later
+-- (popupPreviousMode) and runs the full set_display_mode('popup') mode-switch machinery ONCE - the
+-- same double-Clear-Screen/drop_queued_display/invalidate_all/sacrificial-redraw sequence
+-- 'zoom'/'list' already get, extended to a third mode rather than duplicated (see set_display_mode).
+-- That call's own paint dispatch (mode=='popup' -> paint_popup_screen()) does the actual drawing,
+-- so this function does not also call it on that path.
+--
+-- REPEAT calls while already active (continued scrubbing of the same or a different encoder): must
+-- NOT re-run set_display_mode() - that would re-send the double Clear Screen and a full invalidate
+-- on every single tick, which is wasteful and would likely flicker, defeating the point of this
+-- file's per-region memoization. Instead calls paint_popup_screen() directly; its draw_* calls are
+-- per-id memoized, so the background/border/label are no-ops past the first draw of a given control
+-- (matches while popupControl is unchanged) and only a genuinely new value re-queues the value text
+-- and whichever ring segments actually flipped lit/unlit - a DIFFERENT control taking over redraws
+-- the label because its CC number differs, satisfying "one popup at a time, last-mover-wins" for
+-- free, same as before v5.
+function show_popup(eid)
+	local control = ENCODER_CC[eid]
+	if control == nil then return end
+
+	popupControl = control
+	popupCcNumber = CC_MAP[control]
+	popupValue = encoderValue[eid]
+	popupLastActivityIdleTick = idleTicks
+
+	if not popupActive then
+		popupPreviousMode = displayMode
+		popupActive = true
+		set_display_mode('popup') -- full mode-switch machinery once; its own dispatch paints the popup
+	else
+		paint_popup_screen()
+		request_quick_rearm()
+	end
+end
+
+-- ~1s-idle dismissal, quantised to the session clock's existing idle-tick counter (idleTicks,
+-- incremented once per timer-tick while nothing is draining - see controller_timer_trigger).
+-- While popupActive is true, rearm_timer() (below) arms the tick at POPUP_TICK_MS (~1s) instead of
+-- the normal KEEPALIVE_MS (~3s), so POPUP_DISMISS_IDLE_TICKS=1 means "wait one ~1s tick" rather
+-- than one ~3s tick - see rearm_timer's popupActive branch for the mechanism. This still reuses
+-- the single existing timer rather than adding a second settriggertimer, which risks the same
+-- starved-clock/dropped-repaint class of bug this file has already paid for once (see
+-- timerPending's banner comment).
+POPUP_DISMISS_IDLE_TICKS = 1
+
+-- v5: popup is now a full-screen mode (set_display_mode('popup')), so dismissal is just switching
+-- BACK to whatever mode was active before the popup took over - reusing set_display_mode's own
+-- proven double-Clear-Screen/drop_queued_display/invalidate_all/sacrificial-redraw sequence rather
+-- than the old ad-hoc invalidate_all()+paint_screen() pair. popupActive/popupControl are cleared
+-- BEFORE that call so show_popup's "is this a fresh popup" check (popupActive) is already correct
+-- if a new popup is triggered again immediately after dismissal.
+function dismiss_popup()
+	popupActive = false
+	popupControl = nil
+	set_display_mode(popupPreviousMode)
+end
+
+-- Called once per timer tick (controller_timer_trigger), after idleTicks is updated for this tick.
+function check_popup_dismiss()
+	if popupActive and (idleTicks - popupLastActivityIdleTick) >= POPUP_DISMISS_IDLE_TICKS then
+		dismiss_popup()
+	end
+end
 
 -- Draws list row `i` (0-based, within the visible window) for `row` - one of
 -- the flat, normalised listRows entries, or nil past the end of the list.
@@ -1487,8 +1785,14 @@ end
 -- coalescing comment). Superseding a stale queued region now happens for
 -- free, in place, inside draw_text/draw_row's own queue_message() call.
 function update_screen()
+	-- 3-way dispatch (added for the v5 full-screen popup mode) - see paint_screen's identical
+	-- branch for why: this is in fact the more likely place to hit "content change arrives while a
+	-- popup is showing" in practice, since this is the function controller_select_patch() calls on
+	-- every MainStage patch/set change, not paint_screen().
 	local before = queuedDisplayOps
-	if displayMode == 'zoom' then
+	if displayMode == 'popup' then
+		paint_popup_screen()
+	elseif displayMode == 'zoom' then
 		paint_zoom_screen()
 	else
 		paint_list_screen()
@@ -1633,8 +1937,14 @@ function paint_screen()
 	-- manual full-screen clear (e.g. cycle set_display_mode, which paints a
 	-- 0,0-320,240 black rect) clears it for good; that is a one-off migration
 	-- concern, not something worth carrying as permanent code.
+	-- 3-way dispatch (added for the v5 full-screen popup mode): if an ordinary content-driven
+	-- repaint lands while a popup happens to be showing (e.g. a patch change arriving mid-popup),
+	-- this must redraw the POPUP's own content again, not incorrectly repaint list/zoom underneath
+	-- a mode that's still supposed to be showing.
 	local before = queuedDisplayOps
-	if displayMode == 'zoom' then
+	if displayMode == 'popup' then
+		paint_popup_screen()
+	elseif displayMode == 'zoom' then
 		paint_zoom_screen()
 	else
 		paint_list_screen()
@@ -1703,7 +2013,7 @@ end
 -- is queued while the login repaint is still draining and later ones are
 -- not, that timing difference is the lead to follow.
 function set_display_mode(mode)
-	if mode ~= 'list' and mode ~= 'zoom' then return end
+	if mode ~= 'list' and mode ~= 'zoom' and mode ~= 'popup' then return end
 	displayMode = mode
 	drop_queued_display()
 	invalidate_all()
@@ -1742,7 +2052,9 @@ function set_display_mode(mode)
 	queue_message(msg_clear_screen(0, 0, 0))
 	queue_message(msg_clear_screen(0, 0, 0))
 	local before = queuedDisplayOps
-	if mode == 'zoom' then
+	if mode == 'popup' then
+		paint_popup_screen()
+	elseif mode == 'zoom' then
 		paint_zoom_screen() -- redundant with the full-screen erase above, but each name draw erases its own band anyway
 	else
 		paint_list_screen()
@@ -1977,6 +2289,7 @@ function handle_sl_frame(e)
 			if newValue < 0 then newValue = 0 elseif newValue > 127 then newValue = 127 end
 			encoderValue[eid] = newValue
 			queue_cc(control, newValue)
+			show_popup(eid)
 		else
 			print('[sllink] <- ENCODER eid=' .. string.format('0x%02X', eid)
 				.. ' tick=' .. string.format('0x%02X', e[9])
@@ -1996,6 +2309,16 @@ end
 -- own, always-safe effect: a manual on-demand version of the periodic
 -- self-heal repaint above (paint_screen() after invalidate_all()), useful if
 -- the SL88's screen has drifted from what the script thinks it last painted.
+--
+-- v5 popup interaction: SHORT's plain (displayMode=='zoom') and 'list' or 'zoom' toggle assumes
+-- displayMode is one of exactly those two - false while a popup is showing (displayMode=='popup'),
+-- where it would compute newMode='zoom' regardless of what was actually showing before the popup,
+-- ignoring popupPreviousMode and leaving popupActive/popupControl stale-true while displayMode has
+-- already moved on. Simplest safe choice: treat a Zoom-button SHORT while a popup is up as "dismiss
+-- the popup" rather than a raw list<->zoom toggle - dismiss_popup() already restores
+-- popupPreviousMode via set_display_mode, which is exactly the mode the toggle would otherwise need
+-- to reason about. LONG needs no special case: invalidate_all()+paint_screen() already redraws
+-- whatever displayMode currently is, popup included, via paint_screen's 3-way dispatch.
 function handle_zoom_button(pressKind)
 	if pressKind == PRESS_LONG then
 		print('[sllink] <- BUTTON zoom LONG - forcing full repaint of mode=' .. displayMode)
@@ -2004,6 +2327,9 @@ function handle_zoom_button(pressKind)
 		-- FIX 1 (2026-08-21): invalidate_all() above guarantees this repaint
 		-- queues real content - see request_quick_rearm's comment.
 		request_quick_rearm()
+	elseif displayMode == 'popup' then
+		print('[sllink] <- BUTTON zoom SHORT - dismissing popup (mode=popup)')
+		dismiss_popup()
 	else
 		local newMode = (displayMode == 'zoom') and 'list' or 'zoom'
 		print('[sllink] <- BUTTON zoom SHORT - toggling display mode -> ' .. newMode)
@@ -2108,6 +2434,7 @@ function controller_timer_trigger()
 	-- periodic refresh; fast drain ticks must not.
 	local draining = has_pending()
 	if not draining then idleTicks = idleTicks + 1 end
+	check_popup_dismiss()
 	-- CADENCE INSTRUMENTATION (2026-08-21): pending/draining here, plus this
 	-- tick's number, is what lets a captured hardware log (LUA_DEBUG ->
 	-- /tmp/lua.log, timestamped at capture time - see the FLUSH_SOON_MS sweep
@@ -2276,6 +2603,15 @@ function rearm_timer()
 	if has_pending() then
 		settriggertimer(FLUSH_SOON_MS) -- still draining a repaint; come back soon
 		timerArmedInterval = FLUSH_SOON_MS
+	elseif popupActive then
+		-- POPUP_TICK_MS FIX (2026-08-27): while the encoder value popup is showing and nothing
+		-- is draining, arm the ~1s popup tick instead of the ~3s keepalive tick, so
+		-- POPUP_DISMISS_IDLE_TICKS (an idleTicks count, not a literal duration - see its
+		-- declaration in the popup section) actually dismisses after ~1s instead of ~3s. Only
+		-- reached once has_pending() is false, so this never delays the popup's own draw burst -
+		-- only the idle wait afterward, before dismissal.
+		settriggertimer(POPUP_TICK_MS)
+		timerArmedInterval = POPUP_TICK_MS
 	else
 		settriggertimer(KEEPALIVE_MS)
 		timerArmedInterval = KEEPALIVE_MS
@@ -2301,9 +2637,16 @@ end
 -- SESSION CLOCK note above controller_midi_in). Every quick-rearm log line that day was followed
 -- by a timer tick ~55ms later, not ~3s - i.e. FLUSH_SOON_MS, not KEEPALIVE_MS. grep
 -- '[sllink] quick-rearm' /tmp/lua.log against the timer tick line that follows to re-check.
+--
+-- POPUP_TICK_MS FOLLOW-ON FIX (2026-08-27): rearm_timer's popupActive branch (see there) can now
+-- leave timerArmedInterval == POPUP_TICK_MS instead of KEEPALIVE_MS. Without also matching that
+-- value here, a second encoder move landing while a POPUP_TICK_MS wait is already pending (e.g.
+-- continued scrubbing within the same ~1s dismiss window) would fail this guard and be left to
+-- wait out up to ~1000ms instead of being shortened to FLUSH_SOON_MS - a responsiveness regression
+-- during continuous scrubbing versus the pre-popup-tick behaviour. Match either long interval.
 function request_quick_rearm()
 	if state == STATE_REIDENTIFY_WAIT then return end
-	if timerPending and timerArmedInterval == KEEPALIVE_MS then
+	if timerPending and (timerArmedInterval == KEEPALIVE_MS or timerArmedInterval == POPUP_TICK_MS) then
 		settriggertimer(FLUSH_SOON_MS)
 		timerArmedInterval = FLUSH_SOON_MS
 		print('[sllink] quick-rearm -> FLUSH_SOON_MS')
