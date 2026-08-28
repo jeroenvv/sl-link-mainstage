@@ -56,6 +56,29 @@ local function qreply()
 	return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, 0x7F, 0x03, 0x01, 0xF7)
 end
 
+-- Splits a flat 1-indexed byte array (as returned in a flush's .midi field, which may carry
+-- several F0...F7 messages concatenated - e.g. [display, query]) back into individual
+-- per-message byte arrays, so a flush's CONTENTS can be inspected by itemType/function rather
+-- than just its total length.
+local function split_messages(bytes)
+	local msgs, cur = {}, nil
+	for i = 1, #bytes do
+		local b = bytes[i]
+		if b == 0xF0 then cur = {} end
+		if cur then cur[#cur + 1] = b end
+		if b == 0xF7 and cur then
+			msgs[#msgs + 1] = cur
+			cur = nil
+		end
+	end
+	return msgs
+end
+
+-- itemType/function live at fixed offsets after the 7-byte header+ids (F0 00 20 1A 16 id1 id2) -
+-- same indexing config.lua's own flush_pending uses (m[8]/m[9]).
+local function item_type_of(msg) return msg[8] end
+local function func_of(msg) return msg[9] end
+
 -- MARK: - Test framework
 
 local failures = {}
@@ -366,6 +389,226 @@ do
 	rearm_timer()
 	check('rearm_timer: POPUP_TICK_MS while popupActive and idle', armed == POPUP_TICK_MS)
 	popupActive = false
+end
+
+-- MARK: - 10. A flush never contains two display messages
+--
+-- flush_pending() dequeues at most ONE queued message per flush (see
+-- config.lua's "the display, query flush shape" comment). Queues two
+-- display messages under different regionIds (so they don't coalesce) and
+-- checks the first flush's output carries only one of them - the second
+-- stays queued for a later flush.
+do
+	pendingMessages = {}
+	invalidate_all()
+	displayFlushReady = true
+	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:two-display-a')
+	queue_message(msg_draw_rect(20, 20, 10, 10, 0, 0, 0), 'test:two-display-b')
+
+	local out = flush_pending(true)
+	local displayCount = 0
+	if out then
+		for _, m in ipairs(split_messages(out.midi)) do
+			if item_type_of(m) == IT_DISPLAY then displayCount = displayCount + 1 end
+		end
+	end
+	check('a flush never contains two display messages', displayCount <= 1)
+	check('the second display message is still queued after one flush', has_pending())
+end
+
+-- MARK: - 11. A flush never bundles a display message with the keepalive
+--
+-- Covers both orderings: display queued ahead of a ready-to-send keepalive
+-- (displayFlushReady true - the display goes, the keepalive waits), and a
+-- display that can't go out yet with a keepalive behind it
+-- (displayFlushReady false - flush_pending's scan-forward lets the keepalive
+-- jump the queue instead, per its "DEFECT B" comment). Neither shape may
+-- ever emit both itemTypes in the same flush.
+do
+	pendingMessages = {}
+	invalidate_all()
+	displayFlushReady = true
+	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:display-then-keepalive')
+	queue_message(msg_system(SYS_DEVICE_NOTIFICATION))
+
+	local out1 = flush_pending(true)
+	local d1, k1 = 0, 0
+	if out1 then
+		for _, m in ipairs(split_messages(out1.midi)) do
+			if item_type_of(m) == IT_DISPLAY then d1 = d1 + 1 end
+			if item_type_of(m) == IT_SYSTEM and func_of(m) == SYS_DEVICE_NOTIFICATION then k1 = k1 + 1 end
+		end
+	end
+	check(
+		'a flush never bundles a display message with the keepalive (display ready)',
+		not (d1 >= 1 and k1 >= 1)
+	)
+
+	pendingMessages = {}
+	invalidate_all()
+	displayFlushReady = false
+	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:display-blocked-keepalive-behind')
+	queue_message(msg_system(SYS_DEVICE_NOTIFICATION))
+
+	local out2 = flush_pending(true)
+	local d2, k2 = 0, 0
+	if out2 then
+		for _, m in ipairs(split_messages(out2.midi)) do
+			if item_type_of(m) == IT_DISPLAY then d2 = d2 + 1 end
+			if item_type_of(m) == IT_SYSTEM and func_of(m) == SYS_DEVICE_NOTIFICATION then k2 = k2 + 1 end
+		end
+	end
+	check(
+		'a flush never bundles a display message with the keepalive (display blocked, keepalive jumps ahead)',
+		not (d2 >= 1 and k2 >= 1)
+	)
+	check('the keepalive jumps ahead of a display message it cannot dequeue yet', k2 == 1)
+	displayFlushReady = true
+end
+
+-- MARK: - 12. queue_message: regionId coalesces, protocol messages never do
+do
+	pendingMessages = {}
+	invalidate_all()
+	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:coalesce')
+	queue_message(msg_draw_rect(0, 0, 10, 10, 5, 5, 5), 'test:coalesce')
+	local coalescedCount = 0
+	for i = 1, #pendingMessages do
+		if pendingMessages[i].regionId == 'test:coalesce' then coalescedCount = coalescedCount + 1 end
+	end
+	check('queue_message coalesces two calls with the same regionId into one', coalescedCount == 1)
+
+	pendingMessages = {}
+	queue_message(msg_identification_query())
+	queue_message(msg_identification_query())
+	check(
+		'queue_message never coalesces protocol messages (two queued Identification Queries both survive)',
+		#pendingMessages == 2
+	)
+end
+
+-- MARK: - 13. drop_queued_display clears the corresponding drawn[] entries
+--
+-- See config.lua's drop_queued_display comment: leaving a discarded message's
+-- drawn[] entry in place lets the memo and the physical screen diverge for
+-- good, since the region is never re-queued.
+do
+	pendingMessages = {}
+	invalidate_all()
+	draw_rect('test:drop-memo', 0, 0, 10, 10, 1, 2, 3)
+	check('draw_rect primes drawn[] for the id it queues', drawn['test:drop-memo'] ~= nil)
+	queue_message(msg_identification_query())
+
+	drop_queued_display()
+	check('drop_queued_display clears the drawn[] entry for a message it discards', drawn['test:drop-memo'] == nil)
+	check(
+		'drop_queued_display preserves protocol messages while dropping display ones',
+		has_pending() and #pendingMessages == 1
+	)
+end
+
+-- Same property, but for the id..':rect'/id..':text' split draw_text_with_erase
+-- queues (see base_region_id's comment) rather than a plain id - drawn[] is
+-- keyed on the UNSUFFIXED id while the two queued messages carry the suffixed
+-- regionIds, so drop_queued_display must unwind the suffix via
+-- base_region_id() to find the memo entry at all. A plain-id-only test cannot
+-- catch a regression here, since base_region_id() is a no-op on a plain id.
+do
+	pendingMessages = {}
+	invalidate_all()
+	draw_text_with_erase('test:drop-memo-split', 'Hi', 0, 0, ALIGN_LEFT, SIZE_SMALL, 1, 2, 3, 0, 0, 10, 10)
+	check(
+		'draw_text_with_erase primes drawn[] under the UNSUFFIXED id',
+		drawn['test:drop-memo-split'] ~= nil
+	)
+	check(
+		'draw_text_with_erase queues both the :rect and :text halves',
+		#pendingMessages == 2 and pendingMessages[1].regionId == 'test:drop-memo-split:rect' and
+		pendingMessages[2].regionId == 'test:drop-memo-split:text'
+	)
+
+	drop_queued_display()
+	check(
+		'drop_queued_display clears the split id..":rect"/id..":text" pair back to the unsuffixed drawn[] entry',
+		drawn['test:drop-memo-split'] == nil
+	)
+end
+
+-- MARK: - 14. The trailing sacrificial redraw carries no regionId
+--
+-- A nil regionId always appends rather than coalescing (see queue_message) -
+-- this is what guarantees the sacrificial redraw lands strictly AFTER
+-- whatever real content this same paint queued, instead of coalescing into
+-- an earlier entry for the same region. See queue_sacrificial_redraw's
+-- comment.
+--
+-- queue_sacrificial_redraw has TWO branches - displayMode == 'zoom' draws the
+-- concert line, and the else branch (list, popup - set_display_mode's mode
+-- check confirms both reach this same function) draws the ctx bar via
+-- ctx_text() - so this must be checked under every mode that reaches it, not
+-- just zoom, or a regionId regression in the else branch goes uncaught. A
+-- small synthetic listRows/cursorIndex is set up once so ctx_text()'s
+-- dependency chain (cursor_set_label(), which reads listRows/cursorIndex)
+-- produces a real string for the list/popup branch.
+do
+	listRows = {
+		{ label = 'Test Set', isPatch = false },
+		{ label = 'Test Patch', isPatch = true, setIndex = 0, patchIndex = 0 },
+	}
+	cursorIndex = 1
+	currentConcert = 'Test Concert'
+
+	for _, mode in ipairs({ 'zoom', 'list', 'popup' }) do
+		pendingMessages = {}
+		displayMode = mode
+		queue_sacrificial_redraw()
+		local last = pendingMessages[#pendingMessages]
+		check('the trailing sacrificial redraw is queued (mode=' .. mode .. ')', last ~= nil)
+		check(
+			'the trailing sacrificial redraw carries no regionId (mode=' .. mode .. ')',
+			last ~= nil and last.regionId == nil
+		)
+	end
+end
+
+-- MARK: - 15. controller_finalize returns nil and queues no Logout Request
+--
+-- A script can only send by RETURNING MIDI from a callback (see config.lua's
+-- MainStage-host notes) - so a nil return is itself the guarantee that no
+-- Logout Request (or anything else) goes out from this callback.
+do
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	local result = controller_finalize()
+	check('controller_finalize returns nil (no MIDI, so no Logout Request can go out)', result == nil)
+end
+
+-- MARK: - 16. append_text clamps bytes outside 0x20-0x80 to a space
+do
+	local msg = {}
+	-- 0x01 (control char, below range), 0x41 ('A', in range), 0x90 (above range, non-ASCII)
+	append_text(msg, string.char(0x01, 0x41, 0x90), 10)
+	check('append_text clamps a byte below 0x20 to 0x20', msg[1] == 0x20)
+	check('append_text passes a byte within 0x20-0x80 through unchanged', msg[2] == 0x41)
+	check('append_text clamps a byte above 0x80 to 0x20', msg[3] == 0x20)
+	check('append_text 0x00-terminates', msg[4] == 0x00)
+
+	-- nil-text path: the `if text ~= nil then` guard skips the whole loop -
+	-- must still terminate rather than erroring on string.byte(nil, ...) or
+	-- leaving msg empty.
+	local nilMsg = {}
+	append_text(nilMsg, nil, 10)
+	check('append_text with nil text appends only the 0x00 terminator', #nilMsg == 1 and nilMsg[1] == 0x00)
+
+	-- maxLength clamp: `limit = math.min(#text, maxLength or 32)` - a string
+	-- longer than maxLength must be truncated to maxLength bytes before the
+	-- terminator, not copied in full.
+	local clampMsg = {}
+	append_text(clampMsg, 'ABCDEFGH', 3)
+	check(
+		'append_text clamps output length to maxLength before the terminator',
+		#clampMsg == 4 and clampMsg[1] == 0x41 and clampMsg[2] == 0x42 and clampMsg[3] == 0x43 and clampMsg[4] == 0x00
+	)
 end
 
 -- MARK: - Summary

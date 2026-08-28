@@ -84,6 +84,10 @@ tables and rejected hypotheses belong in `docs/`, which the commit can reference
 **Use the skills.** `.claude/skills/test-mainstage-script` (hardware deploy/verify loop) and
 `.claude/skills/lua-harness` (offline verification before spending a hardware round-trip).
 
+**Read `docs/config-lua-history.md` before changing `config.lua`'s display pacing, session clock,
+or flush logic.** It holds the hardware findings and rejected approaches behind the constraints
+`config.lua`'s own comments only state tersely and cite by anchor.
+
 ## Codec tests
 
 `SLLinkProtocol.swift`, `SLLinkEncoder.swift` and `SLLinkDecoder.swift` are pure (`import Foundation`
