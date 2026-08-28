@@ -13,7 +13,7 @@
 -- checked against.
 --
 -- =========================================================================
--- FIVE RULES YOU MUST NOT BREAK. Each was found the hard way; each fails
+-- SIX RULES YOU MUST NOT BREAK. Each was found the hard way; each fails
 -- SILENTLY, which is why they are repeated here rather than left in docs.
 --
 --  1. outport is the SHORT kMIDIPropertyName ('LINK'), never the display
@@ -113,8 +113,9 @@ EID_B = 0x06
 -- 40-74 skipping 64) so MainStage can MIDI-Learn each one directly - no
 -- in-script patch-selection logic, which is dead: MainStage's patchselector
 -- parser only runs when controller_midi_in returns falsy, so injected MIDI
--- (the old Q1a spike's approach) can never reach it. See the design doc for
--- the full table and the one-time mapping procedure.
+-- (the old Q1a spike's approach) can never reach it. See
+-- docs/mainstage-integration.md for the full table and the one-time mapping
+-- procedure.
 CC_CHANNEL = 0x0F -- channel 16; nothing else is expected to be routed here
 
 CC_MAP = {
@@ -203,11 +204,11 @@ DISP_DRAW_RECT = 0x02
 
 -- Text align / size
 ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT = 0x00, 0x01, 0x02
--- SIZE_MEDIUM (0x01) is UNDOCUMENTED - the spec (docs/display-messages.md)
--- only gives pixel heights for small (21px) and big (33px). Assumed ~27px by
--- interpolation, but that is unverified: the zoom screen geometry below that
--- positions text around SIZE_MEDIUM rests on this estimate, not a
--- measurement. Recalibrate the y coordinates around 'zset' in
+-- SIZE_MEDIUM (0x01) is UNDOCUMENTED - the spec, sl-link/docs/display-messages.md
+-- (upstream spec), only gives pixel heights for small (21px) and big (33px).
+-- Assumed ~27px by interpolation, but that is unverified: the zoom screen
+-- geometry below that positions text around SIZE_MEDIUM rests on this
+-- estimate, not a measurement. Recalibrate the y coordinates around 'zset' in
 -- paint_zoom_screen() on hardware if the real glyph height differs.
 SIZE_SMALL, SIZE_MEDIUM, SIZE_BIG = 0x00, 0x01, 0x02
 
@@ -429,7 +430,7 @@ idleTicks = 0
 -- hardware, 78 bytes render and 87 bytes render NOTHING AT ALL - the whole
 -- array is discarded, not truncated. The SL Link spec itself has no such
 -- limit (Write Text is `S(1)...S(N)` for arbitrary N, and Max Width truncates
--- visually in pixels - docs/display-messages.md), so this is purely a
+-- visually in pixels - sl-link/docs/display-messages.md), so this is purely a
 -- MainStage constraint to work around.
 --
 -- Therefore: keep queued messages DISCRETE rather than pre-concatenated, and
@@ -958,7 +959,7 @@ assert(MEDIUM_MAX_CHARS <= TEXT_STRING_CAP,
 -- supposed to be centred, but zset/zname rendered off-centre while the lines drawn at a real
 -- maxWidth - zcnc, znext, zpos - looked right). CONFIRMED against the pinned upstream spec
 -- (fetched fresh rather than assumed - see https://github.com/fatarsrl/sl-link at the pinned
--- commit, docs/display-messages.md): "In the selected area (the area between (X, Y) and
+-- commit, sl-link/docs/display-messages.md): "In the selected area (the area between (X, Y) and
 -- (X + Width, Y)) the string can be justified to the left, right or centre, according to the
 -- proper alignment byte" - alignment is defined relative to that Width-wide area. At Width=0 the
 -- area collapses to the single point X, leaving ALIGN_CENTER/ALIGN_RIGHT nothing to justify
@@ -977,9 +978,10 @@ assert(MEDIUM_MAX_CHARS <= TEXT_STRING_CAP,
 -- this font. CHAR_WIDTH_BIG is derived from BIG_MAX_CHARS itself (27 characters already confirmed
 -- to fit within a 304px band at SIZE_BIG), not picked independently. CHAR_WIDTH_MEDIUM was
 -- originally scaled from it by the SIZE table's pixel heights (33px/22px - see
--- docs/display-messages.md fetched at the pinned commit), giving a derived value of 7 - already
--- flagged here as narrower than the ~27px this project's own docs/implementing-sl-link.md
--- estimates for medium, and confirmed too narrow: a 2026-08-27 hardware check found the Zoom-mode
+-- sl-link/docs/display-messages.md fetched at the pinned commit), giving a
+-- derived value of 7 - already flagged here as narrower than the ~27px this
+-- project's own docs/implementing-sl-link.md estimates for medium, and
+-- confirmed too narrow: a 2026-08-27 hardware check found the Zoom-mode
 -- zset title rendering slightly right-of-center at 7, so it's retuned to 8 (closer to the
 -- un-floored 7.33 = 11*22/33). Retune both alongside BIG_MAX_CHARS/MEDIUM_MAX_CHARS if the
 -- geometry or font ever changes, the same way: by eye, against a name a few characters either
@@ -1054,9 +1056,9 @@ assert(PAGE_OVERLAP < ROW_COUNT,
 -- monotonic browsing (advancing one patch at a time, the realistic gig
 -- pattern) that meant EVERY SINGLE STEP once past the first couple of moves
 -- re-triggered another one-row scroll, and a scroll costs a full
--- ROW_COUNT-row repaint (see the design doc's redraw cost table) where an
--- in-window cursor move costs 2 messages - so nearly every patch change was
--- paying for a full-window redraw it didn't need to.
+-- ROW_COUNT-row repaint (see docs/mainstage-integration.md's redraw cost
+-- figures) where an in-window cursor move costs 2 messages - so nearly
+-- every patch change was paying for a full-window redraw it didn't need to.
 --
 -- PAGE JUMP, now: once triggered, the window jumps by (ROW_COUNT -
 -- PAGE_OVERLAP) rows in the direction of travel, landing the cursor
@@ -1111,11 +1113,12 @@ end
 -- Three row states - deliberately fewer than the old four, because the
 -- cursor is no longer a colour state at all (see draw_list_row()'s "> "
 -- marker below): only what KIND of row it is, and whether it is the active
--- patch, affects colour now. { fr, fg, fb, br, bg, bb } per state - the
--- design doc's colour table. All channel values even (the wire format is
--- 7-bit per channel and halves these, dropping the low bit - odd values
--- silently round), except the conventional 255 used for "fully saturated"
--- throughout this file, which rounds to the same 127 as 254 so costs nothing.
+-- patch, affects colour now. { fr, fg, fb, br, bg, bb } per state - see
+-- docs/full-functionality-plan.md's colour table. All channel values even
+-- (the wire format is 7-bit per channel and halves these, dropping the low
+-- bit - odd values silently round), except the conventional 255 used for
+-- "fully saturated" throughout this file, which rounds to the same 127 as
+-- 254 so costs nothing.
 ROW_HEADER = 0
 ROW_PATCH  = 1
 ROW_ACTIVE = 2
@@ -1126,7 +1129,7 @@ ROW_COLORS = {
 	[ROW_ACTIVE] = {   0,   0,   0, 255, 170,  40 }, -- black on amber: unmistakable at distance
 }
 
--- MARK: - Encoder value popup (show-active-plan-sprightly-moon.md Part B)
+-- MARK: - Encoder value popup
 --
 -- Shows a transient panel - "CC <n>" small and dim above, the 0-127 value big and centred, ringed
 -- by a 20-segment LED dial - whenever ANY mapped encoder moves, so the value and its wire CC
@@ -1414,9 +1417,9 @@ end
 -- the flat, normalised listRows entries, or nil past the end of the list.
 -- `isCursor` controls only the "> "/"  " marker column, never the colour:
 -- active state and cursor state are deliberately on separate channels (see
--- the design doc), so there is no combined case to special-case here - a row
--- that is both simply gets ROW_ACTIVE's colours with a "> " prefix, which
--- reads correctly with nothing extra written for it.
+-- docs/full-functionality-plan.md), so there is no combined case to
+-- special-case here - a row that is both simply gets ROW_ACTIVE's colours
+-- with a "> " prefix, which reads correctly with nothing extra written for it.
 --
 -- Every row - including a past-the-end blank one - draws at the SAME x and
 -- maxWidth (ROW_X, ROW_MAXW), confirmed on hardware to make Write Text's
@@ -1595,7 +1598,7 @@ end
 -- (see FLUSH_SOON_MS/displayFlushReady) - do NOT try to bundle them into one
 -- flush to save the flicker. Two display messages back-to-back in one flush
 -- is exactly the pattern that dropped alternating rows on hardware (rule 5
--- in the FIVE RULES banner at the top of this file), and they would not fit
+-- in the SIX RULES banner at the top of this file), and they would not fit
 -- anyway: a 21-byte rect plus a max-length Write Text (25 + up to
 -- BIG_MAX_CHARS chars) plus the Identification Query flush_pending always
 -- reserves room for exceeds FLUSH_BUDGET on its own.
@@ -1662,12 +1665,12 @@ end
 -- neither trusts it (see the zset draw call below for the hardware-check
 -- path that would change that). znext (2026-08-21) always draws SIZE_SMALL,
 -- self-clearing, at a real maxWidth, unconditionally.
--- Revised layout (design doc): zcnc y=12, zset y=44, zname y=100, znext
--- y=170, zpos y=210 - bands 12-33 / 44-71 / 100-133 / 170-191 / 210-231, all
--- non-overlapping (znext's band shrank from SIZE_MEDIUM's ~27px to
--- SIZE_SMALL's 21px on 2026-08-21, still clear of zname above and zpos
--- below). Retune together with ROW_Y0-style constants if the layout ever
--- moves again.
+-- Revised layout (docs/full-functionality-plan.md): zcnc y=12, zset y=44,
+-- zname y=100, znext y=170, zpos y=210 - bands 12-33 / 44-71 / 100-133 /
+-- 170-191 / 210-231, all non-overlapping (znext's band shrank from
+-- SIZE_MEDIUM's ~27px to SIZE_SMALL's 21px on 2026-08-21, still clear of
+-- zname above and zpos below). Retune together with ROW_Y0-style constants
+-- if the layout ever moves again.
 function paint_zoom_screen()
 	draw_text('zcnc', currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 
@@ -1704,9 +1707,10 @@ end
 -- Ordinary content-driven redraw: draws the current model, memoized per
 -- region, and queues NOTHING beyond whatever actually changed (2 messages
 -- for a patch change within a set, 9 for a set change, 0 if nothing
--- differs - see the design doc's redraw cost table) PLUS the trailing
--- sacrificial redraw below when anything real was queued, so a patch change
--- costs one more than that table and a set change costs one more still.
+-- differs - see docs/mainstage-integration.md's redraw cost figures) PLUS
+-- the trailing sacrificial redraw below when anything real was queued, so a
+-- patch change costs one more than those figures and a set change costs one
+-- more still.
 -- Used to be documented as deliberately having no trailing sacrificial, on
 -- the theory that only the FULL, invalidate_all()-preceded repaint in
 -- paint_screen (login, restart, the periodic self-heal) was at risk of
@@ -1755,8 +1759,6 @@ function base_region_id(id)
 	return id:match('^(.*):rect$') or id:match('^(.*):text$') or id
 end
 
--- Repaints the screen. The SL88 keeps no display state across Standby, so this
--- is also what a Restart triggers.
 -- Drops display messages still sitting in the queue. Used only where the
 -- queue's content is genuinely garbage, not merely stale-but-wanted - see
 -- set_display_mode, its one remaining caller: switching modes vacates the
@@ -1850,6 +1852,9 @@ end
 -- means every region's queue_message() call is guaranteed to find a stale
 -- entry to coalesce (if one is still queued) or append fresh (if not);
 -- either way nothing needs to be thrown away first.
+--
+-- The SL88 keeps no display state across Standby, so this is also what a
+-- Restart triggers.
 function paint_screen()
 	-- NO Clear Screen.
 	--
@@ -1862,7 +1867,7 @@ function paint_screen()
 	--
 	-- The clear is not needed anyway. The spec is explicit that Write Text
 	-- "will completely overwrite any existing content on the screen pixels
-	-- within the area where the text is printed" (docs/display-messages.md), so
+	-- within the area where the text is printed" (sl-link/docs/display-messages.md), so
 	-- redrawing the same regions is self-cleaning.
 
 	-- No longer carries a znameErase step (a black rect over y=80-180, queued
@@ -2647,8 +2652,9 @@ function controller_midi_in(midiEvent, portName)
 end
 
 -- Resolves a patchlist entry's label across the plausible field-name
--- spellings MainStage might use (the design doc assumed .Label; an earlier
--- version of this code assumed .Name; neither alone was safe to trust).
+-- spellings MainStage might use (docs/full-functionality-plan.md assumed
+-- .Label; an earlier version of this code assumed .Name; neither alone was
+-- safe to trust).
 function patch_label(entry)
 	local candidates = { 'Label', 'Name', 'label', 'name', 'PatchName', 'patchname' }
 	if type(entry) == 'table' then
@@ -2661,9 +2667,10 @@ function patch_label(entry)
 end
 
 -- Same idea for the fields the list model depends on (IsPatch/SetIndex/
--- PatchIndex): tries the capitalised spelling (per the design doc) then the
--- all-lowercase one. Returns nil (not false) when neither variant is
--- present, so a genuinely-false IsPatch is distinguishable from a missing key.
+-- PatchIndex): tries the capitalised spelling (per
+-- docs/full-functionality-plan.md) then the all-lowercase one. Returns nil
+-- (not false) when neither variant is present, so a genuinely-false IsPatch
+-- is distinguishable from a missing key.
 function patch_field(entry, field)
 	if type(entry) ~= 'table' then return nil end
 	local candidates = { field, field:lower() }
@@ -2728,13 +2735,13 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 
 	-- Rebuild the flat, interleaved list. ipairs(), NOT pairs(): the visual
 	-- order of the continuous list IS patchlist's own array order (sets and
-	-- patches interleaved as MainStage displays them - see the design doc),
-	-- so this must preserve it, unlike the old per-set filter where scan
-	-- order never mattered. Field names resolved via patch_label()/
-	-- patch_field() above rather than trusted directly (that's what made the
-	-- highlight bar blank on an earlier hardware run - see those functions'
-	-- comments). patchIndex falls back to the array position when
-	-- PatchIndex/patchindex is genuinely absent.
+	-- patches interleaved as MainStage displays them - see
+	-- docs/mainstage-integration.md), so this must preserve it, unlike the
+	-- old per-set filter where scan order never mattered. Field names
+	-- resolved via patch_label()/patch_field() above rather than trusted
+	-- directly (that's what made the highlight bar blank on an earlier
+	-- hardware run - see those functions' comments). patchIndex falls back
+	-- to the array position when PatchIndex/patchindex is genuinely absent.
 	listRows = {}
 	if patchlist ~= nil then
 		for i, entry in ipairs(patchlist) do
