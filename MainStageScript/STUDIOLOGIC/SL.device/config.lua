@@ -117,15 +117,6 @@ EID_B = 0x06
 -- the full table and the one-time mapping procedure.
 CC_CHANNEL = 0x0F -- channel 16; nothing else is expected to be routed here
 
--- Encoders currently send their ABSOLUTE tracked value (0-127), which learns
--- like an ordinary knob. Flipping this to true would send a relative
--- increment instead (65 = up one, 63 = down one) - NOT implemented; the
--- accumulate-and-clamp path below and queue_cc's replace-in-place coalescing
--- both assume absolute values, so wiring the relative branch is more than a
--- one-constant change despite the name. Kept as the documented escape hatch
--- the design calls for, not a working toggle.
-CC_ENCODER_RELATIVE = false
-
 CC_MAP = {
 	JOY_UP_SHORT = 40,    JOY_UP_LONG = 41,
 	JOY_DOWN_SHORT = 42,  JOY_DOWN_LONG = 43,
@@ -413,8 +404,6 @@ scrollOffset = 0
 -- for the old per-set filter.
 listRows = {}
 
-screenDirty = false
-
 -- What the screen was last painted with, and when. Used to keep the display
 -- self-healing: see the ID_QUERY handling in handle_sl_frame.
 lastPaintedPatch = nil
@@ -669,7 +658,10 @@ end
 -- by CC number. A second call for the same control before it flushes
 -- REPLACES the pending value rather than queuing a duplicate - this is what
 -- lets a fast encoder sweep collapse to one CC per control instead of one
--- per tick (see controller_midi_in's return path).
+-- per tick (see controller_midi_in's return path). Encoders send this
+-- absolute 0-127 tracked value, not relative increments; switching to
+-- relative would mean changing the accumulate-and-clamp path that produces
+-- `value` and this replace-in-place coalescing, not just a constant.
 function queue_cc(control, value)
 	if value < 0 then value = 0 elseif value > 127 then value = 127 end
 	if pendingCC[control] == nil then
@@ -862,21 +854,15 @@ end
 -- pixels that no other id draws. A change to one id's memo does not invalidate any other id,
 -- so a caller that layers draws - e.g. a filled rect under text - will corrupt the screen the
 -- moment only the bottom layer changes and the top layer is skipped as unchanged; the device
--- has no concept of layers, it paints strictly in message order. Use invalidate(ids) to force
--- every id sharing an unavoidable overlap to be resent together as one unit - see
--- draw_text_with_erase() below for the one place this project needs that escape hatch (the
--- zoom screen's zset/zname/znext, which must draw at maxWidth=0 and so cannot self-clear).
+-- has no concept of layers, it paints strictly in message order. A caller that cannot avoid
+-- overlap must clear the shared ids' drawn[] entries together so they resend as one unit -
+-- see draw_text_with_erase() below for the one place this project needs that (the zoom
+-- screen's zset/zname/znext, which must draw at maxWidth=0 and so cannot self-clear).
 
 drawn = {}
 
 function invalidate_all()
 	drawn = {}
-end
-
-function invalidate(ids)
-	for i = 1, #ids do
-		drawn[ids[i]] = nil
-	end
 end
 
 function tuple_equal(a, b, n)
@@ -946,17 +932,16 @@ BIG_MAX_CHARS = 27
 
 -- Same idea, for SIZE_MEDIUM text on the zoom screen. Only zset uses this now
 -- (see that constant's comment above for why its geometry is an estimate) -
--- znext moved to SIZE_SMALL + trusted Max Width (see ZSET_TRUST_MAXWIDTH
--- below) on 2026-08-21 to cut it from 2 queued messages to 1, since it no
--- longer needs character-count truncation at all. SIZE_MEDIUM is smaller than
+-- znext moved to SIZE_SMALL + trusted Max Width on 2026-08-21 to cut it from
+-- 2 queued messages to 1, since it no longer needs character-count
+-- truncation at all. SIZE_MEDIUM is smaller than
 -- SIZE_BIG, so more characters fit in the same width; also unmeasured, retune
 -- the same way as BIG_MAX_CHARS.
 MEDIUM_MAX_CHARS = 36
 
--- truncate_text() cuts zname/zset to exactly these character counts (when
--- ZSET_TRUST_MAXWIDTH is false, for zset - see that flag below; zname always
--- truncates itself) before they are drawn (see draw_text_with_erase() below
--- for how the vacated band is cleared). znext no longer calls truncate_text()
+-- truncate_text() cuts zname/zset to exactly these character counts before
+-- they are drawn (see draw_text_with_erase() below for how the vacated band
+-- is cleared). znext no longer calls truncate_text()
 -- at all - see MEDIUM_MAX_CHARS's comment above. Assert the budget
 -- relationship rather than assuming it: TEXT_STRING_CAP is msg_write_text's
 -- hard transport clamp (FLUSH_BUDGET minus wire overhead - see
@@ -1277,17 +1262,7 @@ for i = 1, POPUP_SEG_COUNT do
 	POPUP_SEG_POS[i] = { math.floor(segX), math.floor(segY) }
 end
 
--- Every id this popup ever draws to - what dismiss_popup() invalidates.
-POPUP_REGION_IDS = {
-	'popupBg', 'popupLabel', 'popupValue',
-	'popupBorderTop', 'popupBorderBottom', 'popupBorderLeft', 'popupBorderRight',
-}
-for i = 1, POPUP_SEG_COUNT do
-	table.insert(POPUP_REGION_IDS, POPUP_SEG_IDS[i])
-end
-
 popupActive = false
-popupControl = nil -- CC_MAP key of whichever encoder's popup is currently showing
 -- Cached label/value for the CURRENTLY showing popup, updated by show_popup() and read by
 -- paint_popup_screen() - so a repaint triggered from elsewhere (paint_screen() dispatching to
 -- paint_popup_screen() because displayMode=='popup', or set_display_mode('popup') itself) can
@@ -1385,7 +1360,7 @@ end
 -- on every single tick, which is wasteful and would likely flicker, defeating the point of this
 -- file's per-region memoization. Instead calls paint_popup_screen() directly; its draw_* calls are
 -- per-id memoized, so the background/border/label are no-ops past the first draw of a given control
--- (matches while popupControl is unchanged) and only a genuinely new value re-queues the value text
+-- (matches while popupCcNumber is unchanged) and only a genuinely new value re-queues the value text
 -- and whichever ring segments actually flipped lit/unlit - a DIFFERENT control taking over redraws
 -- the label because its CC number differs, satisfying "one popup at a time, last-mover-wins" for
 -- free, same as before v5.
@@ -1393,7 +1368,6 @@ function show_popup(eid)
 	local control = ENCODER_CC[eid]
 	if control == nil then return end
 
-	popupControl = control
 	popupCcNumber = CC_MAP[control]
 	popupValue = encoderValue[eid]
 	popupLastActivityIdleTick = idleTicks
@@ -1421,12 +1395,11 @@ POPUP_DISMISS_IDLE_TICKS = 1
 -- v5: popup is now a full-screen mode (set_display_mode('popup')), so dismissal is just switching
 -- BACK to whatever mode was active before the popup took over - reusing set_display_mode's own
 -- proven double-Clear-Screen/drop_queued_display/invalidate_all/sacrificial-redraw sequence rather
--- than the old ad-hoc invalidate_all()+paint_screen() pair. popupActive/popupControl are cleared
--- BEFORE that call so show_popup's "is this a fresh popup" check (popupActive) is already correct
--- if a new popup is triggered again immediately after dismissal.
+-- than the old ad-hoc invalidate_all()+paint_screen() pair. popupActive is cleared BEFORE that
+-- call so show_popup's "is this a fresh popup" check (popupActive) is already correct if a new
+-- popup is triggered again immediately after dismissal.
 function dismiss_popup()
 	popupActive = false
-	popupControl = nil
 	set_display_mode(popupPreviousMode)
 end
 
@@ -1653,36 +1626,6 @@ function draw_text_with_erase(id, text, x, y, align, size, fr, fg, fb, eraseX, e
 	queue_message(msg_write_text(text, drawX, y, 0, drawAlign, size, fr, fg, fb, 0, 0, 0), id .. ':text')
 end
 
--- Governs zset ONLY (renamed from ZSET_ZNEXT_TRUST_MAXWIDTH on 2026-08-21,
--- when znext moved off this flag entirely - see below). SAFE default: false,
--- i.e. zset keeps using draw_text_with_erase() (maxWidth=0, explicit erase
--- rect) exactly like zname. Max Width truncation is only CONFIRMED broken at
--- SIZE_BIG (see BIG_MAX_CHARS's comment) - it has never been tested at
--- SIZE_MEDIUM, which is what zset uses. If a hardware check confirms it
--- truncates correctly at SIZE_MEDIUM too, flip this to true: zset then draws
--- with draw_text() at a real, non-zero maxWidth (self-clearing, like every
--- list row - see draw_list_row()), no erase rect, no truncate_text() call
--- (the device does its own pixel-exact "..." truncation, same as list rows),
--- halving its cost from 2 messages to 1 and removing the ~100ms blank-band
--- flicker on every set change. WHAT TO LOOK FOR on hardware after flipping
--- it: a long set name should truncate cleanly with a trailing "..." (not a
--- single letter, which is the SIZE_BIG failure mode) and a shorter name
--- replacing a longer one must not leave a stale tail. Flip back immediately
--- if either happens.
---
--- znext DELIBERATELY moved off this flag on 2026-08-21 (hardware report: the
--- NEXT line reads as too visually prominent, and every zoom-screen patch
--- change was paying for a second queued message it did not need). It now
--- always draws SIZE_SMALL through the ordinary self-clearing draw_text() path
--- - no truncate_text() call, no erase rect - trusting Max Width
--- unconditionally rather than gating it behind a flag: Max Width truncation
--- is only CONFIRMED broken at SIZE_BIG (see BIG_MAX_CHARS's comment above),
--- and every list row already trusts it at SIZE_SMALL without incident, which
--- is why SIZE_SMALL is the one regime where trusting it needs no hardware
--- check first. This drops znext from 2 queued messages to 1 on every patch
--- change.
-ZSET_TRUST_MAXWIDTH = false
-
 -- "NEXT" line for the zoom screen: the next listRows entry after the ACTIVE
 -- patch with isPatch true, skipping set headers - i.e. what you are about to
 -- change to. The prompt word itself carries whether that patch starts a new
@@ -1713,13 +1656,12 @@ end
 -- second line when a shorter name replaced a longer one (see BIG_MAX_CHARS's
 -- comment).
 --
--- zname always truncates itself via truncate_text() and draws through
--- draw_text_with_erase() (maxWidth=0) - Max Width truncation is CONFIRMED
--- broken at SIZE_BIG, so there is no flag for it. zset does the same UNLESS
--- ZSET_TRUST_MAXWIDTH is flipped on (see that flag above), in which case it
--- draws self-clearing at a real maxWidth like list rows. znext (2026-08-21)
--- always draws SIZE_SMALL, self-clearing, at a real maxWidth, unconditionally
--- - see ZSET_TRUST_MAXWIDTH's comment for why it no longer shares zset's flag.
+-- zname and zset both truncate themselves via truncate_text() and draw
+-- through draw_text_with_erase() (maxWidth=0) - Max Width truncation is
+-- CONFIRMED broken at SIZE_BIG and untested at SIZE_MEDIUM (zset's size), so
+-- neither trusts it (see the zset draw call below for the hardware-check
+-- path that would change that). znext (2026-08-21) always draws SIZE_SMALL,
+-- self-clearing, at a real maxWidth, unconditionally.
 -- Revised layout (design doc): zcnc y=12, zset y=44, zname y=100, znext
 -- y=170, zpos y=210 - bands 12-33 / 44-71 / 100-133 / 170-191 / 210-231, all
 -- non-overlapping (znext's band shrank from SIZE_MEDIUM's ~27px to
@@ -1729,24 +1671,22 @@ end
 function paint_zoom_screen()
 	draw_text('zcnc', currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 
-	if ZSET_TRUST_MAXWIDTH then
-		draw_text('zset', setName, 8, 44, SCREEN_WIDTH - 16, ALIGN_CENTER, SIZE_MEDIUM,
-			110, 170, 230, 0, 0, 0)
-	else
-		draw_text_with_erase('zset', truncate_text(setName, MEDIUM_MAX_CHARS),
-			8, 44, ALIGN_CENTER, SIZE_MEDIUM, 110, 170, 230,
-			0, 44, SCREEN_WIDTH, 27)
-	end
+	-- zset uses maxWidth=0 plus an explicit erase rect: Max Width truncation
+	-- is confirmed broken at SIZE_BIG and untested at SIZE_MEDIUM (zset's
+	-- size). If hardware ever confirms it works at SIZE_MEDIUM, draw_text()
+	-- at a real maxWidth would halve this to 1 message and drop the flicker.
+	draw_text_with_erase('zset', truncate_text(setName, MEDIUM_MAX_CHARS),
+		8, 44, ALIGN_CENTER, SIZE_MEDIUM, 110, 170, 230,
+		0, 44, SCREEN_WIDTH, 27)
 
 	draw_text_with_erase('zname', truncate_text(patchName, BIG_MAX_CHARS),
 		8, 100, ALIGN_CENTER, SIZE_BIG, 255, 255, 255,
 		0, 100, SCREEN_WIDTH, 33)
 
-	-- SIZE_SMALL + trusted Max Width, unconditionally - no flag, no
-	-- truncate_text(), no erase rect. See ZSET_TRUST_MAXWIDTH's comment for
-	-- why znext no longer shares zset's gated path: SIZE_SMALL is the one
-	-- regime list rows already trust Max Width in, so it needs no hardware
-	-- check first. One queued message instead of two.
+	-- SIZE_SMALL + trusted Max Width, unconditionally - no truncate_text(),
+	-- no erase rect, unlike zname/zset above: SIZE_SMALL is the one regime
+	-- list rows already trust Max Width in, so it needs no hardware check
+	-- first. One queued message instead of two.
 	draw_text('znext', next_line_text(), 8, 170, SCREEN_WIDTH - 16, ALIGN_CENTER, SIZE_SMALL,
 		80, 200, 120, 0, 0, 0)
 
@@ -1800,7 +1740,6 @@ function update_screen()
 	if queuedDisplayOps > before then
 		queue_sacrificial_redraw()
 	end
-	screenDirty = false
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
 	print('[sllink] update queued (' .. #pendingMessages .. ' msgs) mode=' .. displayMode ..
@@ -1955,7 +1894,6 @@ function paint_screen()
 		queue_sacrificial_redraw()
 	end
 
-	screenDirty = false
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
 	print('[sllink] paint queued (' .. #pendingMessages .. ' msgs) mode=' .. displayMode ..
@@ -2069,7 +2007,6 @@ function set_display_mode(mode)
 	if queuedDisplayOps > before then
 		queue_sacrificial_redraw()
 	end
-	screenDirty = false
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
 	-- FIX 1 (2026-08-21): always has real content queued (Clear Screen plus a
@@ -2313,7 +2250,7 @@ end
 -- v5 popup interaction: SHORT's plain (displayMode=='zoom') and 'list' or 'zoom' toggle assumes
 -- displayMode is one of exactly those two - false while a popup is showing (displayMode=='popup'),
 -- where it would compute newMode='zoom' regardless of what was actually showing before the popup,
--- ignoring popupPreviousMode and leaving popupActive/popupControl stale-true while displayMode has
+-- ignoring popupPreviousMode and leaving popupActive stale-true while displayMode has
 -- already moved on. Simplest safe choice: treat a Zoom-button SHORT while a popup is up as "dismiss
 -- the popup" rather than a raw list<->zoom toggle - dismiss_popup() already restores
 -- popupPreviousMode via set_display_mode, which is exactly the mode the toggle would otherwise need
@@ -2517,10 +2454,6 @@ function controller_timer_trigger()
 		if not has_keepalive_queued() then
 			send_keepalive()
 		end
-	end
-
-	if screenDirty then
-		paint_screen()
 	end
 
 	-- Also send an Identification Query. Its only purpose is to make the
