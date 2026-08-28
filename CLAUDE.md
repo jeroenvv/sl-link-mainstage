@@ -5,8 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project
 
 macOS SwiftUI app that connects Apple MainStage to a Studiologic SL88 MK2 keyboard over the
-**SL Link** SysEx protocol. Single app target, no external dependencies, no Xcode test target
-(golden-vector codec tests run standalone via `swiftc` - see "Codec tests" below).
+**SL Link** SysEx protocol. Single app target, no external dependencies, no Xcode test target -
+two standalone suites cover it instead: golden-vector codec tests via `swiftc` and an offline Lua
+regression suite for `config.lua` (see "Codec tests" and "Lua tests" below).
 
 This is an implement-to-spec project, not a reverse-engineering one. Studiologic publishes the full
 protocol at <https://github.com/fatarsrl/sl-link> (pinned at commit `4c0824d`, 2026-05-06), with
@@ -51,7 +52,7 @@ Lessons paid for in a long MainStage-bridge session. They are about *how* to wor
 protocol.
 
 **Edit files with the Edit/Write tools, not `python`/`sed` heredocs.** Editing a tracked file from the
-shell makes the harness re-dump the whole file back into context — `config.lua` is ~600 lines, and
+shell makes the harness re-dump the whole file back into context — `config.lua` is ~2,200 lines, and
 doing this repeatedly was the single largest waste of a long session. `Edit` also fails loudly on a
 stale match, where a shell replacement silently no-ops or duplicates a section.
 
@@ -109,6 +110,27 @@ Every golden vector is derived from the tables in the spec's `docs/*.md`, not fr
 at `docs/basics.md:29` (`F0 00 20 1A 16 15 E3 04 01 00 F7`), which is malformed - `E3` has its MSB
 set (illegal for a MIDI data byte) and Clear Screen needs three colour bytes, not one. That exact
 message is instead used as a negative test proving the decoder rejects it.
+
+## Lua tests
+
+`config.lua` has its own offline regression suite, the primary gate for changes to it:
+
+```bash
+./Scripts/run-lua-tests.sh
+```
+
+Two gates: `luac -p` on `config.lua` (fails fast on anything MainStage's own Lua host couldn't even
+load), then `Tests/lua/harness.lua` under `lua`, which drives `config.lua`'s callbacks directly and
+asserts on the bytes/state they produce - 52 assertions covering flush budget and pacing, queue
+convergence, MIDI passthrough, the CC batch cap, `clamp_scroll`, repaint rate, timer re-arm
+intervals, and golden byte vectors cross-checked against `SLLinkEncoder.swift`. Requires `lua`
+(`brew install lua`).
+
+`Tests/` lives outside `SL-Link-Mainstage/` for the same reason as the codec tests above - the app
+target is a `PBXFileSystemSynchronizedRootGroup`, so it's never compiled into the app.
+
+Every assertion is mutation-tested: the convention is to prove a new assertion FAILS on the bug it
+exists to catch before it's trusted.
 
 ## Architecture
 
@@ -183,6 +205,10 @@ Project-specific notes that live only here:
   standby, restart), Display (clear/rect/text/bitmap), Buttons, Encoders, White/RGB LEDs.
   **Out of scope:** device icon upload, Master Volume, Hardware/Pedal Settings queries — their
   constants are kept in `SLLinkProtocol.swift` as spec references, but nothing encodes or decodes them.
+- **Plot Bitmap draws from the SL88's internal bitmap library** (Groups/Icons, no pixel upload
+  needed) — see `docs/implementing-sl-link.md` §5 for the group table and the unverified-on-hardware
+  caveat. The device-logo form of it (`GIDX 0x7F`) is the part that still needs icon upload, so it
+  stays out of scope; the library itself is a separate, unused opportunity.
 - **Two discrepancies are switchable from the dev console** without a rebuild, because they were
   inferred from the reference JUCE implementations rather than confirmed on hardware:
   `SLLinkHeader.defaultHostID = 0x03` with the DeviceID pair persisted in `UserDefaults` (the spec
@@ -212,11 +238,17 @@ ordinary use, not just ±1); buttons `0x00`-`0x07` and `0x0B`, SHORT and LONG; w
 RGB rings; logout in both directions; force logout followed by re-identify; and standby -> restart
 with a full repaint.
 
-Not yet exercised, so treat as unproven: two app instances running concurrently (the DeviceID
-instance-byte strategy); USB unplug/replug mid-session; the Identification Rejected retry path, which
-needs a deliberate DeviceID collision; and Login Recall (`00 06`), which only fires once the keyboard
-has an icon stored for the (HostID, DeviceID) pair and is therefore unreachable while icon upload
-stays out of scope.
+Not yet exercised, so treat as unproven: USB unplug/replug mid-session; the Identification Rejected
+retry path, which needs a deliberate DeviceID collision; and Login Recall (`00 06`), which only fires
+once the keyboard has an icon stored for the (HostID, DeviceID) pair and is therefore unreachable
+while icon upload stays out of scope.
+
+Two app instances running concurrently (the DeviceID instance-byte strategy) remains untested too,
+but only because it didn't occur: a 2026-08-28 hardware run logged a single `instanceID` (`03 6D`),
+zero identification rejections, 3,593 timer-tick lines with 3,593 distinct tick numbers, and the
+documented 2 init / 2 finalize churn - despite the SL88 exposing three port pairs (`SL CTRL`/`SL
+DAW`/`SL LINK`). One observation on one machine/version; the rejection-recovery defences stay. See
+`docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28`.
 
 Timing measured on hardware: outbound paced at ~1 msg/ms sustained 1366 messages with no loss or
 corruption; a full-screen repaint of the demo UI costs ~37 messages, roughly 55 ms of MIDI time. That
