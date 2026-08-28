@@ -269,6 +269,34 @@ from the SL88's APP list — guaranteeing the "showed up briefly, then disappear
 independent of the timer bugs above. Staying quiet lets the APP-list entry survive a churn; if the
 script really is going away for good, the keyboard's own ~5s keepalive timeout removes it anyway.
 
+### Single instance confirmed on hardware (2026-08-28)
+
+The "loaded once per matched USB-MIDI interface" explanation above was carried as *the* cause of the
+repeated `controller_select_patch` calls and the finalize/initialize churn. A full hardware session
+(MainStage + SL88 MK2, logged to `/tmp/lua.log`) shows it did not hold on this run — the script ran as
+exactly **one** instance:
+
+- Only one `instanceID` was ever used (`03 6D`). A second concurrent instance would identify with the
+  same `SL_INSTANCE_START` and get rejected; nothing was.
+- **Zero** `IDENTIFICATION REJECTED` messages appear in the log.
+- 3,593 timer-tick lines carry 3,593 *distinct* tick numbers. Two instances each own their own Lua
+  globals, including `timerTicks`, so concurrency would show two independent counters' values
+  interleaved — duplicates, not a clean sequence.
+- `controller_initialize`/`controller_finalize` each fired exactly twice, matching the documented
+  init → finalize → init churn pattern — one lifecycle churning, not two running side by side.
+
+The SL88 exposes three port pairs (`SL CTRL`, `SL DAW`, `SL LINK` — confirmed by the sniffer
+enumerating all three), which is exactly the situation §8 of `docs/mainstage-device-scripts.md` warns
+can yield two or three script instances. It didn't here: all five `controller_info()` entries declare
+`inport='LINK'`/`outport='LINK'`, so only the LINK pair ever matched.
+
+This is one observation on one MainStage version, one macOS version, one keyboard USB mode — not proof
+the multi-instance scenario can't happen elsewhere. The repeated calls and the finalize/init churn are
+real regardless of instance count and still need their guards; only the *per-interface* explanation for
+them is now unconfirmed. `SL_INSTANCE_START`'s bump-on-rejection, `REIDENTIFY_WAIT_MS`,
+`MAX_SAME_ID_RETRIES` and the `controller_select_patch` early-out all stay as defence against a scenario
+that simply didn't materialise this time.
+
 ---
 
 ## The scroll and page-jump derivation

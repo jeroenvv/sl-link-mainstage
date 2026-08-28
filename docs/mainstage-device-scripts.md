@@ -234,7 +234,10 @@ exact threshold may vary.)*
 **The script is loaded once per matched USB-MIDI interface.** A device exposing three port pairs can
 give you two or three live instances of your script, each with its own Lua globals. Every `print()`
 appears more than once, and any resource that must be unique per host (a session ID, ownership of a
-display) will collide. Design for it.
+display) will collide. Design for it. (One recorded SL88 MK2 run exposed all three pairs but loaded a
+single instance — see
+`docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28`; the guidance above
+still stands as defence.)
 
 **MainStage tears the script down and re-initialises it repeatedly** — `initialize → finalize →
 initialize` within seconds, and not only when the user quits. Do **not** treat `controller_finalize` as

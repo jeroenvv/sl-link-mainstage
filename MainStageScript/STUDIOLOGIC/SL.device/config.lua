@@ -1813,11 +1813,15 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 end
 
 -- MUST NOT send a Logout Request. MainStage tears this script down and re-initialises it repeatedly
--- (init -> finalize -> init -> ... within seconds - partly because the script is loaded once per
--- matched USB-MIDI interface). A Logout Request here actively removes the app from the SL88's APP
--- list on every one of those spurious teardowns. Staying quiet lets the entry survive a churn; if
--- the script really is going away for good, the keyboard's own ~5s keepalive timeout removes it
--- anyway. See docs/config-lua-history.md#controller_finalize-sends-no-logout-request.
+-- (init -> finalize -> init -> ... within seconds) as a SINGLE script instance - confirmed on
+-- hardware, not the per-USB-MIDI-interface multi-instance scenario documented for this keyboard. A
+-- different MainStage/macOS version or USB mode could still produce multiple instances, so the
+-- guards against that stay regardless. See
+-- docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28. A Logout Request here
+-- actively removes the app from the SL88's APP list on every one of those spurious teardowns.
+-- Staying quiet lets the entry survive a churn; if the script really is going away for good, the
+-- keyboard's own ~5s keepalive timeout removes it anyway. See
+-- docs/config-lua-history.md#controller_finalize-sends-no-logout-request.
 function controller_finalize()
 	print('[sllink] controller_finalize (no logout sent - see note)')
 	pendingMessages = {}
@@ -2099,9 +2103,13 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 		return nil
 	end
 
-	-- MainStage calls this repeatedly with identical values (observed 5x for one patch change, partly
-	-- because the script is loaded once per USB-MIDI interface). Repainting each time would waste a
-	-- lot of MIDI - a full repaint is several messages - so only redraw on a real change.
+	-- MainStage calls this repeatedly with identical values (observed 5x for one patch change) - this
+	-- is MainStage's own behaviour on a SINGLE script instance, confirmed on hardware, not the
+	-- per-USB-MIDI-interface multi-instance scenario documented for this keyboard; a different
+	-- MainStage/macOS version or USB mode could still produce it, so this guard stays regardless. See
+	-- docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28. Repainting each
+	-- time would waste a lot of MIDI - a full repaint is several messages - so only redraw on a real
+	-- change.
 	--
 	-- Extended beyond the original name-only check to also compare currentSetIndex/currentPatchIndex:
 	-- two identically named patches in different sets or positions must still move the highlight,

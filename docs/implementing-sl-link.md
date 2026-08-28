@@ -270,8 +270,10 @@ any documentation and cost a great deal to discover.
   discards the **whole** array, not the overflow. Send one message per flush.
 - **`io` does not exist** in the sandbox (`attempt to index global 'io'`), so no file-based side
   channel. Wrap any attempt in `pcall`.
-- **The script is loaded once per USB-MIDI interface** — expect two instances, contending for a
-  DeviceID (hence §3's rejection recovery) and both driving the display.
+- **The script can be loaded once per USB-MIDI interface** — expect up to two instances, contending
+  for a DeviceID (hence §3's rejection recovery) and both driving the display. The one hardware run
+  measured so far loaded a single instance instead (see
+  `docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28`).
 - **MainStage tears the script down and re-initialises it repeatedly.** Do not treat
   `controller_finalize` as "the user quit" and do not send a Logout Request there, or every churn
   removes you from the App Menu.

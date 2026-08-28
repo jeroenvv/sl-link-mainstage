@@ -193,8 +193,10 @@ still the first time the script talks back to MainStage.
   incarnation's registration under `0x6D` because **no logout is sent on teardown** — a script can
   only transmit by returning MIDI from a callback, and `controller_finalize` has no return path. The
   keyboard therefore answers `IDENTIFICATION REJECTED (reason 00)`, the script bumps to `0x6E`, and
-  re-registers **as a different app**, which is why the user's APP-list selection is lost. Two script
-  instances (one per USB-MIDI interface) both starting at `0x6D` compound it.
+  re-registers **as a different app**, which is why the user's APP-list selection is lost. A second
+  script instance — possible if MainStage loads one per USB-MIDI interface — would compound this by
+  also starting at `0x6D`; the one hardware run measured so far ran as a single instance instead (see
+  `docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28`).
 
   Untested fix to try first: on rejection, **retry the same instance ID after a pause of more than
   5 s** rather than immediately bumping. The SL88 drops a host that goes silent for ~5 s, so the
