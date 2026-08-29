@@ -130,6 +130,22 @@ prints each FLUSH/tick line paired with the timestamp delta since the previous o
 `pending=`/`queueDepthAfter=` fields already in each line then tell you how many ticks and how much
 queue depth changed per interval, without needing a Lua-side clock (`os` is absent from the sandbox).
 
+### `FLUSH_SOON_MS` retuned to 35 (2026-08-29)
+
+Step one of the planned sweep, taken next because `FLUSH_SOON_MS` paces the tick interval for the
+*entire* drain, not just content: a popup entry is roughly 13 ticks total, the 4 remaining dead ticks
+before the first pixel (the two Clear Screens plus the `MODE_SWITCH_SETTLE_TICKS` guard on each) and
+the ~8 content messages after it. Lowering the constant scales both halves together — at 50ms that's
+~650ms per popup entry; at 35ms the same 13 ticks would be ~455ms.
+
+This is an **experiment pending hardware confirmation**, not yet run. Watch for the documented failure
+mode — the SL88 silently drops a display message that arrives while it is still painting the previous
+one — which shows up as a missing region (a list row or zoom region that never appears) or a stale
+tail (a shorter name failing to fully overwrite a longer one that was there before).
+
+Revert ladder if either symptom appears: 35 -> 50 (previous confirmed-good) -> 100 (original floor,
+last known-good) only if 50 itself turns out to lose messages.
+
 ### Per-region coalescing under rapid navigation
 
 Measured on hardware: rapid patch navigation queued 4, 5, 6, 7, then 10 messages in a row — at one
