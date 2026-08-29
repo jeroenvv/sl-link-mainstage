@@ -517,32 +517,12 @@ do
 	)
 end
 
--- Same property, but for the id..':rect'/id..':text' split draw_text_with_erase
--- queues (see base_region_id's comment) rather than a plain id - drawn[] is
--- keyed on the UNSUFFIXED id while the two queued messages carry the suffixed
--- regionIds, so drop_queued_display must unwind the suffix via
--- base_region_id() to find the memo entry at all. A plain-id-only test cannot
--- catch a regression here, since base_region_id() is a no-op on a plain id.
-do
-	pendingMessages = {}
-	invalidate_all()
-	draw_text_with_erase('test:drop-memo-split', 'Hi', 0, 0, ALIGN_LEFT, SIZE_SMALL, 1, 2, 3, 0, 0, 10, 10)
-	check(
-		'draw_text_with_erase primes drawn[] under the UNSUFFIXED id',
-		drawn['test:drop-memo-split'] ~= nil
-	)
-	check(
-		'draw_text_with_erase queues both the :rect and :text halves',
-		#pendingMessages == 2 and pendingMessages[1].regionId == 'test:drop-memo-split:rect' and
-		pendingMessages[2].regionId == 'test:drop-memo-split:text'
-	)
-
-	drop_queued_display()
-	check(
-		'drop_queued_display clears the split id..":rect"/id..":text" pair back to the unsuffixed drawn[] entry',
-		drawn['test:drop-memo-split'] == nil
-	)
-end
+-- draw_text_with_erase()/base_region_id() - which used to need a second version of this test for the
+-- id..':rect'/id..':text' coalescing-key split they produced - were removed 2026-08-29 when the zoom
+-- screen moved to device-side centring at a real maxWidth (see
+-- docs/config-lua-history.md#zoom-screen-centring-moved-to-the-device-2026-08-29). Nothing in
+-- config.lua produces a split regionId any more, so the plain-id case above is the only one left to
+-- cover.
 
 -- MARK: - 14. The trailing sacrificial redraw carries no regionId
 --
@@ -725,6 +705,53 @@ do
 	local text = write_text_body(pendingMessages[1])
 	check('popup label contains the encoder name (ENC 1)', text:find(name, 1, true) ~= nil)
 	check('popup label contains the CC number (CC 59)', text:find('CC ' .. ccNumber, 1, true) ~= nil)
+end
+
+-- MARK: - 21. paint_zoom_screen: zset/zname centre via the device now, at a real non-zero maxWidth
+--
+-- 2026-08-29: zset/zname moved from a Lua pixel-width estimate (maxWidth=0, manual ALIGN_LEFT
+-- centring via the since-removed draw_text_with_erase()/estimate_text_width_px()) to the device's
+-- own ALIGN_CENTER at a real maxWidth - see
+-- docs/config-lua-history.md#zoom-screen-centring-moved-to-the-device-2026-08-29. This collapses a
+-- full zoom repaint from 7 queued display messages (zcnc + zset rect/text + zname rect/text + znext
+-- + zpos) to 5 (zcnc + zset + zname + znext + zpos) - one message each for zset/zname instead of
+-- two - and every message must still fit FLUSH_BUDGET. align/maxWidth are decoded from the message's
+-- own bytes (msg_write_text: 7-byte header, itemType, func, x msb/lsb, y msb/lsb, then maxWidth
+-- msb/lsb at 14/15 and align at 16), the same "decode the wire bytes, don't re-derive the string"
+-- idiom write_text_body (test 20) uses, so this catches a real encoding regression rather than just
+-- a Lua-side argument-passing bug.
+local function align_of(msg) return msg[16] end
+local function max_width_of(msg) return msg[14] * 128 + msg[15] end
+
+do
+	displayMode = 'zoom'
+	patchName, setName, currentConcert =
+		'A Reasonably Long Patch Name', 'A Reasonably Long Set Name', 'Test Concert'
+	drawn = {}
+	pendingMessages = {}
+
+	paint_zoom_screen()
+
+	check(
+		'paint_zoom_screen queues zcnc + zset + zname + znext + zpos = 5 messages (was 7 before the device-centring migration)',
+		#pendingMessages == 5
+	)
+
+	local allWithinBudget = true
+	for i = 1, #pendingMessages do
+		if #pendingMessages[i] > FLUSH_BUDGET then allWithinBudget = false end
+	end
+	check('every message paint_zoom_screen queues fits within FLUSH_BUDGET', allWithinBudget)
+
+	local byRegion = {}
+	for i = 1, #pendingMessages do
+		byRegion[pendingMessages[i].regionId] = pendingMessages[i]
+	end
+
+	check('zset draws ALIGN_CENTER', byRegion['zset'] ~= nil and align_of(byRegion['zset']) == ALIGN_CENTER)
+	check('zset draws at a real, non-zero maxWidth', byRegion['zset'] ~= nil and max_width_of(byRegion['zset']) > 0)
+	check('zname draws ALIGN_CENTER', byRegion['zname'] ~= nil and align_of(byRegion['zname']) == ALIGN_CENTER)
+	check('zname draws at a real, non-zero maxWidth', byRegion['zname'] ~= nil and max_width_of(byRegion['zname']) > 0)
 end
 
 -- MARK: - Summary

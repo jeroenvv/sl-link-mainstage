@@ -485,6 +485,67 @@ rendered slightly right-of-centre at 7, so it was retuned to 8 (closer to the un
 `7.33 = 11*22/33`). No real glyph-metrics table exists for this font; both constants are eye-calibrated
 the same way as `BIG_MAX_CHARS`/`MEDIUM_MAX_CHARS` — retune together if geometry or font changes.
 
+### Zoom-screen centring moved to the device (2026-08-29)
+
+A hardware report: both `zset` (the set name) and `zname` (the patch name) rendered slightly too far
+**right** on the zoom screen. `CHAR_WIDTH_MEDIUM` had already been retuned once for exactly this
+symptom, from a derived 7 to an eye-calibrated 8 (see [`CHAR_WIDTH`
+calibration](#char_width-calibration), 2026-08-27) — so a second retune of the same constants would
+have been a third guess at the same estimate, not a fix. The arithmetic in
+`estimate_text_width_px()`/`draw_text_with_erase()` was checked and is self-consistent: it always
+places the *estimated* centre at `x=160`. That pins the bug on the per-character-width constants
+themselves — the real glyphs are wider than either estimate — which is exactly the class of problem
+an eye-calibrated guess can't close reliably: there was no way to know the next guess would be right
+either.
+
+**The fix: stop estimating.** `zset`/`zname` moved from `maxWidth = 0` (manual `ALIGN_LEFT` centring
+at a Lua-computed X, the only option available at `maxWidth = 0` — see [Manual centering at `maxWidth
+= 0`](#manual-centering-at-maxwidth-0)) to a real, non-zero `maxWidth` with the device's own
+`ALIGN_CENTER`, matching the convention `znext` and every list row already use. No estimate, no
+manual X — the device centres exactly, because centring within a real width-bound area is precisely
+what `ALIGN_CENTER` is defined to do (see that same section's citation of the upstream spec).
+
+**Evidence this works, from elsewhere in this same file:** the encoder value popup's `popupLabel` and
+`popupValue` (`draw_popup_label()`/`draw_popup_value()`, both `SIZE_MEDIUM`) already draw with a real
+`maxWidth` and `ALIGN_CENTER`, and were confirmed correct on hardware the same day (2026-08-29, see
+[The Knob bitmap replaces the ring](#the-knob-bitmap-replaces-the-ring-2026-08-29)). `znext` and every
+list row have likewise trusted a real `maxWidth` at `SIZE_SMALL` since before this fix, with no
+reported centring or truncation complaint. Device-side centring was therefore already proven at the
+sizes this migration needed; the zoom screen was the one holdout still estimating in Lua.
+
+**Truncation is a separate device feature, and stays broken.** Max Width *truncation* (cutting a
+string to fit visually, appending `...`) is confirmed broken at `SIZE_BIG` (a long name once rendered
+as a single letter plus `...` — see [Max Width truncation broken at
+`SIZE_BIG`](#max-width-truncation-broken-at-size_big)). Max Width *centring* (justifying a string that
+already fits within its box) is a different code path on the device and was never implicated in that
+finding. So `truncate_text(patchName, BIG_MAX_CHARS)` / `truncate_text(setName, MEDIUM_MAX_CHARS)`
+still run before every draw, belt-and-braces: pre-truncating in Lua means the device is never asked to
+truncate a name itself, regardless of what its centring logic does. **Revert path:** if a long patch
+name ever renders on hardware as a single letter plus `...`, the device's own truncation is firing —
+go back to `maxWidth = 0` with manual `ALIGN_LEFT` centring (this section's own git history has the
+removed implementation), not another `BIG_MAX_CHARS` retune.
+
+**What this removed.** `draw_text_with_erase()` existed only because `maxWidth = 0` leaves Write
+Text's background box exactly as wide as the glyphs drawn, so a shorter name doesn't fully overwrite a
+longer one underneath it — it queued an explicit black erase rect ahead of the text as two separate
+messages, coalesced under one region id via an `id..':rect'`/`id..':text'` split. A real, non-zero
+`maxWidth` makes Write Text's background box fill the *whole* box regardless of glyph run (the same
+fact that makes every list row and `znext` self-clearing — see [Settled
+facts](#settled-facts-max-width-and-the-write-text-background-box)), so that erase rect — and the
+function that drew it — is gone along with `estimate_text_width_px()`,
+`CHAR_WIDTH_BIG`/`CHAR_WIDTH_MEDIUM`, and the "MANUAL CENTERING for maxWidth=0 lines" comment block
+that explained the old workaround. `base_region_id()` existed solely to unwind that `:rect`/`:text`
+split back to the one `drawn[]` entry both halves shared, for `drop_queued_display()` — with nothing
+left that produces a split regionId, `drop_queued_display()` now indexes `drawn[]` with `m.regionId`
+directly and `base_region_id()` was removed too. `Tests/lua/harness.lua` lost the one test written
+against that split-id behaviour and gained a `paint_zoom_screen()` test asserting the new message
+shape and that `zset`/`zname` decode as `ALIGN_CENTER` at a non-zero `maxWidth` on the wire.
+
+**Message-count saving.** Each of `zset`/`zname` drops from 2 queued messages (erase rect + text) to
+1, so a full zoom repaint (`zcnc` + `zset` + `zname` + `znext` + `zpos`) falls from 7 queued display
+messages to 5 — at one display message per flush (`FLUSH_SOON_MS`-paced), two fewer flushes' worth of
+latency on every zoom repaint, on top of fixing the reported off-centre rendering.
+
 ### Typography substitutions: non-ASCII glyphs
 
 The SLMK2 font covers only `0x20`–`0x80` (`append_text` clamps everything outside that range to a
