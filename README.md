@@ -42,6 +42,14 @@ Releases are published automatically whenever a change to the device script (`Ma
 lands on `main`. Grab the zip from the [Releases page](../../releases), unzip it, and run
 `./Scripts/install-mainstage-script.sh` from the unzipped folder.
 
+After unzipping, `SL.device` shows up in Finder as a single file rather than a folder — that's
+expected, not a broken download. MainStage registers `.device` as a package type, so Finder
+presents it as one item; it's still a real directory containing `config.lua` (the nested
+`STUDIOLOGIC/SL.device` layout matches the manufacturer/model `controller_info()` reports).
+Right-click and choose **Show Package Contents** to look inside from Finder, or just treat it as a
+normal directory from the terminal. Either way, nothing needs to be unpacked by hand —
+`install-mainstage-script.sh` copies the whole bundle to where MainStage expects it.
+
 ## Documentation
 
 - [`docs/implementing-sl-link.md`](docs/implementing-sl-link.md) — reusable guide to implementing the
