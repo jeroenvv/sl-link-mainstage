@@ -592,6 +592,29 @@ Lit-segment count scales by `value / 127` (not `/ 128`), so `value = 0` lights z
 `value = 127` — the actual maximum — lights all 20 exactly, rather than topping out at 19 the way a
 `/128` divisor would (`127/128*20 = 19.84`, floors to 19).
 
+### The Knob bitmap replaces the ring (2026-08-29)
+
+v5's hand-drawn 20-segment ring is gone. Plot Bitmap and the Knob icon group (`BMP_GROUP_KNOB`,
+icons `0x00`–`0x0C`, 61×54 px, a filling ring gauge with device-side gradient colouring) were
+verified on hardware — see `docs/implementing-sl-link.md` §5 — closing the question the
+`BITMAP_PROBE` scaffolding existed to answer, so that scaffolding (the constant, the probe grid
+screen, the `handle_login` branch, the harness assertion pinning it false) is removed along with the
+ring. The popup is now three stacked, non-overlapping bands: the control's name and CC number
+(`SIZE_MEDIUM`, e.g. `ENC 1 - CC 59`) above a single centred Knob bitmap, and the 0–127 value
+(`SIZE_MEDIUM`, white) below it — not inside it, because a 61×54 icon cannot host a legible
+`SIZE_BIG` number the way the old ring's open centre could.
+
+This collapses `paint_popup_screen()`'s message count from 27 (bg + 4 border strips + label + 20
+ring segments + value) to 8 (bg + 4 border strips + label + knob + value) — a ~70% cut, all still
+inside `FLUSH_BUDGET` per message. The value/knob-index mapping keeps the old ring's `/127`-not-
+`/128` reasoning: `math.floor(value * (BMP_KNOB_LEVELS - 1) / 127)` so `value = 0` selects icon 0
+(empty) and `value = 127` — the actual maximum — selects icon `0x0C` (full) exactly, the same
+endpoint-correctness argument as the ring's lit-segment count above, just against 12 icon steps
+instead of 20 segments.
+
+This closes out the v1–v5 popup history above — the popup's visual design is now the Knob bitmap
+described here, not the ring.
+
 ---
 
 ## Rejected approaches

@@ -647,38 +647,85 @@ do
 	)
 end
 
--- MARK: - 18. Bitmap probe screen: every message fits FLUSH_BUDGET
+-- MARK: - 18. popup_knob_icon: value/127 -> icon/(BMP_KNOB_LEVELS-1), both endpoints and a midpoint
 --
--- paint_bitmap_probe_screen() (DIAGNOSTIC SCAFFOLDING, reached only when BITMAP_PROBE is true -
--- see that constant's declaration) queues 13 icons + 13 labels + a background rect + the trailing
--- sacrificial redraw, all as SEPARATE messages (rule 2 in config.lua's banner: one message per
--- flush, <= FLUSH_BUDGET bytes - a message over the ceiling is dropped whole, not truncated).
+-- v6 replaced the popup's 20-segment ring with the native Knob bitmap (13 icons, 0x00 empty -
+-- 0x0C full - see docs/config-lua-history.md#the-knob-bitmap-replaces-the-ring-2026-08-29). Same
+-- /127-not-/128 reasoning as the old popup_lit_count: value=0 must land on icon 0 and value=127
+-- (the actual maximum) must land on the actual last icon, not one short of it.
+check('popup_knob_icon: value 0 -> icon 0', popup_knob_icon(0) == 0)
+check('popup_knob_icon: value 127 -> icon 12 (BMP_KNOB_LEVELS-1)', popup_knob_icon(127) == BMP_KNOB_LEVELS - 1)
+check('popup_knob_icon: value 64 -> icon 6 (midpoint)', popup_knob_icon(64) == 6)
+
+do
+	local allInRange = true
+	for v = 0, 127 do
+		local icon = popup_knob_icon(v)
+		if icon < 0 or icon > BMP_KNOB_LEVELS - 1 then allInRange = false end
+	end
+	check('popup_knob_icon stays within 0..BMP_KNOB_LEVELS-1 across the whole 0-127 range', allInRange)
+end
+
+-- BMP_ICON_W (61) is odd, so centring it (POPUP_CENTER_X - BMP_ICON_W / 2) lands on a half-pixel
+-- unless floored - append_msb_lsb's value%128 on a non-integer x would corrupt the Plot Bitmap
+-- message's x byte pair, not just draw one pixel off. math.floor(POPUP_CENTER_X - BMP_ICON_W/2)
+-- with POPUP_CENTER_X=160 gives 129, matching the suggested screen-centred x directly.
+check('POPUP_KNOB_X is a whole pixel (floored, not a fractional centring result)',
+	POPUP_KNOB_X == math.floor(POPUP_KNOB_X))
+check('POPUP_KNOB_X centres the 61px-wide icon on the 320px screen', POPUP_KNOB_X == 129)
+
+-- MARK: - 19. paint_popup_screen: reduced message count, every message fits FLUSH_BUDGET
+--
+-- The Knob-bitmap redesign collapses the old bg + 4 border strips + label + 20 ring segments +
+-- value (27 messages) down to bg + 4 border strips + label + knob + value (8 messages) - see
+-- docs/config-lua-history.md#the-knob-bitmap-replaces-the-ring-2026-08-29 for the before/after.
 do
 	drawn = {}
 	pendingMessages = {}
-	displayMode = 'list'
-	patchName, setName, currentConcert = 'Test Patch', 'Test Set', 'Test Concert'
+	popupControlName, popupCcNumber, popupValue = 'ENC 1', 59, 64
 
-	paint_bitmap_probe_screen()
+	paint_popup_screen()
 
 	check(
-		'paint_bitmap_probe_screen queues 13 icons + 13 labels + background + sacrificial redraw',
-		#pendingMessages == 2 * BMP_KNOB_LEVELS + 2
+		'paint_popup_screen queues bg + 4 border strips + label + knob + value = 8 messages',
+		#pendingMessages == 8
 	)
 
 	local allWithinBudget = true
 	for i = 1, #pendingMessages do
 		if #pendingMessages[i] > FLUSH_BUDGET then allWithinBudget = false end
 	end
-	check('every message the bitmap probe screen queues fits within FLUSH_BUDGET', allWithinBudget)
+	check('every message paint_popup_screen queues fits within FLUSH_BUDGET', allWithinBudget)
 end
 
--- MARK: - 19. BITMAP_PROBE ships false
+-- MARK: - 20. Popup label names the physical encoder AND its CC number
 --
--- BITMAP_PROBE is diagnostic scaffolding (see its declaration in config.lua) that swaps the
--- normal screen for the Knob-icon probe grid on every login. This guard makes sure it can never
--- ship on by accident.
-check('BITMAP_PROBE is false in the committed file', BITMAP_PROBE == false)
+-- draw_popup_label's text is 'ENC 1 - CC 59'-shaped (name .. ' - CC ' .. ccNumber). Decoded back
+-- from the Write Text message's own byte layout (msg_write_text: 7-byte header, IT_DISPLAY,
+-- DISP_WRITE_TEXT, x(2)/y(2)/maxWidth(2), align, size, fg(3), bg(3), then the 0x00-terminated
+-- text - text starts at byte 24) rather than re-deriving the string, so this catches a real
+-- encoding bug, not just a Lua string-concatenation bug.
+local function write_text_body(msg)
+	local chars = {}
+	for i = 24, #msg do
+		if msg[i] == 0x00 then break end
+		chars[#chars + 1] = string.char(msg[i])
+	end
+	return table.concat(chars)
+end
+
+do
+	drawn = {}
+	pendingMessages = {}
+	local name = ENCODER_NAME[EID_ZONE1]
+	local ccNumber = CC_MAP[ENCODER_CC[EID_ZONE1]]
+
+	draw_popup_label(name, ccNumber)
+
+	local text = write_text_body(pendingMessages[1])
+	check('popup label contains the encoder name (ENC 1)', text:find(name, 1, true) ~= nil)
+	check('popup label contains the CC number (CC 59)', text:find('CC ' .. ccNumber, 1, true) ~= nil)
+end
 
 -- MARK: - Summary
 
