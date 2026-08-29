@@ -65,6 +65,15 @@
 
 -- MARK: - Protocol constants (mirror SLLinkProtocol.swift exactly)
 
+-- DIAGNOSTIC SCAFFOLDING - OFF by default. When true, handle_login() paints
+-- paint_bitmap_probe_screen() (all 13 Knob bitmap icons in a grid) instead of the normal screen,
+-- to answer the still-open hardware question in docs/implementing-sl-link.md §5 ("Unverified on
+-- hardware"): do Plot Bitmap icons render at all, and what does the gradient colouring look like.
+-- Remove this constant, its handle_login() branch, and the "MARK: - Bitmap probe" section below
+-- once that question is answered on hardware. Tests/lua/harness.lua asserts this is false in the
+-- committed file - never ship it true.
+BITMAP_PROBE = false
+
 SL_PORT = 'LINK' -- see the banner above; NOT 'SL LINK'
 
 SL_HEADER = { 0xF0, 0x00, 0x20, 0x1A, 0x16 }
@@ -203,6 +212,14 @@ SYS_LOGIN_RECALL = 0x06
 DISP_WRITE_TEXT = 0x00
 DISP_CLEAR_SCREEN = 0x01
 DISP_DRAW_RECT = 0x02
+DISP_PLOT_BITMAP = 0x03
+
+-- Internal bitmap library (Plot Bitmap draws a device-stored black-and-white icon, coloured
+-- on-device from the message's own FG/BG - see docs/implementing-sl-link.md §5's Group/Icon
+-- table for the rest of the library). Only the Knob group is used by this project; kept minimal
+-- here rather than transcribing the whole appendix.
+BMP_GROUP_KNOB = 0x00
+BMP_KNOB_LEVELS = 13 -- icons 0x00-0x0C, 61x54 px each
 
 -- Text align / size
 ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT = 0x00, 0x01, 0x02
@@ -701,6 +718,22 @@ function msg_draw_rect(x, y, w, h, r, g, b)
 	return m
 end
 
+-- Payload order per the spec / SLLinkEncoder.displayPlotBitmap: X(2) Y(2) GroupIdx IconIdx FG(3)
+-- BG(3) - groupIndex/iconIndex are single 7-bit bytes, NOT msb/lsb split (unlike x/y/w/h above).
+function msg_plot_bitmap(x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb)
+	local m = sl_header()
+	table.insert(m, IT_DISPLAY)
+	table.insert(m, DISP_PLOT_BITMAP)
+	append_msb_lsb(m, x)
+	append_msb_lsb(m, y)
+	table.insert(m, groupIndex)
+	table.insert(m, iconIndex)
+	append_rgb(m, fr, fg, fb)
+	append_rgb(m, br, bg, bb)
+	table.insert(m, SL_END)
+	return m
+end
+
 -- MARK: - Per-region memoization
 --
 -- Ported from SL-Link-Mainstage/SLLink/SLLinkDisplay.swift: draw_text/draw_rect remember the full
@@ -744,6 +777,61 @@ function draw_rect(id, x, y, w, h, r, g, b)
 	if tuple_equal(drawn[id], t, #t) then return end
 	drawn[id] = t
 	queue_message(msg_draw_rect(x, y, w, h, r, g, b), id)
+end
+
+-- Like draw_text/draw_rect, but for Plot Bitmap. A bitmap fully replaces the pixels beneath it -
+-- no alpha channel (docs/implementing-sl-link.md §5) - so it is self-clearing the same way a
+-- Write Text redraw is, and satisfies the non-overlap rule above on its own.
+function draw_bitmap(id, x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb)
+	local t = { x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb }
+	if tuple_equal(drawn[id], t, #t) then return end
+	drawn[id] = t
+	queue_message(msg_plot_bitmap(x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb), id)
+end
+
+-- MARK: - Bitmap probe (DIAGNOSTIC SCAFFOLDING, BITMAP_PROBE only)
+--
+-- TEMPORARY - remove this whole section, BITMAP_PROBE's declaration and its handle_login()
+-- branch once the hardware question at docs/implementing-sl-link.md §5 ("Unverified on
+-- hardware") is answered. Plots all 13 Knob icons (BMP_GROUP_KNOB, 0x00-0x0C) in a 5x3 grid -
+-- 13x61px does not fit a 320px-wide screen in one row, but 5x61=305px does, and 3 rows of 54px
+-- fits the 240px height - each with a small index label underneath so a rendered picture can be
+-- matched back to the icon index that produced it. Orange-on-black (POPUP_SEG_LIT, the popup's
+-- own colour) so the on-device gradient colouring is visible against the colour a real popup
+-- rework would actually use.
+BMP_ICON_W = 61
+BMP_ICON_H = 54
+BMP_GRID_COLS = 5
+BMP_GRID_ROWS = 3 -- ceil(BMP_KNOB_LEVELS / BMP_GRID_COLS)
+BMP_LABEL_H = 12 -- band reserved under each icon for its SIZE_SMALL index label
+
+-- Every icon/label is its own draw_bitmap/draw_text call - own region id, own queued message, no
+-- bundling (pacing is the transport's job, per flush_pending). The one 'probeBg' rect UNDER all of
+-- them is safe despite the general non-overlap rule (see MARK: - Per-region memoization above):
+-- this screen has no dynamic content, so every call paints bg+icons+labels together as one unit -
+-- there is no code path that redraws probeBg alone while leaving the icons/labels stale.
+--
+-- Cell geometry is computed from SCREEN_WIDTH/SCREEN_HEIGHT here (not hardcoded), but only inside
+-- the function body - SCREEN_WIDTH/SCREEN_HEIGHT are declared further down, under MARK: - Screen.
+function paint_bitmap_probe_screen()
+	local cellW = math.floor(SCREEN_WIDTH / BMP_GRID_COLS)
+	local cellH = BMP_ICON_H + BMP_LABEL_H
+	local fg, bg = POPUP_SEG_LIT, { 0, 0, 0 }
+	draw_rect('probeBg', 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, bg[1], bg[2], bg[3])
+	for icon = 0, BMP_KNOB_LEVELS - 1 do
+		local col = icon % BMP_GRID_COLS
+		local row = math.floor(icon / BMP_GRID_COLS)
+		local cellX = col * cellW
+		local cellY = row * cellH
+		local iconX = cellX + math.floor((cellW - BMP_ICON_W) / 2)
+		draw_bitmap('probeIcon' .. icon, iconX, cellY, BMP_GROUP_KNOB, icon,
+			fg[1], fg[2], fg[3], bg[1], bg[2], bg[3])
+		draw_text('probeLabel' .. icon, tostring(icon), cellX, cellY + BMP_ICON_H, cellW,
+			ALIGN_CENTER, SIZE_SMALL, fg[1], fg[2], fg[3], bg[1], bg[2], bg[3])
+	end
+	-- Trailing sacrificial redraw (see queue_sacrificial_redraw's comment) - the same "final flush
+	-- of a repaint is silently lost" finding applies to this screen as much as any other.
+	queue_sacrificial_redraw()
 end
 
 -- MARK: - Screen
@@ -1608,7 +1696,13 @@ function handle_login()
 	-- Fresh/re-confirmed session: make sure everything is resent rather than trusting our memo, which
 	-- may record draws sent before the keyboard had actually identified/confirmed us.
 	invalidate_all()
-	paint_screen()
+	if BITMAP_PROBE then
+		-- DIAGNOSTIC SCAFFOLDING (see BITMAP_PROBE's declaration and the "MARK: - Bitmap probe"
+		-- section) - remove this branch once the Plot Bitmap hardware question is answered.
+		paint_bitmap_probe_screen()
+	else
+		paint_screen()
+	end
 end
 
 function handle_standby()

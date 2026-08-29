@@ -147,6 +147,16 @@ checkHex(
 	'F0 00 20 1A 16 03 6D 04 02 00 0A 00 14 00 1E 00 28 64 32 19 F7'
 )
 
+-- Cross-checked against SLLinkEncoder.displayPlotBitmap(id1: 0x03, id2: 0x6D, x: 100, y: 50,
+-- groupIndex: 0x00, iconIndex: 0x05, foreground: SLColor(r: 255, g: 140, b: 0),
+-- background: SLColor(r: 0, g: 0, b: 0)) via the swiftc recipe in .claude/skills/lua-harness/
+-- SKILL.md. groupIndex/iconIndex are single bytes (0x00, 0x05), NOT msb/lsb split, unlike x/y.
+checkHex(
+	'msg_plot_bitmap(100, 50, BMP_GROUP_KNOB, 5, 255, 140, 0, 0, 0, 0)',
+	msg_plot_bitmap(100, 50, BMP_GROUP_KNOB, 5, 255, 140, 0, 0, 0, 0),
+	'F0 00 20 1A 16 03 6D 04 03 00 64 00 32 00 05 7F 46 00 00 00 00 F7'
+)
+
 -- MARK: - 2. Flush budget
 --
 -- Every flush_pending(true) must stay <= FLUSH_BUDGET and end with an
@@ -610,6 +620,65 @@ do
 		#clampMsg == 4 and clampMsg[1] == 0x41 and clampMsg[2] == 0x42 and clampMsg[3] == 0x43 and clampMsg[4] == 0x00
 	)
 end
+
+-- MARK: - 17. draw_bitmap memoizes, same idiom as draw_text/draw_rect
+--
+-- pendingMessages is reset between steps (rather than accumulated) because queue_message
+-- COALESCES same-regionId updates in place (see its own comment) - counting cumulatively would
+-- conflate "queued nothing" with "replaced the existing entry", both of which leave the array the
+-- same length.
+do
+	drawn = {}
+	pendingMessages = {}
+	draw_bitmap('test:bitmap', 10, 20, BMP_GROUP_KNOB, 3, 255, 140, 0, 0, 0, 0)
+	check('draw_bitmap queues a message on first draw', #pendingMessages == 1)
+
+	pendingMessages = {}
+	draw_bitmap('test:bitmap', 10, 20, BMP_GROUP_KNOB, 3, 255, 140, 0, 0, 0, 0)
+	check(
+		'draw_bitmap queues nothing when the repeat call is byte-for-byte identical',
+		#pendingMessages == 0
+	)
+
+	draw_bitmap('test:bitmap', 10, 20, BMP_GROUP_KNOB, 4, 255, 140, 0, 0, 0, 0)
+	check(
+		'draw_bitmap queues exactly one message when only the icon index changes',
+		#pendingMessages == 1
+	)
+end
+
+-- MARK: - 18. Bitmap probe screen: every message fits FLUSH_BUDGET
+--
+-- paint_bitmap_probe_screen() (DIAGNOSTIC SCAFFOLDING, reached only when BITMAP_PROBE is true -
+-- see that constant's declaration) queues 13 icons + 13 labels + a background rect + the trailing
+-- sacrificial redraw, all as SEPARATE messages (rule 2 in config.lua's banner: one message per
+-- flush, <= FLUSH_BUDGET bytes - a message over the ceiling is dropped whole, not truncated).
+do
+	drawn = {}
+	pendingMessages = {}
+	displayMode = 'list'
+	patchName, setName, currentConcert = 'Test Patch', 'Test Set', 'Test Concert'
+
+	paint_bitmap_probe_screen()
+
+	check(
+		'paint_bitmap_probe_screen queues 13 icons + 13 labels + background + sacrificial redraw',
+		#pendingMessages == 2 * BMP_KNOB_LEVELS + 2
+	)
+
+	local allWithinBudget = true
+	for i = 1, #pendingMessages do
+		if #pendingMessages[i] > FLUSH_BUDGET then allWithinBudget = false end
+	end
+	check('every message the bitmap probe screen queues fits within FLUSH_BUDGET', allWithinBudget)
+end
+
+-- MARK: - 19. BITMAP_PROBE ships false
+--
+-- BITMAP_PROBE is diagnostic scaffolding (see its declaration in config.lua) that swaps the
+-- normal screen for the Knob-icon probe grid on every login. This guard makes sure it can never
+-- ship on by accident.
+check('BITMAP_PROBE is false in the committed file', BITMAP_PROBE == false)
 
 -- MARK: - Summary
 
