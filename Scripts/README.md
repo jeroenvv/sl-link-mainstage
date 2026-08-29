@@ -23,8 +23,9 @@ Offline regression suite for `config.lua`. Two gates:
 
 1. `luac -p` — syntax check, fails fast on anything MainStage's Lua host wouldn't load.
 2. `Tests/lua/harness.lua` — drives `config.lua`'s callbacks directly and asserts on the bytes/state
-   produced. 69 assertions, cross-checked against the archived Swift encoder (see the script's own
-   header for the recipe).
+   produced. 69 assertions, derived from the spec's message tables (`docs/implementing-sl-link.md`,
+   the upstream spec) and originally cross-checked by hand against this project's own Swift encoder,
+   now preserved on the `archive/swift-app` branch (see the script's own header for that recipe).
 
 Repo convention: a new assertion isn't trusted until it's mutation-tested — shown to actually fail on
 the bug it's meant to catch — before relying on it.

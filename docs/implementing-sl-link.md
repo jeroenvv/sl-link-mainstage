@@ -265,6 +265,10 @@ carries them and carry the values forward.
 
 ## 8. Host environment: a CoreMIDI app (Swift)
 
+This project's own Swift implementation of the ideas below no longer lives in this repo's working
+tree — it is preserved on the `archive/swift-app` branch. The chapter stays here because it is
+useful to anyone implementing an SL Link host in Swift, not just as a record of that app.
+
 **Use the CoreMIDI 1.0 byte-oriented API** (`MIDIClientCreate`, `MIDIInputPortCreate`, `MIDIPacketList`,
 `MIDIReadProc`), not `MIDIEventList`/UMP. The protocol is entirely SysEx, so packet handling stays
 uniform and you avoid UMP's SysEx framing.

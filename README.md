@@ -8,8 +8,8 @@ Run `./Scripts/install-mainstage-script.sh` to copy `MainStageScript/STUDIOLOGIC
 Logic Pro's folder of the same shape). It's idempotent, needs no admin rights, doesn't modify
 MainStage.app, and survives MainStage updates. Re-run it after every `config.lua` change and after
 a MainStage update that rescans its script folders, then quit and relaunch MainStage so it rescans
-for the new script. Requires an SL88 MK2 connected over USB and MainStage; the Swift app in this
-repo is not part of this path and does not need to be running.
+for the new script. Requires an SL88 MK2 connected over USB and MainStage; nothing else needs to be
+running.
 
 ## Using it
 
