@@ -415,10 +415,14 @@ WRITE_TEXT_OVERHEAD = 25
 -- (set once per timer tick); before that this constant was inert (see
 -- docs/config-lua-history.md#defect-a-the-ungated-flush-drained-at-round-trip-speed-not-timer-speed).
 --
--- A sweep toward a lower value (50 -> 35 -> 25) is planned but not run past 50 - see
--- docs/config-lua-history.md#flush_soon_ms-retuning-and-the-sweep-plan for the procedure and the
--- known-good fallback (100) before changing this.
-FLUSH_SOON_MS = 50
+-- Sweep: 50 -> 35 -> 25, one step per hardware run. 35 is confirmed on hardware (2026-08-29),
+-- including while playing, and is the settled value. 25 was tried the same day, also while playing,
+-- and the display sometimes dropped out - a failure mode the sweep plan did not predict (it was
+-- watching for missing regions/stale tails, not playing dropouts). 25 is below the usable floor on
+-- this hardware; the sweep concluded at 35. The exact mechanism is not yet pinned down - see
+-- docs/config-lua-history.md#flush_soon_ms-retuned-to-25-backed-out-2026-08-29 for what the capture
+-- does and doesn't show, and #flush_soon_ms-retuning-and-the-sweep-plan for the overall procedure.
+FLUSH_SOON_MS = 35
 
 -- `regionId`, when given, is stashed as a NAMED field on the message table (Lua's `#`/ipairs only
 -- see the integer-keyed byte sequence, so this rides along for free without disturbing
@@ -754,9 +758,11 @@ end
 -- that layers draws - e.g. a filled rect under text - will corrupt the screen the moment only the
 -- bottom layer changes and the top layer is skipped as unchanged; the device has no concept of
 -- layers, it paints strictly in message order. A caller that cannot avoid overlap must clear the
--- shared ids' drawn[] entries together so they resend as one unit - see draw_text_with_erase()
--- below for the one place this project needs that (the zoom screen's zset/zname/znext, which must
--- draw at maxWidth=0 and so cannot self-clear).
+-- shared ids' drawn[] entries together so they resend as one unit - every draw_*() call in this
+-- file is currently self-clearing (a real, non-zero maxWidth/w/h on every Write Text/Draw Rect/Plot
+-- Bitmap), so nothing currently needs that escape hatch. The zoom screen's zset/zname used to be the
+-- one exception (maxWidth=0, via the since-removed draw_text_with_erase()) - see
+-- docs/config-lua-history.md#zoom-screen-centring-moved-to-the-device-2026-08-29.
 
 drawn = {}
 
@@ -816,14 +822,18 @@ ROW_PITCH = 26
 ROW_X = 8
 ROW_MAXW = 304
 
--- Max Width truncation is UNRELIABLE at SIZE_BIG - confirmed on hardware: a long patch name at
--- maxWidth=304 rendered as a single letter followed by '...'. So the zoom screen's patch name
--- truncates itself in Lua (truncate_text(), paint_zoom_screen()) rather than trusting the device.
--- See docs/config-lua-history.md#max-width-truncation-broken-at-size_big. Confirmed working at
--- SIZE_SMALL (see
+-- Max Width TRUNCATION is UNRELIABLE at SIZE_BIG - confirmed on hardware: a long patch name at
+-- maxWidth=304 rendered as a single letter followed by '...'. So the zoom screen's patch name is
+-- pre-truncated in Lua (truncate_text(), paint_zoom_screen()) before it ever reaches the device -
+-- belt-and-braces so the device's own (broken) truncation never gets a chance to fire. See
+-- docs/config-lua-history.md#max-width-truncation-broken-at-size_big. This is a DIFFERENT device
+-- feature from Max Width CENTERING (ALIGN_CENTER within a real, non-zero maxWidth), which IS trusted
+-- for zset/zname - see paint_zoom_screen()'s comment and
+-- docs/config-lua-history.md#zoom-screen-centring-moved-to-the-device-2026-08-29. Confirmed working
+-- at SIZE_SMALL too (see
 -- docs/config-lua-history.md#settled-facts-max-width-and-the-write-text-background-box), which is
--- why every list row below uses a real, non-zero maxWidth instead. Do not switch zname/zset back to
--- trusting Max Width without re-confirming on hardware first.
+-- why every list row below uses a real, non-zero maxWidth instead. Do not switch zname/zset
+-- TRUNCATION back to trusting the device without re-confirming on hardware first.
 --
 -- HARDWARE-CALIBRATED BY EYE, not measured from real glyph widths. Retune by eye against a name a
 -- couple of characters either side of this constant if the geometry below changes (screen width, X
@@ -835,41 +845,18 @@ BIG_MAX_CHARS = 27
 -- as BIG_MAX_CHARS.
 MEDIUM_MAX_CHARS = 36
 
--- truncate_text() cuts zname/zset to exactly these character counts before they are drawn (see
--- draw_text_with_erase() below for how the vacated band is cleared). znext no longer calls
--- truncate_text() - see MEDIUM_MAX_CHARS's comment above. TEXT_STRING_CAP is msg_write_text's own
--- hard transport clamp (a DIFFERENT limit - see that constant's comment); assert the relationship
--- rather than assume it, since if either MAX_CHARS constant is ever retuned past TEXT_STRING_CAP,
--- msg_write_text would silently re-truncate the already-truncated string, losing truncate_text()'s
--- own '...' and cutting mid-word.
+-- truncate_text() cuts zname/zset to exactly these character counts before they are drawn, even
+-- though both also draw at a real, non-zero maxWidth now (paint_zoom_screen()) - belt-and-braces so
+-- the device's own Max Width truncation, confirmed broken at SIZE_BIG, never gets a chance to fire.
+-- znext no longer calls truncate_text() - see MEDIUM_MAX_CHARS's comment above. TEXT_STRING_CAP is
+-- msg_write_text's own hard transport clamp (a DIFFERENT limit - see that constant's comment); assert
+-- the relationship rather than assume it, since if either MAX_CHARS constant is ever retuned past
+-- TEXT_STRING_CAP, msg_write_text would silently re-truncate the already-truncated string, losing
+-- truncate_text()'s own '...' and cutting mid-word.
 assert(BIG_MAX_CHARS <= TEXT_STRING_CAP,
 	'BIG_MAX_CHARS must fit within TEXT_STRING_CAP or zname draws would be re-truncated on the wire')
 assert(MEDIUM_MAX_CHARS <= TEXT_STRING_CAP,
 	'MEDIUM_MAX_CHARS must fit within TEXT_STRING_CAP or zset draws would be re-truncated on the wire')
-
--- MANUAL CENTERING for maxWidth=0 lines. At Width=0 the SL88's own alignment area collapses to a
--- single point, so ALIGN_CENTER/ALIGN_RIGHT have nothing to justify within and draw pinned left
--- regardless of the align byte - confirmed against the pinned upstream spec's own wording.
--- draw_text_with_erase() must keep maxWidth=0 (that's the whole reason it needs an explicit erase
--- rect - see its own comment) and Max Width truncation is confirmed broken at SIZE_BIG
--- (BIG_MAX_CHARS's comment), so switching to a real maxWidth to get alignment 'for free' would risk
--- reintroducing that bug. Centring is computed in Lua instead: estimate the string's rendered pixel
--- width and pick an X that lands it mid-screen, then draw ALIGN_LEFT at that X. See
--- docs/config-lua-history.md#manual-centering-at-maxwidth-0.
---
--- EYE-CALIBRATED, like BIG_MAX_CHARS/MEDIUM_MAX_CHARS - no real glyph-metrics table exists for this
--- font. Retune both alongside those two constants if geometry or font ever changes, the same way:
--- by eye, against a name a few characters either side of dead centre. See
--- docs/config-lua-history.md#char_width-calibration for how these two numbers were derived/retuned.
-CHAR_WIDTH_BIG = 11    -- floor(304 / 27)
-CHAR_WIDTH_MEDIUM = 8  -- retuned 2026-08-27 from derived 7 (11*22/33≈7.33) - hardware showed 7 rendering right-of-center
-
--- Estimated total rendered pixel width of `text` at `size`, for the manual centering above only -
--- NOT used for truncation (truncate_text() already owns that, by character count).
-function estimate_text_width_px(text, size)
-	local perChar = (size == SIZE_BIG) and CHAR_WIDTH_BIG or CHAR_WIDTH_MEDIUM
-	return (text and #text or 0) * perChar
-end
 
 -- SCROLL-OFF MARGIN (vim's `scrolloff`): a scroll TRIGGERS once the cursor comes within
 -- SCROLL_MARGIN rows of an edge, so at least this many rows of context stay visible beyond it -
@@ -1283,50 +1270,6 @@ function truncate_text(text, maxChars)
 	return text:sub(1, maxChars - 3) .. '...'
 end
 
--- Write Text's opaque background fills the MAX WIDTH BOX, not the glyph run - so at maxWidth=0
--- ('print it all') that box is only as wide as the glyphs actually drawn, and a shorter string
--- can't overwrite what a longer one painted before it. DO NOT 'fix' this by padding the string with
--- spaces to a constant character count - that was tried and fails for two independent reasons
--- (proportional font; padding is symmetric in characters, not pixels, so it also breaks
--- ALIGN_CENTER). See docs/config-lua-history.md#rejected-approaches. The real fix is an explicit
--- erase rect, below.
-
--- Draws `text` preceded by an explicit black erase rect spanning its full band, sized independently
--- of the string's glyph width - the real fix for the stale-tail/off-centre bug in the comment
--- above. Memoized as ONE region under `id`, using an id..':rect'/id..':text' coalescing-key split
--- (base_region_id() already knows how to unwind it for drop_queued_display), so an unchanged name
--- queues NOTHING and a changed name always queues both halves together, in order. bg is always
--- black to match the erase rect's fill.
---
--- The rect and text are two SEPARATE queue_message() calls and therefore two separate flushes under
--- flush_pending's one-display-message-per-tick pacing (see FLUSH_SOON_MS/displayFlushReady) - do
--- NOT bundle them into one flush. Two display messages back-to-back in one flush is exactly the
--- pattern that dropped alternating rows on hardware (rule 5 in the SIX RULES banner), and they
--- would not fit anyway: a 21-byte rect plus a max-length Write Text plus the Identification Query
--- flush_pending always reserves room for exceeds FLUSH_BUDGET on its own. Accepted cost: one extra
--- message and a brief visible blank band per name change - the price of maxWidth=0, itself required
--- because Max Width truncation is broken at SIZE_BIG. `x`/`align` as given are used verbatim for
--- ALIGN_LEFT/ALIGN_RIGHT callers. For ALIGN_CENTER, `x` is IGNORED and recomputed here instead -
--- see CHAR_WIDTH_BIG's comment above for why: maxWidth=0 gives the device's own ALIGN_CENTER no
--- area to centre within, so the centred X is estimated in Lua and drawn ALIGN_LEFT, the one
--- deterministic choice at maxWidth=0. The memo tuple below intentionally excludes x/align - both
--- are pure functions of `text`/`size` here (either the caller's fixed values, or the deterministic
--- estimate), so text+colour alone is still sufficient to detect 'nothing changed'.
-function draw_text_with_erase(id, text, x, y, align, size, fr, fg, fb, eraseX, eraseY, eraseW, eraseH)
-	local t = { text, fr, fg, fb }
-	if tuple_equal(drawn[id], t, #t) then return end
-	drawn[id] = t
-	queue_message(msg_draw_rect(eraseX, eraseY, eraseW, eraseH, 0, 0, 0), id .. ':rect')
-	local drawX, drawAlign = x, align
-	if align == ALIGN_CENTER then
-		local estWidth = estimate_text_width_px(text, size)
-		drawX = math.floor((SCREEN_WIDTH - estWidth) / 2)
-		if drawX < eraseX then drawX = eraseX end
-		drawAlign = ALIGN_LEFT
-	end
-	queue_message(msg_write_text(text, drawX, y, 0, drawAlign, size, fr, fg, fb, 0, 0, 0), id .. ':text')
-end
-
 -- 'NEXT' line for the zoom screen: the next listRows entry after the ACTIVE patch with isPatch
 -- true, skipping set headers - i.e. what you are about to change to. The prompt word itself carries
 -- whether that patch starts a new song (rather than trying to also fit the set's name on the line),
@@ -1352,30 +1295,41 @@ end
 -- truncated line, not two wrapped lines - wrapping was tried and left stale text on the second line
 -- (see docs/config-lua-history.md#max-width-truncation-broken-at-size_big).
 --
--- zname and zset both truncate themselves via truncate_text() and draw through
--- draw_text_with_erase() (maxWidth=0) - Max Width truncation is CONFIRMED broken at SIZE_BIG and
--- untested at SIZE_MEDIUM (zset's size), so neither trusts it. znext always draws SIZE_SMALL,
--- self-clearing, at a real maxWidth, unconditionally. Layout (docs/full-functionality-plan.md):
--- zcnc y=12, zset y=44, zname y=100, znext y=170, zpos y=210 - bands 12-33 / 44-71 / 100-133 /
--- 170-191 / 210-231, all non-overlapping. Retune together with ROW_Y0-style constants if the layout
--- ever moves again.
+-- zname and zset both draw at a real, non-zero maxWidth now and let the DEVICE's own ALIGN_CENTER
+-- centre them - CONFIRMED on hardware 2026-08-29 (SL88 MK2 + MainStage: zset/zname render correctly
+-- centred, the too-far-right symptom is gone, 0 Lua errors over a 255-tick session) - see
+-- docs/config-lua-history.md#zoom-screen-centring-moved-to-the-device-2026-08-29 for the full
+-- observation and for why the previous approach (maxWidth=0 plus a Lua pixel-width estimate to fake
+-- centring) was abandoned: both lines rendered slightly right of centre no matter how the
+-- per-character width constants were retuned, so the estimate itself was the wrong tool. That same
+-- run's visible truncation '...' on long names is truncate_text()'s own ASCII ellipsis, added before
+-- either line ever reaches the device - NOT evidence the device's own SIZE_BIG Max Width truncation
+-- is fixed; that bug stays on the books as unresolved (see BIG_MAX_CHARS's comment: Max Width
+-- TRUNCATION, a different device feature from centring, is confirmed broken at SIZE_BIG), and
+-- pre-truncation in Lua is what keeps the device from ever having to truncate a name itself. A real
+-- maxWidth also makes both lines self-clearing (Write Text's background fills the whole box - see
+-- "Settled facts" in docs/config-lua-history.md), so neither needs an erase rect any more - confirmed
+-- on the same 2026-08-29 run: zero regionId messages split as z*:rect/z*:text appeared on the wire.
+-- REVERT PATH: if a long patch name ever renders on hardware as a single letter plus '...', the
+-- device's own truncation is firing again - go back to maxWidth=0 with manual ALIGN_LEFT centring
+-- (see that same docs section for the removed implementation) rather than retuning anything here.
+-- znext always draws SIZE_SMALL, at a real maxWidth, unconditionally - it never needed this
+-- migration. Layout
+-- (docs/full-functionality-plan.md): zcnc y=12, zset y=44, zname y=100, znext y=170, zpos y=210 -
+-- bands 12-33 / 44-71 / 100-133 / 170-191 / 210-231, all non-overlapping. Retune together with
+-- ROW_Y0-style constants if the layout ever moves again.
 function paint_zoom_screen()
 	draw_text('zcnc', currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 
-	-- zset uses maxWidth=0 plus an explicit erase rect: Max Width truncation is confirmed broken at
-	-- SIZE_BIG and untested at SIZE_MEDIUM (zset's size). If hardware ever confirms it works at
-	-- SIZE_MEDIUM, draw_text() at a real maxWidth would halve this to 1 message and drop the flicker.
-	draw_text_with_erase('zset', truncate_text(setName, MEDIUM_MAX_CHARS),
-		8, 44, ALIGN_CENTER, SIZE_MEDIUM, 110, 170, 230,
-		0, 44, SCREEN_WIDTH, 27)
+	draw_text('zset', truncate_text(setName, MEDIUM_MAX_CHARS), 8, 44, SCREEN_WIDTH - 16,
+		ALIGN_CENTER, SIZE_MEDIUM, 110, 170, 230, 0, 0, 0)
 
-	draw_text_with_erase('zname', truncate_text(patchName, BIG_MAX_CHARS),
-		8, 100, ALIGN_CENTER, SIZE_BIG, 255, 255, 255,
-		0, 100, SCREEN_WIDTH, 33)
+	draw_text('zname', truncate_text(patchName, BIG_MAX_CHARS), 8, 100, SCREEN_WIDTH - 16,
+		ALIGN_CENTER, SIZE_BIG, 255, 255, 255, 0, 0, 0)
 
-	-- SIZE_SMALL + trusted Max Width, unconditionally - no truncate_text(), no erase rect, unlike
-	-- zname/zset above: SIZE_SMALL is the one regime list rows already trust Max Width in, so it needs
-	-- no hardware check first. One queued message instead of two.
+	-- SIZE_SMALL + trusted Max Width, unconditionally - no truncate_text() needed, unlike zname/zset
+	-- above: SIZE_SMALL is the one regime list rows already trust Max Width TRUNCATION in, so it
+	-- needs no hardware check first.
 	draw_text('znext', next_line_text(), 8, 170, SCREEN_WIDTH - 16, ALIGN_CENTER, SIZE_SMALL,
 		80, 200, 120, 0, 0, 0)
 
@@ -1418,27 +1372,24 @@ function update_screen()
 		' "' .. patchName .. '"')
 end
 
--- Undoes queue_message's id..':rect' / id..':text' split (see draw_row) so drop_queued_display can
--- find its way back to the single drawn[] memo entry both halves share, regardless of which of the
--- two coalescing keys a given queued message actually carries. Plain ids (no backing rect in play)
--- pass through unchanged.
-function base_region_id(id)
-	return id:match('^(.*):rect$') or id:match('^(.*):text$') or id
-end
-
 -- Drops display messages still sitting in the queue. Used only where the queue's content is
 -- genuinely garbage, not merely stale-but-wanted - see set_display_mode, its one remaining caller:
 -- switching modes vacates the whole screen, so anything still queued for the outgoing mode cannot
 -- be coalesced into anything the new mode will ever draw. Protocol messages (identification,
 -- logout, ...) are preserved.
 --
--- MUST undo the memo for exactly the id(s) it discards (drawn[base_region_id(...)] = nil), so the
--- next paint re-queues them. draw_text/draw_rect record drawn[id] the moment they QUEUE a message,
--- not when it is actually sent - without this undo, a message discarded here before it ever goes
--- out leaves drawn[id] permanently claiming the region was painted, and the memo and the physical
--- screen diverge for good. Do not reintroduce 'update the memo at queue time' without also undoing
--- it here on drop. See
--- docs/config-lua-history.md#drop_queued_display-and-the-memo-vs-screen-divergence-bug.
+-- MUST undo the memo for exactly the id(s) it discards (drawn[m.regionId] = nil), so the next paint
+-- re-queues them. draw_text/draw_rect record drawn[id] the moment they QUEUE a message, not when it
+-- is actually sent - without this undo, a message discarded here before it ever goes out leaves
+-- drawn[id] permanently claiming the region was painted, and the memo and the physical screen
+-- diverge for good. Do not reintroduce 'update the memo at queue time' without also undoing it here
+-- on drop. See docs/config-lua-history.md#drop_queued_display-and-the-memo-vs-screen-divergence-bug.
+--
+-- Used to unwind an id..':rect'/id..':text' coalescing-key split via a base_region_id() helper -
+-- the zoom screen's zset/zname were the only source of that split (the since-removed
+-- draw_text_with_erase()). Nothing produces a split regionId any more, so m.regionId IS the
+-- drawn[] key directly and that helper was removed with it - see
+-- docs/config-lua-history.md#zoom-screen-centring-moved-to-the-device-2026-08-29.
 function drop_queued_display()
 	local keep = {}
 	for i = 1, #pendingMessages do
@@ -1446,7 +1397,7 @@ function drop_queued_display()
 		if m[8] ~= IT_DISPLAY then
 			keep[#keep + 1] = m
 		elseif m.regionId then
-			drawn[base_region_id(m.regionId)] = nil
+			drawn[m.regionId] = nil
 		end
 	end
 	pendingMessages = keep

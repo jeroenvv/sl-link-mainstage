@@ -130,6 +130,85 @@ prints each FLUSH/tick line paired with the timestamp delta since the previous o
 `pending=`/`queueDepthAfter=` fields already in each line then tell you how many ticks and how much
 queue depth changed per interval, without needing a Lua-side clock (`os` is absent from the sandbox).
 
+### `FLUSH_SOON_MS` retuned to 35 (2026-08-29)
+
+Step one of the planned sweep, taken next because `FLUSH_SOON_MS` paces the tick interval for the
+*entire* drain, not just content: a popup entry is roughly 13 ticks total, the 4 remaining dead ticks
+before the first pixel (the two Clear Screens plus the `MODE_SWITCH_SETTLE_TICKS` guard on each) and
+the ~8 content messages after it. Lowering the constant scales both halves together — at 50ms that's
+~650ms per popup entry; at 35ms the same 13 ticks would be ~455ms.
+
+**Confirmed on hardware 2026-08-29** (SL88 MK2 + MainStage, `LUA_DEBUG` capture): 307 ticks, 578
+flushes, 22 patch changes, 2 popup entries, 10 mode switches, **0 Lua errors**. Every display region
+was emitted and rendered — zoom (`zcnc`, `zset`, `zname`, `znext`, `zpos`), list (`ctx`, `row0`
+through `row7`), popup (`popupBg`, `popupKnob`, `popupLabel`, `popupValue`). The user confirmed
+visually: no missing regions, no blank rows, no stale tails on shorter patch names — neither of the
+documented failure modes (a missing region, or a stale tail from a shorter name failing to fully
+overwrite a longer one) appeared. Popup dead ticks stayed at 4, so at 35ms that's ~140ms instead of
+~200ms, and a full pop-in ~455ms instead of ~650ms.
+
+Revert ladder if a later step regresses: 35 -> 50 (previous confirmed-good) -> 100 (original floor,
+last known-good) only if 50 itself turns out to lose messages.
+
+### `FLUSH_SOON_MS` retuned to 25, backed out (2026-08-29)
+
+Final rung of the planned sweep (50 -> 35 -> 25). 35 is confirmed good (previous section); this step
+lowered the constant one more notch, on the same reasoning — `FLUSH_SOON_MS` paces the entire drain
+interval, not just content, so a popup entry's 13 ticks would drop from ~455ms (at 35ms) to ~325ms.
+
+**Backed out the same day.** At 25, the user reported the display "sometimes drops out while
+playing" — otherwise everything worked. This is **not** the documented failure mode the sweep plan
+was watching for (a missing region, or a stale tail from a shorter name failing to fully overwrite a
+longer one); every display region rendered correctly.
+
+Both values were exercised while playing: the 35 confirmation run (previous section) and the 25 run
+both included the user playing sustained notes, not just changing patches, toggling modes and
+exercising the popup. 35 held with no dropout; 25 dropped out. That makes the comparison clean, and
+it is the sweep's main finding: **25 is below the usable floor on this hardware, and the failure mode
+that establishes the floor is a display dropout while playing — not the missing-region/stale-tail
+failure the sweep plan predicted.** The plan was watching for the wrong symptom.
+
+What the captured log shows, and does not show, about *why*:
+
+- One STANDBY/RESTART pair occurred during the 25 run. At that moment the session clock was
+  **healthy**: timer ticks 23-28 were consecutive, Identification Query replies were arriving
+  normally, the queue had just drained to depth 0, and `state=active` held right up to the SL88
+  sending System/Standby (`00 04`) unprompted. Zero re-identifications, zero identification
+  rejections, one LOGIN — the session was never lost and re-established.
+- Therefore the captured STANDBY does **not** show keepalive starvation on its own, and may be
+  unrelated to the dropout the user saw.
+- **Notes are not logged.** `controller_midi_in` only prints for SysEx, so the playing itself is
+  invisible in `/tmp/lua.log` — there is no record of note traffic to correlate against the dropout.
+- **The log has no timestamps.** `restart-mainstage.sh` redirects stdout raw, so tick *intervals* —
+  the thing that would reveal a starved timer — cannot be measured from this capture.
+
+So while the empirical result is now clear (35 good, 25 bad, both tested the same way), the
+*mechanism* is not pinned down. [Rule 6](#rule-6-notes-starve-the-clock) describes a symptom that
+looks the same — display dropping out while playing — from `rearm_timer()` being starved by note
+traffic, fixed by the `timerPending` gate. It is a **candidate** explanation for why a shorter
+`FLUSH_SOON_MS` would make that worse, but it is **not confirmed** as the cause here; nothing in this
+capture demonstrates it, for the reasons above.
+
+**Verdict:** the sweep is **concluded, settled at 35**. 25 was tried and rejected on hardware
+evidence (dropout while playing, reproduced against a clean 35-vs-25 comparison); there is no plan to
+revisit it without a new reason.
+
+**How to test this properly:** any future attempt at 25 or below needs a timestamped capture so tick
+intervals can actually be measured, to pin down the mechanism behind the dropout. Pipe MainStage's
+stdout through a timestamping filter before it reaches `/tmp/lua.log`:
+
+```bash
+... | while IFS= read -r l; do printf '%s %s\n' "$(date '+%H:%M:%S.%3N')" "$l"; done > /tmp/lua.log
+```
+
+then reduce it with the awk one-liner already recorded under
+[the sweep plan](#flush_soon_ms-retuning-and-the-sweep-plan) to see whether tick intervals actually
+stretch out while playing.
+
+Revert ladder, unchanged from the original plan, if either the documented failure mode or this
+dropout symptom reappears at a future step: 25 -> 35 (settled) -> 50 -> 100 (original floor, last
+known-good).
+
 ### Per-region coalescing under rapid navigation
 
 Measured on hardware: rapid patch navigation queued 4, 5, 6, 7, then 10 messages in a row — at one
@@ -405,6 +484,88 @@ estimates for `SIZE_MEDIUM` — and confirmed too narrow on 2026-08-27: the Zoom
 rendered slightly right-of-centre at 7, so it was retuned to 8 (closer to the un-floored
 `7.33 = 11*22/33`). No real glyph-metrics table exists for this font; both constants are eye-calibrated
 the same way as `BIG_MAX_CHARS`/`MEDIUM_MAX_CHARS` — retune together if geometry or font changes.
+
+### Zoom-screen centring moved to the device (2026-08-29)
+
+A hardware report: both `zset` (the set name) and `zname` (the patch name) rendered slightly too far
+**right** on the zoom screen. `CHAR_WIDTH_MEDIUM` had already been retuned once for exactly this
+symptom, from a derived 7 to an eye-calibrated 8 (see [`CHAR_WIDTH`
+calibration](#char_width-calibration), 2026-08-27) — so a second retune of the same constants would
+have been a third guess at the same estimate, not a fix. The arithmetic in
+`estimate_text_width_px()`/`draw_text_with_erase()` was checked and is self-consistent: it always
+places the *estimated* centre at `x=160`. That pins the bug on the per-character-width constants
+themselves — the real glyphs are wider than either estimate — which is exactly the class of problem
+an eye-calibrated guess can't close reliably: there was no way to know the next guess would be right
+either.
+
+**The fix: stop estimating.** `zset`/`zname` moved from `maxWidth = 0` (manual `ALIGN_LEFT` centring
+at a Lua-computed X, the only option available at `maxWidth = 0` — see [Manual centering at `maxWidth
+= 0`](#manual-centering-at-maxwidth-0)) to a real, non-zero `maxWidth` with the device's own
+`ALIGN_CENTER`, matching the convention `znext` and every list row already use. No estimate, no
+manual X — the device centres exactly, because centring within a real width-bound area is precisely
+what `ALIGN_CENTER` is defined to do (see that same section's citation of the upstream spec).
+
+**Evidence this works, from elsewhere in this same file:** the encoder value popup's `popupLabel` and
+`popupValue` (`draw_popup_label()`/`draw_popup_value()`, both `SIZE_MEDIUM`) already draw with a real
+`maxWidth` and `ALIGN_CENTER`, and were confirmed correct on hardware the same day (2026-08-29, see
+[The Knob bitmap replaces the ring](#the-knob-bitmap-replaces-the-ring-2026-08-29)). `znext` and every
+list row have likewise trusted a real `maxWidth` at `SIZE_SMALL` since before this fix, with no
+reported centring or truncation complaint. Device-side centring was therefore already proven at the
+sizes this migration needed; the zoom screen was the one holdout still estimating in Lua.
+
+**Confirmed on hardware 2026-08-29** (SL88 MK2 + MainStage): `zset` and `zname` now render correctly
+centred — the too-far-right symptom is gone. Long patch names truncate with a visible `...` and no
+single-letter failure. `LUA_DEBUG` capture: 255 ticks, **0 Lua errors, 0 STANDBY, 0 identification
+rejections**. All five zoom regions were emitted (`zcnc` 7, `zset` 14, `zname` 17, `znext` 17, `zpos`
+16), and **zero** `regionId=z*:rect`/`z*:text` split-id messages appeared on the wire, confirming the
+erase-rect path described below is gone. The same build carried `FLUSH_SOON_MS = 35` (see
+[`FLUSH_SOON_MS` retuned to 35](#flush_soon_ms-retuned-to-35-2026-08-29)); the dropout-while-playing
+seen at 25 did not recur.
+
+**The durable win is the removed estimate, not the message count.** This fix deletes
+`CHAR_WIDTH_BIG`/`CHAR_WIDTH_MEDIUM` outright (see "What this removed" below) — constants that had
+already needed eye-recalibration twice (`CHAR_WIDTH_BIG` derived at 11; `CHAR_WIDTH_MEDIUM` retuned
+from a derived 7 to an eye-calibrated 8, see [`CHAR_WIDTH` calibration](#char_width-calibration)) and
+would, on this run's evidence, have needed a third guess to close the same right-of-centre symptom.
+Trusting the device's own `ALIGN_CENTER` replaces that guess with exact centring instead of a better
+guess — a stronger result than the two fewer flushes per repaint noted below.
+
+**Truncation is a separate device feature, and stays broken — do not read this run as evidence
+otherwise.** Max Width *truncation* (cutting a string to fit visually, appending `...`) is confirmed
+broken at `SIZE_BIG` (a long name once rendered as a single letter plus `...` — see [Max Width
+truncation broken at `SIZE_BIG`](#max-width-truncation-broken-at-size_big)). Max Width *centring*
+(justifying a string that already fits within its box) is a different code path on the device and was
+never implicated in that finding. So `truncate_text(patchName, BIG_MAX_CHARS)` /
+`truncate_text(setName, MEDIUM_MAX_CHARS)` still run before every draw, belt-and-braces: pre-truncating
+in Lua means the device is never asked to truncate a name itself, regardless of what its centring logic
+does. The `...` seen in the 2026-08-29 confirmation run above is `truncate_text()`'s own ASCII ellipsis,
+appended before the string ever reaches the device — pre-truncation is exactly what kept the device
+from ever being asked to truncate, so this run says nothing about whether the device's own `SIZE_BIG`
+truncation bug is fixed. It stays on the books as unresolved. **Revert path:** if a long patch name
+ever renders on hardware as a single letter plus `...`, the device's own truncation is firing — go back
+to `maxWidth = 0` with manual `ALIGN_LEFT` centring (this section's own git history has the removed
+implementation), not another `BIG_MAX_CHARS` retune.
+
+**What this removed.** `draw_text_with_erase()` existed only because `maxWidth = 0` leaves Write
+Text's background box exactly as wide as the glyphs drawn, so a shorter name doesn't fully overwrite a
+longer one underneath it — it queued an explicit black erase rect ahead of the text as two separate
+messages, coalesced under one region id via an `id..':rect'`/`id..':text'` split. A real, non-zero
+`maxWidth` makes Write Text's background box fill the *whole* box regardless of glyph run (the same
+fact that makes every list row and `znext` self-clearing — see [Settled
+facts](#settled-facts-max-width-and-the-write-text-background-box)), so that erase rect — and the
+function that drew it — is gone along with `estimate_text_width_px()`,
+`CHAR_WIDTH_BIG`/`CHAR_WIDTH_MEDIUM`, and the "MANUAL CENTERING for maxWidth=0 lines" comment block
+that explained the old workaround. `base_region_id()` existed solely to unwind that `:rect`/`:text`
+split back to the one `drawn[]` entry both halves shared, for `drop_queued_display()` — with nothing
+left that produces a split regionId, `drop_queued_display()` now indexes `drawn[]` with `m.regionId`
+directly and `base_region_id()` was removed too. `Tests/lua/harness.lua` lost the one test written
+against that split-id behaviour and gained a `paint_zoom_screen()` test asserting the new message
+shape and that `zset`/`zname` decode as `ALIGN_CENTER` at a non-zero `maxWidth` on the wire.
+
+**Message-count saving.** Each of `zset`/`zname` drops from 2 queued messages (erase rect + text) to
+1, so a full zoom repaint (`zcnc` + `zset` + `zname` + `znext` + `zpos`) falls from 7 queued display
+messages to 5 — at one display message per flush (`FLUSH_SOON_MS`-paced), two fewer flushes' worth of
+latency on every zoom repaint, on top of fixing the reported off-centre rendering.
 
 ### Typography substitutions: non-ASCII glyphs
 
