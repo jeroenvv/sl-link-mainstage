@@ -415,13 +415,14 @@ WRITE_TEXT_OVERHEAD = 25
 -- (set once per timer tick); before that this constant was inert (see
 -- docs/config-lua-history.md#defect-a-the-ungated-flush-drained-at-round-trip-speed-not-timer-speed).
 --
--- Sweep: 50 -> 35 -> 25, one step per hardware run - this is the final rung. 35 is confirmed on
--- hardware (2026-08-29); 50 was the previous confirmed-good step, 100 the original floor. Current
--- value 25, pending hardware confirmation. See
--- docs/config-lua-history.md#flush_soon_ms-retuned-to-35-2026-08-29 for the 35 confirmation and
--- #flush_soon_ms-retuned-to-25-2026-08-29 for this step's reasoning and revert ladder, and
--- #flush_soon_ms-retuning-and-the-sweep-plan for the overall procedure.
-FLUSH_SOON_MS = 25
+-- Sweep: 50 -> 35 -> 25, one step per hardware run. 35 is confirmed on hardware (2026-08-29),
+-- including while playing, and is the settled value. 25 was tried the same day, also while playing,
+-- and the display sometimes dropped out - a failure mode the sweep plan did not predict (it was
+-- watching for missing regions/stale tails, not playing dropouts). 25 is below the usable floor on
+-- this hardware; the sweep concluded at 35. The exact mechanism is not yet pinned down - see
+-- docs/config-lua-history.md#flush_soon_ms-retuned-to-25-backed-out-2026-08-29 for what the capture
+-- does and doesn't show, and #flush_soon_ms-retuning-and-the-sweep-plan for the overall procedure.
+FLUSH_SOON_MS = 35
 
 -- `regionId`, when given, is stashed as a NAMED field on the message table (Lua's `#`/ipairs only
 -- see the integer-keyed byte sequence, so this rides along for free without disturbing

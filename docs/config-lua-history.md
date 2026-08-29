@@ -150,25 +150,64 @@ overwrite a longer one) appeared. Popup dead ticks stayed at 4, so at 35ms that'
 Revert ladder if a later step regresses: 35 -> 50 (previous confirmed-good) -> 100 (original floor,
 last known-good) only if 50 itself turns out to lose messages.
 
-### `FLUSH_SOON_MS` retuned to 25 (2026-08-29)
+### `FLUSH_SOON_MS` retuned to 25, backed out (2026-08-29)
 
 Final rung of the planned sweep (50 -> 35 -> 25). 35 is confirmed good (previous section); this step
-lowers the constant one more notch, on the same reasoning — `FLUSH_SOON_MS` paces the entire drain
+lowered the constant one more notch, on the same reasoning — `FLUSH_SOON_MS` paces the entire drain
 interval, not just content, so a popup entry's 13 ticks would drop from ~455ms (at 35ms) to ~325ms.
 
-This is an **experiment pending hardware confirmation**, not yet run. Watch for the same documented
-failure mode as the previous step — the SL88 silently drops a display message that arrives while it
-is still painting the previous one — which shows up as a missing region (a list row or zoom region
-that never appears) or a stale tail (a shorter name failing to fully overwrite a longer one that was
-there before).
+**Backed out the same day.** At 25, the user reported the display "sometimes drops out while
+playing" — otherwise everything worked. This is **not** the documented failure mode the sweep plan
+was watching for (a missing region, or a stale tail from a shorter name failing to fully overwrite a
+longer one); every display region rendered correctly.
 
-Revert ladder if either symptom appears: 25 -> 35 (most recent confirmed-good) -> 50 -> 100 (original
-floor, last known-good).
+Both values were exercised while playing: the 35 confirmation run (previous section) and the 25 run
+both included the user playing sustained notes, not just changing patches, toggling modes and
+exercising the popup. 35 held with no dropout; 25 dropped out. That makes the comparison clean, and
+it is the sweep's main finding: **25 is below the usable floor on this hardware, and the failure mode
+that establishes the floor is a display dropout while playing — not the missing-region/stale-tail
+failure the sweep plan predicted.** The plan was watching for the wrong symptom.
 
-**This is the last planned step.** If 25 holds, the sweep is finished — there is no plan to go lower
-without a new reason, because the risk being traded against is the SL88 silently dropping a display
-message that arrives while it is still painting the previous one, and 25ms is already the smallest
-step in the planned ladder.
+What the captured log shows, and does not show, about *why*:
+
+- One STANDBY/RESTART pair occurred during the 25 run. At that moment the session clock was
+  **healthy**: timer ticks 23-28 were consecutive, Identification Query replies were arriving
+  normally, the queue had just drained to depth 0, and `state=active` held right up to the SL88
+  sending System/Standby (`00 04`) unprompted. Zero re-identifications, zero identification
+  rejections, one LOGIN — the session was never lost and re-established.
+- Therefore the captured STANDBY does **not** show keepalive starvation on its own, and may be
+  unrelated to the dropout the user saw.
+- **Notes are not logged.** `controller_midi_in` only prints for SysEx, so the playing itself is
+  invisible in `/tmp/lua.log` — there is no record of note traffic to correlate against the dropout.
+- **The log has no timestamps.** `restart-mainstage.sh` redirects stdout raw, so tick *intervals* —
+  the thing that would reveal a starved timer — cannot be measured from this capture.
+
+So while the empirical result is now clear (35 good, 25 bad, both tested the same way), the
+*mechanism* is not pinned down. [Rule 6](#rule-6-notes-starve-the-clock) describes a symptom that
+looks the same — display dropping out while playing — from `rearm_timer()` being starved by note
+traffic, fixed by the `timerPending` gate. It is a **candidate** explanation for why a shorter
+`FLUSH_SOON_MS` would make that worse, but it is **not confirmed** as the cause here; nothing in this
+capture demonstrates it, for the reasons above.
+
+**Verdict:** the sweep is **concluded, settled at 35**. 25 was tried and rejected on hardware
+evidence (dropout while playing, reproduced against a clean 35-vs-25 comparison); there is no plan to
+revisit it without a new reason.
+
+**How to test this properly:** any future attempt at 25 or below needs a timestamped capture so tick
+intervals can actually be measured, to pin down the mechanism behind the dropout. Pipe MainStage's
+stdout through a timestamping filter before it reaches `/tmp/lua.log`:
+
+```bash
+... | while IFS= read -r l; do printf '%s %s\n' "$(date '+%H:%M:%S.%3N')" "$l"; done > /tmp/lua.log
+```
+
+then reduce it with the awk one-liner already recorded under
+[the sweep plan](#flush_soon_ms-retuning-and-the-sweep-plan) to see whether tick intervals actually
+stretch out while playing.
+
+Revert ladder, unchanged from the original plan, if either the documented failure mode or this
+dropout symptom reappears at a future step: 25 -> 35 (settled) -> 50 -> 100 (original floor, last
+known-good).
 
 ### Per-region coalescing under rapid navigation
 
