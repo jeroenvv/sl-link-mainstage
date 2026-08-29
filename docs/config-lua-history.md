@@ -138,13 +138,37 @@ before the first pixel (the two Clear Screens plus the `MODE_SWITCH_SETTLE_TICKS
 the ~8 content messages after it. Lowering the constant scales both halves together — at 50ms that's
 ~650ms per popup entry; at 35ms the same 13 ticks would be ~455ms.
 
-This is an **experiment pending hardware confirmation**, not yet run. Watch for the documented failure
-mode — the SL88 silently drops a display message that arrives while it is still painting the previous
-one — which shows up as a missing region (a list row or zoom region that never appears) or a stale
-tail (a shorter name failing to fully overwrite a longer one that was there before).
+**Confirmed on hardware 2026-08-29** (SL88 MK2 + MainStage, `LUA_DEBUG` capture): 307 ticks, 578
+flushes, 22 patch changes, 2 popup entries, 10 mode switches, **0 Lua errors**. Every display region
+was emitted and rendered — zoom (`zcnc`, `zset`, `zname`, `znext`, `zpos`), list (`ctx`, `row0`
+through `row7`), popup (`popupBg`, `popupKnob`, `popupLabel`, `popupValue`). The user confirmed
+visually: no missing regions, no blank rows, no stale tails on shorter patch names — neither of the
+documented failure modes (a missing region, or a stale tail from a shorter name failing to fully
+overwrite a longer one) appeared. Popup dead ticks stayed at 4, so at 35ms that's ~140ms instead of
+~200ms, and a full pop-in ~455ms instead of ~650ms.
 
-Revert ladder if either symptom appears: 35 -> 50 (previous confirmed-good) -> 100 (original floor,
+Revert ladder if a later step regresses: 35 -> 50 (previous confirmed-good) -> 100 (original floor,
 last known-good) only if 50 itself turns out to lose messages.
+
+### `FLUSH_SOON_MS` retuned to 25 (2026-08-29)
+
+Final rung of the planned sweep (50 -> 35 -> 25). 35 is confirmed good (previous section); this step
+lowers the constant one more notch, on the same reasoning — `FLUSH_SOON_MS` paces the entire drain
+interval, not just content, so a popup entry's 13 ticks would drop from ~455ms (at 35ms) to ~325ms.
+
+This is an **experiment pending hardware confirmation**, not yet run. Watch for the same documented
+failure mode as the previous step — the SL88 silently drops a display message that arrives while it
+is still painting the previous one — which shows up as a missing region (a list row or zoom region
+that never appears) or a stale tail (a shorter name failing to fully overwrite a longer one that was
+there before).
+
+Revert ladder if either symptom appears: 25 -> 35 (most recent confirmed-good) -> 50 -> 100 (original
+floor, last known-good).
+
+**This is the last planned step.** If 25 holds, the sweep is finished — there is no plan to go lower
+without a new reason, because the risk being traded against is the SL88 silently dropping a display
+message that arrives while it is still painting the previous one, and 25ms is already the smallest
+step in the planned ladder.
 
 ### Per-region coalescing under rapid navigation
 
