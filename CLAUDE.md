@@ -4,47 +4,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-macOS SwiftUI app that connects Apple MainStage to a Studiologic SL88 MK2 keyboard over the
-**SL Link** SysEx protocol. Single app target, no external dependencies, no Xcode test target -
-two standalone suites cover it instead: golden-vector codec tests via `swiftc` and an offline Lua
-regression suite for `config.lua` (see "Codec tests" and "Lua tests" below).
+A MainStage Lua device script that connects Apple MainStage to a Studiologic SL88 MK2 keyboard over
+the **SL Link** SysEx protocol - entirely from Lua, no helper app. The product is
+`MainStageScript/STUDIOLOGIC/SL.device/config.lua` (~2,200 lines); `Scripts/run-lua-tests.sh` is its
+offline regression gate (see "Lua tests" below). A handful of standalone Swift probes remain under
+`Scripts/` (`sniff.swift`, `probe-sllink.swift`, `probe-display.swift`, `list-midi.swift`,
+`sniff-all-sl-ports.swift`) for hardware debugging only - they are not part of the shipped product and
+have no build step; run them with `swift <file>.swift`.
+
+A macOS SwiftUI app preceded this script and implemented the same protocol. It has been removed from
+this branch; it lives on `archive/swift-app` (and in git history) as a historical cross-check, not as
+live code.
+
+Verifying behaviour requires physical hardware: the SL88 MK2 must be attached over USB and exposing
+MIDI endpoints whose short `kMIDIPropertyName` is `LINK` (display name `SL LINK`) - `config.lua`'s own
+SIX RULES banner (rule 1) explains why the short name, not the display name, is what `outport` must
+use; getting this wrong discards every outbound message with no error.
 
 This is an implement-to-spec project, not a reverse-engineering one. Studiologic publishes the full
 protocol at <https://github.com/fatarsrl/sl-link> (pinned at commit `4c0824d`, 2026-05-06), with
 byte-level message tables under `docs/` and three reference JUCE implementations under `examples/`.
 Start there, not from the code, when extending the protocol - the spec has a few internal
-inconsistencies (noted inline in `SLLinkEncoder.swift`/`SLLinkDecoder.swift` where they mattered).
-
-## Build & run
-
-The active developer directory on this machine is the Command Line Tools, so `xcodebuild` must be
-pointed at Xcode explicitly:
-
-```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcodebuild -project SL-Link-Mainstage.xcodeproj -scheme SL-Link-Mainstage -configuration Debug build
-
-# run the built app
-open ~/Library/Developer/Xcode/DerivedData/SL-Link-Mainstage-*/Build/Products/Debug/SL-Link-Mainstage.app
-```
-
-Verifying behaviour requires physical hardware: the SL88 MK2 must be attached over USB and exposing
-MIDI endpoints whose display name contains "LINK" (the macOS port is named `SL LINK`). Without it,
-`Connect + Identify` logs `SL LINK MIDI port not found.`
-
-Key build settings: `MACOSX_DEPLOYMENT_TARGET = 26.5`, `SWIFT_VERSION = 5.0`,
-`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, `ENABLE_APP_SANDBOX = YES`. Info.plist is
-Xcode-generated (no checked-in `Info.plist`), but entitlements **are** checked in at
-`SL-Link-Mainstage/SL-Link-Mainstage.entitlements` and wired up via `CODE_SIGN_ENTITLEMENTS` — they
-carry a scoped `temporary-exception.files.absolute-path.read-only` for the MainStage bridge files.
-Note that entitlement's paths must be the resolved `/private/tmp/...` form, not the `/tmp` symlink.
-
-`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` makes *every* unannotated declaration in the project
-implicitly main-actor-isolated, including plain enums/structs, not just classes. All of the
-`SLLink/` layer is written to run off the main actor (see Threading below) and marks itself
-`nonisolated` accordingly - if you add a new type under `SLLink/` and it needs to be called from a
-background queue, it needs the same annotation, or you'll get "main actor-isolated ... cannot be
-used in nonisolated context" warnings (errors under the Swift 6 language mode).
+inconsistencies. `docs/implementing-sl-link.md` catalogues where real hardware disagrees with it, and
+`config.lua`'s own comments note deviations inline where they mattered.
 
 ## Working efficiently in this repo
 
@@ -56,9 +38,9 @@ shell makes the harness re-dump the whole file back into context — `config.lua
 doing this repeatedly was the single largest waste of a long session. `Edit` also fails loudly on a
 stale match, where a shell replacement silently no-ops or duplicates a section.
 
-**Cap noisy output.** `xcodebuild` prints hundreds of lines of compiler invocations; pipe it through
-`| tail -5`. Same for long `grep`/`cat`. Batch independent greps into one call, and read targeted line
-ranges of long files rather than the whole file.
+**Cap noisy output.** `LUA_DEBUG` captures and hardware probe runs can print hundreds of lines; pipe
+them through `| tail -20`. Same for long `grep`/`cat`. Batch independent greps into one call, and read
+targeted line ranges of long files rather than the whole file.
 
 **Dump what an unknown API gives you before testing hypotheses about it.** The `outport` blocker cost
 about ten hardware round-trips; MainStage had been passing the answer all along as
@@ -89,106 +71,85 @@ tables and rejected hypotheses belong in `docs/`, which the commit can reference
 or flush logic.** It holds the hardware findings and rejected approaches behind the constraints
 `config.lua`'s own comments only state tersely and cite by anchor.
 
-## Codec tests
-
-`SLLinkProtocol.swift`, `SLLinkEncoder.swift` and `SLLinkDecoder.swift` are pure (`import Foundation`
-only - no CoreMIDI, no SwiftUI) so they can be compiled and tested standalone, without an Xcode test
-target:
-
-```bash
-./Scripts/run-codec-tests.sh
-```
-
-This compiles those three files plus `Tests/SLLinkCodecTests.swift` (deliberately kept outside
-`SL-Link-Mainstage/` so it's never compiled into the app - the app target is a
-`PBXFileSystemSynchronizedRootGroup`, so anything under `SL-Link-Mainstage/` is picked up
-automatically) with `swiftc`, and runs the resulting binary. It's a plain executable with top-level
-assertions, not XCTest - see the script/test file for why (top-level code requires a file literally
-named `main.swift`, so the script copies the test file into a scratch one before compiling).
-
-Every golden vector is derived from the tables in the spec's `docs/*.md`, not from the worked example
-at `docs/basics.md:29` (`F0 00 20 1A 16 15 E3 04 01 00 F7`), which is malformed - `E3` has its MSB
-set (illegal for a MIDI data byte) and Clear Screen needs three colour bytes, not one. That exact
-message is instead used as a negative test proving the decoder rejects it.
-
 ## Lua tests
 
-`config.lua` has its own offline regression suite, the primary gate for changes to it:
+`config.lua`'s only test suite, and the primary gate for changes to it:
 
 ```bash
 ./Scripts/run-lua-tests.sh
 ```
 
 Two gates: `luac -p` on `config.lua` (fails fast on anything MainStage's own Lua host couldn't even
-load), then `Tests/lua/harness.lua` under `lua`, which drives `config.lua`'s callbacks directly and
-asserts on the bytes/state they produce - 52 assertions covering flush budget and pacing, queue
-convergence, MIDI passthrough, the CC batch cap, `clamp_scroll`, repaint rate, timer re-arm
-intervals, and golden byte vectors cross-checked against `SLLinkEncoder.swift`. Requires `lua`
-(`brew install lua`).
+load), then `Tests/lua/harness.lua`, which drives `config.lua`'s callbacks directly and asserts on the
+bytes/state they produce - covering flush budget and pacing, queue convergence, MIDI passthrough, the
+CC batch cap, `clamp_scroll`, repaint rate, timer re-arm intervals, and golden byte vectors. The
+vectors are derived from the tables in the spec's `docs/*.md`, not from the worked example at
+`docs/basics.md:29` (`F0 00 20 1A 16 15 E3 04 01 00 F7`), which is malformed - `E3` has its MSB set
+(illegal for a MIDI data byte) and Clear Screen needs three colour bytes, not one; that exact message
+is instead used as a negative test proving the decoder rejects it. The vectors are cross-checked
+against the Swift encoder preserved on `archive/swift-app`. Requires `lua` (`brew install lua`).
 
-`Tests/` lives outside `SL-Link-Mainstage/` for the same reason as the codec tests above - the app
-target is a `PBXFileSystemSynchronizedRootGroup`, so it's never compiled into the app.
+`Tests/` lives outside `MainStageScript/` for tidiness, not because anything requires it - there is no
+build step here that would pick it up either way.
 
 Every assertion is mutation-tested: the convention is to prove a new assertion FAILS on the bug it
 exists to catch before it's trusted.
 
+## Versioning
+
+Semantic versioning, currently **1.0.0**. Single source of truth is the repo-root `VERSION` file;
+`config.lua`'s `SCRIPT_VERSION` must be kept in step with it (the harness asserts this) and is
+stamped into the `controller_initialize` log line so `/tmp/lua.log` shows which build is actually
+loaded. **major** is anything that breaks an existing MIDI-Learn mapping (the CC map in
+`config.lua`) or changes the install layout - the 34 CCs are learned by hand in MainStage, so
+renumbering one silently breaks a working rig. **minor** is a backwards-compatible feature/screen
+addition; **patch** is fixes/tuning with no mapping or layout change.
+
+`.github/workflows/release.yml` automates this bump on every push to `main`, but only when
+`MainStageScript/**` differs from the last release tag - that check is authoritative and comes
+first; docs/CI/test-harness-only changes never move the version. When a bump is warranted, the part
+is read from commit subjects since the last tag: `feat:` -> minor; `fix:`/`perf:`/`refactor:` ->
+patch; `docs:`/`chore:`/`test:` -> no bump on their own; `feat!:` (or any prefix with `!`, or a
+`BREAKING CHANGE:` trailer) -> major. If the script changed but no commit carries a bump-worthy
+prefix, it defaults to **patch** - a shipped change always gets a version. History predating this
+convention has no prefixes, which is why the workflow only reads commits since the last tag.
+
 ## Architecture
 
-Layered under `SL-Link-Mainstage/SLLink/`, from pure to CoreMIDI/UI-facing:
+`config.lua` is one flat file, laid out top-to-bottom in the order MainStage needs it and marked with
+`-- MARK:` section headers:
 
-| File | Responsibility |
+| Section | Responsibility |
 |:---|:---|
-| `SLLinkProtocol.swift` | Constants/enums only: header bytes, `ItemType`, per-category `Function`, button/encoder/LED IDs, `SLModel`, text align/size, colors. No behavior. |
-| `SLLinkEncoder.swift` | Pure `[UInt8]`-returning builders, one per outbound message, all taking the (id1, id2) pair. Houses `msbLsb(_:)` and `rgb7(_:)`. |
-| `SLLinkDecoder.swift` | Pure `[UInt8] -> SLLinkMessage?`. Validates header, 7-bit-ness, and per-function length before decoding. |
-| `SLLinkTransport.swift` | CoreMIDI only: client/ports, endpoint discovery + hot-plug, the real-time-safe inbound path (lock-free ring buffer -> `DispatchSourceTimer` drain -> `F0...F7` reassembly), and the paced outbound queue (~1 msg/ms) with correctly-sized `MIDIPacketList` buffers. Knows nothing about message meaning. |
-| `SLLinkSession.swift` | State machine: `.idle -> .identifying -> .listed -> .active <-> .standby`. Keepalive timer, DeviceID persistence/regeneration, login/logout/standby/restart handling. Runs on its own serial `queue` (distinct from the transport's), so it can call `transport.connect()` (which locks the transport's queue) without risking a same-queue deadlock. |
-| `SLLinkDisplay.swift` | Drawing API over the encoder, routed through `SLLinkSession.send(_:)`. Memoizes the last rect/text sent per caller-supplied id so a redraw only re-sends what changed - `invalidateAll()` resets this after `clear()` and after a Restart. |
-| `SLLinkDemoScreen.swift` | The on-keyboard demo UI (title + 4 zone panels, encoder-driven values, single-zone-selection navigable via select buttons or the Joystick) that exercises the whole stack. No MainStage integration. |
-| `SLLinkController.swift` | `ObservableObject` façade for SwiftUI. Owns the whole stack; replaces the old `MIDIManager.swift`. |
+| Protocol constants | Header bytes, item types, function codes, button/encoder/LED ids - kept in sync with the upstream spec and the archived Swift protocol layer. |
+| CC dispatch | `CC_MAP`/`BUTTON_CC`/`ENCODER_CC`: every SL88 control (34 gestures) mapped to a MIDI CC on a dedicated channel, so MainStage can MIDI-Learn each one directly. |
+| Session state | Module-level state: connection state machine, `instanceID`/retry bookkeeping, `timerPending`/`timerArmedInterval`, `displayFlushReady`, encoder/display caches. |
+| Outbound plumbing | `queue_message`/`flush_pending`: the single byte-budgeted, one-message-per-flush send path every outbound message goes through. |
+| CC queue/emit | Coalesces and drains queued CC messages within the same flush budget as display traffic. |
+| Message builders | Pure `msg_*` functions building one SL Link message's bytes each, given the (id1, id2) pair. |
+| Per-region memoization | `draw_text`/`draw_rect`/`draw_bitmap`: remember the last tuple sent per caller-supplied id; skip re-sending unchanged content. |
+| Screen | Layout constants and the paint functions for each screen (zoom, list, popup). |
+| Encoder value popup | Transient panel shown on any mapped encoder move: control name, wire CC number, and a filling ring gauge via the SL88's native Knob bitmap. |
+| Session | Identification, login/logout, standby/restart, keepalive - the protocol state machine. |
+| Inbound decoding | `controller_midi_in`'s SL frame recognition (`is_our_sl_frame`) and dispatch (`handle_sl_frame`). |
+| MainStage callbacks | The entry points MainStage itself calls: `controller_initialize`, `controller_midi_in`, `controller_timer_trigger`, `controller_finalize`, patch-change hooks. |
+| Device declaration | `controller_info()`: the MIDI items MainStage matches against, port names, and `patchselector`. |
 
-**Endpoint matching** — case-insensitive *contains* "LINK" on `kMIDIPropertyDisplayName` (the macOS
-port is `SL LINK`, not `LINK`). Requires both a source and a destination to match before connecting.
+Load-bearing invariants a reader must not break - each is one line here on purpose; `config.lua`'s own
+SIX RULES banner at the top of the file states them precisely, and `docs/config-lua-history.md` has
+the hardware evidence and rejected approaches behind each:
 
-**Threading** — the only code on CoreMIDI's real-time thread is the `MIDIReadProc` trampoline in
-`SLLinkTransport.swift`, and it does nothing but copy bytes into a lock-free ring buffer (no
-allocation, no ARC, no logging, no dispatch). A `DispatchSourceTimer` on `SLLinkTransport.serialQueue`
-drains it, reassembles `F0...F7` frames, and hands them to `SLLinkSession`, which decodes and runs
-its state machine on its *own* serial `queue`. `SLLinkController` hops explicitly to main before
-touching any `@Published` property. None of `SLLinkTransport`/`SLLinkSession`/`SLLinkDisplay`/
-`SLLinkDemoScreen` are `@MainActor` - keep that discipline (and the `nonisolated` annotations that
-make it so under the project's default-MainActor build setting) in any new code reachable from a
-callback.
-
-**Lifetime** — `SLLinkController` (and the transport/session it owns) is created once by
-`SL_Link_MainstageApp` and torn down explicitly via `shutdown()` from `AppDelegate
-.applicationWillTerminate`, not left to `deinit` ordering - the CoreMIDI callbacks resolve `self` via
-`Unmanaged.passUnretained`, which is only safe because the object outlives the app.
-
-**API vintage** — deliberately uses the CoreMIDI 1.0 byte-oriented API (`MIDIClientCreate`,
-`MIDIInputPortCreate`, `MIDIPacketList`, `MIDIReadProc`) rather than `MIDIEventList`/UMP, because the
-protocol is entirely SysEx. Stay on the 1.0 API so packet handling stays uniform.
-
-**Logging is the debugging surface** — `SLLinkController.log` is a `@Published [String]` capped at
-500 lines and rendered in the dev console (`ContentView.swift`). Every send/receive is logged in hex
-via `SLLinkSessionEvent`.
-
-**Demo screen interaction model** (`SLLinkDemoScreen`) — one zone at a time can be "selected"
-(`selectedZone: Int?`, not the old per-zone `[Bool]` multi-select). A zone's own encoder always
-adjusts that zone's value regardless of selection; the Joystick's Left/Right move the selection
-between zones (wrapping) and its Up/Down/built-in encoder adjust the *selected* zone's value. A
-zone's select button SHORT-toggles its selection and LONG resets its value to 0; a zone's encoder
-push button has the same two actions with SHORT/LONG swapped (SHORT resets, LONG toggles selection).
-The A/B encoders both nudge all four values together (see deviation 5 below on why A isn't
-special-cased) and their push buttons, plus the Joystick's main button, reset everything. Home forces
-a full repaint. No button event is dropped based on SHORT vs. LONG - every case either gives LONG a
-distinct effect or runs the same action for both, since LONG_PRESSION is confirmed delivered on real
-hardware (deviation 5). Panels draw their selection outline as four non-overlapping edge-strip rects
-(not a filled "border" rect underneath the fill) specifically so a selection toggle - which only
-needs to resend the outline - can't paint over the fill/label/value layered on top of it; see
-`SLLinkDisplay`'s type-level doc comment for the general "per-id memoization requires non-overlapping
-regions" rule this follows, and `SLLinkDisplay.invalidate(ids:)` for the escape hatch when overlap
-can't be avoided.
+- **One message per flush, `<= FLUSH_BUDGET` bytes.** Over MainStage's ceiling the whole returned
+  array is silently dropped, not just the overflow.
+- **`displayFlushReady` paces display messages to one per timer tick.** An ungated flush drains at the
+  inbound round-trip rate instead, and the SL88 silently drops a display message that arrives while
+  still painting the previous one.
+- **`timerPending` gates every `settriggertimer` call.** `settriggertimer` is a one-shot; an
+  unconditional re-arm from a handler that runs on every inbound MIDI event pushes the deadline back
+  forever and the timer never fires - no tick means no keepalive, and the SL88 silently drops the app.
+- **Per-region memoization requires non-overlapping regions.** A region id must own screen pixels no
+  other id draws, or a redraw of one id can leave a stale layer from another id on screen - see the
+  "Per-region memoization" section's own comment for the escape hatch when overlap can't be avoided.
 
 ## SL Link protocol (as implemented)
 
@@ -196,63 +157,62 @@ All messages: `F0 00 20 1A 16 <id1> <id2> <itemType> [function] [payload...] F7`
 (`00 20 1A` = Fatar/Studiologic manufacturer ID, `16` = SL Link protocol ID).
 
 **The protocol itself is documented in [`docs/implementing-sl-link.md`](docs/implementing-sl-link.md)**
-— encoding rules, session lifecycle, display, hardware I/O, and the four places real hardware
-disagrees with the published spec. Read that rather than re-deriving from the spec.
+— encoding rules, session lifecycle, display, hardware I/O, and the places real hardware disagrees
+with the published spec. Read that rather than re-deriving from the spec.
 
 Project-specific notes that live only here:
 
 - **Implemented:** Identification, System (device notification, login confirmation/recall, logout,
-  standby, restart), Display (clear/rect/text/bitmap), Buttons, Encoders, White/RGB LEDs.
-  **Out of scope:** device icon upload, Master Volume, Hardware/Pedal Settings queries — their
-  constants are kept in `SLLinkProtocol.swift` as spec references, but nothing encodes or decodes them.
+  standby, restart), Display (rect/text/bitmap), Buttons, Encoders. **Out of scope:** device icon
+  upload, Master Volume, Hardware/Pedal Settings queries, White/RGB LED control.
 - **Plot Bitmap draws from the SL88's internal bitmap library** (Groups/Icons, no pixel upload
   needed) — see `docs/implementing-sl-link.md` §5 for the group table; verified on hardware, Knob
-  group renders as a filling 13-step ring gauge. The device-logo form of it (`GIDX 0x7F`) is the
-  part that still needs icon upload, so it stays out of scope; the library itself is a separate,
-  unused opportunity — the encoder popup doesn't use it yet.
-- **Two discrepancies are switchable from the dev console** without a rebuild, because they were
-  inferred from the reference JUCE implementations rather than confirmed on hardware:
-  `SLLinkHeader.defaultHostID = 0x03` with the DeviceID pair persisted in `UserDefaults` (the spec
-  instead describes one 14-bit random ID), and `SLLinkSession.useNameInKeepalive` (the reference
-  implementations append the app name to every keepalive; the spec puts it only in the Identification
-  Request). Flip the latter if the app never appears in the SL88's APP list.
+  group renders as a filling 13-step ring gauge, used by the encoder value popup.
+- **`SL_HOST_ID = 0x03`**, with the `instanceID` byte generated and bumped in-script on collision
+  (`handle_identification_rejected`) rather than persisted across runs - `config.lua` has no
+  `UserDefaults` equivalent (MainStage's Lua sandbox has no `io`/`os`, so nothing survives a script
+  reload except what MainStage re-derives). There is no dev-console toggle for this or for anything
+  else in the script; behaviour differences that used to be switchable at runtime in the Swift app now
+  require editing the constant and redeploying (`Scripts/install-mainstage-script.sh` +
+  `Scripts/restart-mainstage.sh`).
 - The **hardware-confirmed deviations** — swapped firmware/model payloads, A encoder/button reaching
   the host, LONG_PRESSION delivered, trailing-byte optionality — are catalogued in
   `docs/implementing-sl-link.md` §7. Do not reintroduce logic that special-cases or drops A traffic,
   or that drops LONG_PRESSION, based on the spec's claims without re-confirming against hardware.
 
-Session lifecycle: identify -> approved -> 3s keepalive (5s hard timeout on the keyboard) -> user
-selects the app -> login confirmation/recall -> active -> standby/restart bracket the user leaving and
-returning to SL-Link mode (full repaint required on restart) -> logout is a request/confirm pair,
-either side can initiate.
+Session lifecycle: identify -> approved -> 3s keepalive (5s hard timeout on the keyboard, manufactured
+in `config.lua` by sending an Identification Query on every flush since `settriggertimer` cannot
+re-arm itself) -> user selects the app -> login confirmation -> active -> standby/restart bracket the
+user leaving and returning to SL-Link mode (full repaint required on restart) -> logout is a
+request/confirm pair, either side can initiate.
 
 ## Hardware verification status
 
-Verified against a physically attached SL88 MK2 (firmware 1.1.2, model byte `0x01`). Recorded because
-none of it is reproducible without the hardware, and "builds and passes codec tests" says nothing
-about whether the keyboard agrees.
+Verified against a physically attached SL88 MK2 (firmware 1.1.2, model byte `0x01`), running the
+device script under MainStage. Recorded because none of it is reproducible without the hardware, and
+"passes the Lua harness" says nothing about whether the keyboard and MainStage agree.
 
-Confirmed working: identification and approval; 3s keepalive holding the app in the APP list; login
-confirmation; the demo screen painting correctly (coordinates, alignment, colours, bitmap); all seven
-encoders including A and the joystick encoder, with speed-sensitive multi-step ticks (±8 observed in
-ordinary use, not just ±1); buttons `0x00`-`0x07` and `0x0B`, SHORT and LONG; white LEDs tracking the
-RGB rings; logout in both directions; force logout followed by re-identify; standby -> restart
-with a full repaint; and Plot Bitmap, including the Knob group's 13-step fill gauge and device-side
-gradient colouring.
+Confirmed working: identification and approval; keepalive holding the app in the APP list; login
+confirmation; the concert/set/patch screen painting correctly (coordinates, alignment, colours,
+Max Width truncation and centring at both text sizes); all mapped encoders and buttons emitting CCs
+MainStage can learn, including A and the joystick encoder with speed-sensitive multi-step ticks;
+SHORT and LONG button presses; logout in both directions; force logout followed by re-identify;
+standby -> restart with a full repaint; and Plot Bitmap, including the Knob group's 13-step fill gauge
+used by the encoder value popup.
 
 Not yet exercised, so treat as unproven: USB unplug/replug mid-session; the Identification Rejected
-retry path, which needs a deliberate DeviceID collision; and Login Recall (`00 06`), which only fires
-once the keyboard has an icon stored for the (HostID, DeviceID) pair and is therefore unreachable
-while icon upload stays out of scope.
+retry path beyond ordinary re-init collisions, which needs a deliberate DeviceID collision; and Login
+Recall (`00 06`), which only fires once the keyboard has an icon stored for the (HostID, DeviceID)
+pair and is therefore unreachable while icon upload stays out of scope.
 
-Two app instances running concurrently (the DeviceID instance-byte strategy) remains untested too,
-but only because it didn't occur: a 2026-08-28 hardware run logged a single `instanceID` (`03 6D`),
-zero identification rejections, 3,593 timer-tick lines with 3,593 distinct tick numbers, and the
-documented 2 init / 2 finalize churn - despite the SL88 exposing three port pairs (`SL CTRL`/`SL
-DAW`/`SL LINK`). One observation on one machine/version; the rejection-recovery defences stay. See
+Two app instances running concurrently (the `instanceID` bump-on-collision strategy) remains untested
+too, but only because it didn't occur: a 2026-08-28 hardware run logged a single `instanceID`
+(`03 6D`), zero identification rejections, 3,593 timer-tick lines with 3,593 distinct tick numbers,
+and the documented 2 init / 2 finalize churn - despite the SL88 exposing three port pairs (`SL CTRL`/
+`SL DAW`/`SL LINK`). One observation on one machine/version; the rejection-recovery defences stay. See
 `docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28`.
 
-Timing measured on hardware: outbound paced at ~1 msg/ms sustained 1366 messages with no loss or
-corruption; a full-screen repaint of the demo UI costs ~37 messages, roughly 55 ms of MIDI time. That
-budget is why `SLLinkDisplay` memoizes per region - an encoder tick should cost one message, not a
-repaint.
+Timing measured on hardware: display messages drain at one per timer tick, sped up to `FLUSH_SOON_MS`
+(35ms, settled after a sweep) while output is still queued; a full zoom-screen repaint costs a handful
+of display messages (`zcnc`/`zset`/`zname`/`znext`/`zpos`). That budget is why per-region memoization
+exists - an encoder tick should cost one message, not a repaint.

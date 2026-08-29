@@ -1,6 +1,6 @@
 ---
 name: lua-harness
-description: Verify MainStage device-script (config.lua) logic offline, before spending a hardware round-trip - drive the callbacks with a stubbed MainStage, assert on the bytes emitted, and cross-check them against the real Swift SLLinkEncoder. Use when changing config.lua's session logic, drawing, flush behaviour or message building.
+description: Verify MainStage device-script (config.lua) logic offline, before spending a hardware round-trip - drive the callbacks with a stubbed MainStage, assert on the bytes emitted, and cross-check them against the spec's message tables. Use when changing config.lua's session logic, drawing, flush behaviour or message building.
 ---
 
 # Offline harness for config.lua
@@ -60,10 +60,19 @@ and writable from the harness — set up a state directly instead of replaying a
   `nil`. Returning a table swallows the event and hangs notes.
 - **Timer re-arm interval** via the `armed` stub — fast while draining, keepalive cadence when idle.
 
-## Cross-check bytes against the Swift encoder
+## Cross-check bytes against the spec
 
-`SLLinkProtocol.swift` + `SLLinkEncoder.swift` are pure (`import Foundation` only), so they compile
-standalone and are the authority on every byte. Compare rather than eyeball:
+The byte-level authority is `docs/implementing-sl-link.md` (this project's own protocol guide) plus
+the upstream spec at github.com/fatarsrl/sl-link, pinned at commit `4c0824d`. Derive the expected hex
+for a message by hand from the relevant table there rather than eyeballing the Lua output, then diff
+against what `config.lua` emits. This is what confirms the Lua `append_msb_lsb` / `append_rgb` /
+`append_text` helpers still match the spec's msb/lsb split, 7-bit colour packing, and 0x00-terminated
+ASCII text encoding.
+
+This project's own Swift implementation of the codec (`SLLinkProtocol.swift` + `SLLinkEncoder.swift`,
+pure `import Foundation` files with no CoreMIDI dependency) is no longer present on this branch but is
+preserved on the `archive/swift-app` branch, if a byte-for-byte second opinion against a second
+implementation is ever wanted. From a checkout of that branch:
 
 ```bash
 mkdir -p /tmp/xchk && cat > /tmp/xchk/main.swift <<'EOF'
@@ -76,12 +85,7 @@ swiftc -o /tmp/xchk/chk SL-Link-Mainstage/SLLink/SLLinkProtocol.swift \
                         SL-Link-Mainstage/SLLink/SLLinkEncoder.swift /tmp/xchk/main.swift && /tmp/xchk/chk
 ```
 
-Then diff against the Lua hex. They must match byte for byte — this is what confirms the Lua
-`append_msb_lsb` / `append_rgb` / `append_text` helpers still mirror `msbLsb` / `rgb7` /
-`asciiTerminated`.
-
-Note `main.swift` must be named exactly that for top-level code (same reason
-`Scripts/run-codec-tests.sh` copies its test file).
+Note `main.swift` must be named exactly that for top-level code.
 
 ## Working style
 

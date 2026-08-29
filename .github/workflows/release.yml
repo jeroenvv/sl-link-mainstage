@@ -1,0 +1,207 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  # Ubuntu's lua5.4 package installs its interpreter/compiler under these versioned names -
+  # exported at job level so every script that shells out to run-lua-tests.sh (bump-version.sh,
+  # build-release.sh) inherits the override too.
+  LUA: lua5.4
+  LUAC: luac5.4
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # A GITHUB_TOKEN-authored push does not start new workflow runs, so this whole release is one
+    # job rather than being split and chained off a tag push. That means this job's own bump
+    # commit lands on main without re-triggering itself - but guard anyway in case the job is ever
+    # re-run manually against a ref that already carries a bump commit as its head.
+    if: "${{ !startsWith(github.event.head_commit.message, 'chore: release') }}"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install Lua 5.4
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+
+      - name: Run offline Lua test suite
+        run: ./Scripts/run-lua-tests.sh
+
+      - name: Determine last release tag
+        id: last_tag
+        run: |
+          if tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null)"; then
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "has_tag=true" >> "$GITHUB_OUTPUT"
+            echo "Last release tag: $tag"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "has_tag=false" >> "$GITHUB_OUTPUT"
+            echo "No tags found yet - treating the whole history as the range."
+          fi
+
+      - name: Check whether the shipped script changed
+        id: script_changed
+        # Only meaningful when a previous release exists to diff against. The very first
+        # release is handled entirely by the "Initial release" path below and never needs
+        # this comparison - there is deliberately no empty-tree fallback here any more.
+        if: steps.last_tag.outputs.has_tag == 'true'
+        run: |
+          base="${{ steps.last_tag.outputs.tag }}"
+          changed_files="$(git diff --name-only "$base" HEAD -- MainStageScript/)"
+          if [ -z "$changed_files" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "MainStageScript/** changed since $base:"
+            echo "$changed_files"
+          fi
+
+      - name: No shipped change
+        if: steps.last_tag.outputs.has_tag == 'true' && steps.script_changed.outputs.changed == 'false'
+        run: |
+          current_version="$(tr -d '[:space:]' < VERSION)"
+          echo "no shipped change, version stays at $current_version"
+
+      - name: Initial release
+        if: steps.last_tag.outputs.has_tag == 'false'
+        run: |
+          current_version="$(tr -d '[:space:]' < VERSION)"
+          echo "No previous release tag found - this is the initial release."
+          echo "Publishing v$current_version exactly, with no version bump."
+
+      - name: Collect commits since last release
+        id: commits
+        # Runs for both the initial release (release notes need the commit list even though
+        # there is no bump to decide) and the bump path.
+        if: steps.last_tag.outputs.has_tag == 'false' || steps.script_changed.outputs.changed == 'true'
+        run: |
+          if [ "${{ steps.last_tag.outputs.has_tag }}" = "true" ]; then
+            range="${{ steps.last_tag.outputs.tag }}..HEAD"
+          else
+            range="HEAD"
+          fi
+          # One subject per line, oldest first, for both the bump decision and the release notes.
+          git log --reverse --format='%H%x09%s' "$range" > /tmp/commits-since-last-tag.tsv
+          echo "Commits considered:"
+          cat /tmp/commits-since-last-tag.tsv
+
+      - name: Decide version bump
+        id: bump
+        if: steps.last_tag.outputs.has_tag == 'true' && steps.script_changed.outputs.changed == 'true'
+        run: |
+          part=""
+          while IFS=$'\t' read -r sha subject; do
+            body="$(git log -1 --format=%B "$sha")"
+            level=""
+            # grep -E rather than bash's [[ =~ ]] - some bash builds (notably macOS's stock 3.2,
+            # used for the local dry run) mis-parse a nested `(...)?` group inside =~.
+            if echo "$subject" | grep -qE '^[a-zA-Z]+(\([^)]*\))?!:' || grep -q '^BREAKING CHANGE:' <<<"$body"; then
+              level="major"
+            elif echo "$subject" | grep -qE '^feat(\([^)]*\))?:'; then
+              level="minor"
+            elif echo "$subject" | grep -qE '^(fix|perf|refactor)(\([^)]*\))?:'; then
+              level="patch"
+            fi
+            if [ -n "$level" ]; then
+              echo "  $sha ${subject} -> $level"
+            fi
+            # Plain `[ cond ] && part=x` would trip `set -e` (the default for run: steps) when
+            # cond is false, since a short-circuited && is only exempt from -e inside an if/while
+            # test - not as a standalone statement. Use real if/then instead.
+            case "$level" in
+              major)
+                part="major"
+                ;;
+              minor)
+                if [ "$part" != "major" ]; then
+                  part="minor"
+                fi
+                ;;
+              patch)
+                if [ -z "$part" ]; then
+                  part="patch"
+                fi
+                ;;
+            esac
+          done < /tmp/commits-since-last-tag.tsv
+
+          if [ -z "$part" ]; then
+            part="patch"
+            echo "No bump-worthy commit prefix (feat:/fix:/perf:/refactor:/BREAKING CHANGE) found since the last tag."
+            echo "MainStageScript/** changed regardless, so defaulting to patch - a shipped change always gets a version."
+          fi
+          echo "Decision: $part"
+          echo "part=$part" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version
+        id: version
+        if: steps.last_tag.outputs.has_tag == 'true' && steps.script_changed.outputs.changed == 'true'
+        run: |
+          ./Scripts/bump-version.sh "${{ steps.bump.outputs.part }}"
+          new_version="$(tr -d '[:space:]' < VERSION)"
+          echo "version=$new_version" >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump
+        if: steps.last_tag.outputs.has_tag == 'true' && steps.script_changed.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION MainStageScript/STUDIOLOGIC/SL.device/config.lua
+          git commit -m "chore: release v${{ steps.version.outputs.version }}" -m "[skip ci]"
+          git push origin HEAD:main
+
+      - name: Determine release version
+        id: release_version
+        # Unifies the two paths' version into one output for the steps below: the bumped
+        # version when a bump just happened, or the untouched current VERSION on the very
+        # first release (nothing bumped it, so it's already correct).
+        if: steps.last_tag.outputs.has_tag == 'false' || steps.script_changed.outputs.changed == 'true'
+        run: |
+          if [ "${{ steps.last_tag.outputs.has_tag }}" = "false" ]; then
+            version="$(tr -d '[:space:]' < VERSION)"
+          else
+            version="${{ steps.version.outputs.version }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Tag release
+        # Runs for both paths. On the initial release there is no new commit, so this tags
+        # HEAD as-is; on the bump path, HEAD is the version-bump commit just pushed above.
+        if: steps.last_tag.outputs.has_tag == 'false' || steps.script_changed.outputs.changed == 'true'
+        run: |
+          git tag "v${{ steps.release_version.outputs.version }}"
+          git push origin "v${{ steps.release_version.outputs.version }}"
+
+      - name: Build release zip
+        if: steps.last_tag.outputs.has_tag == 'false' || steps.script_changed.outputs.changed == 'true'
+        run: ./Scripts/build-release.sh --output-dir "$RUNNER_TEMP/dist"
+
+      - name: Write release notes
+        if: steps.last_tag.outputs.has_tag == 'false' || steps.script_changed.outputs.changed == 'true'
+        run: |
+          {
+            echo "Changes since ${{ steps.last_tag.outputs.tag || '(repo start)' }}:"
+            echo
+          } > /tmp/release-notes.md
+          cut -f2 /tmp/commits-since-last-tag.tsv | sed 's/^/- /' >> /tmp/release-notes.md
+
+      - name: Publish GitHub Release
+        if: steps.last_tag.outputs.has_tag == 'false' || steps.script_changed.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.release_version.outputs.version }}" \
+            "$RUNNER_TEMP/dist/sl-link-mainstage-${{ steps.release_version.outputs.version }}.zip" \
+            --title "v${{ steps.release_version.outputs.version }}" \
+            --notes-file /tmp/release-notes.md

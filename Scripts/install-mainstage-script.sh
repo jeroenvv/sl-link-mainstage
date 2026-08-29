@@ -7,14 +7,13 @@
 # therefore the SL88's own identity (STUDIOLOGIC/SL), not a separate
 # bridge-only identity.
 #
-# The app is sandboxed (ENABLE_APP_SANDBOX = YES, see CLAUDE.md) and can
-# never write outside its container, so it cannot place this file itself -
-# this script has to be run by hand (or by whatever install flow ends up
-# wrapping it) whenever the script changes, and again after any MainStage
-# update that might reset or re-scan its script folders.
+# MainStage only loads device scripts from a folder under the user's Library, and nothing
+# populates that folder automatically - this script has to be run by hand (or by whatever install
+# flow ends up wrapping it) whenever the script changes, and again after any MainStage update that
+# might reset or re-scan its script folders.
 #
-# Destination confirmed by the Phase 0 v2 spike (see docs/mainstage-integration.md):
-# MainStage actually loads from
+# Destination confirmed by the Phase 0 v2 spike (see docs/mainstage-integration.md in the project
+# repository): MainStage actually loads from
 #   ~/Music/Audio Music Apps/MainStage Devices/<Manufacturer>/<Model>.device/
 # NOT "MIDI Device Scripts", which is Logic Pro's folder of the same shape -
 # an earlier version of this comment got that wrong and cost several rounds
@@ -52,7 +51,7 @@ echo "Installed $DEVICE_NAME to:"
 echo "  $DEST_DIR"
 echo
 echo "Quit and relaunch MainStage (or select a different MIDI device and back)"
-echo "for it to re-scan MIDI Device Scripts and pick this up."
+echo "for it to re-scan MainStage Devices and pick this up."
 echo
 echo "Note: a MainStage update can reset or move this folder - re-run this"
 echo "script if the bridge stops showing up after updating MainStage."

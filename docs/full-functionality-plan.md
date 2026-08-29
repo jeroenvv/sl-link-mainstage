@@ -1,5 +1,8 @@
 # SL88 ↔ MainStage — plan for full functionality
 
+**Historical.** This is a draft written 2026-08-19; its Phases 1-3 have since shipped. See
+`docs/mainstage-integration.md` for current status rather than treating this plan as live.
+
 **Status: draft for revision.** Nothing here is implemented yet. Written 2026-08-19, on top of the
 working Lua-only SL Link session (see `docs/mainstage-integration.md` and
 `MainStageScript/STUDIOLOGIC/SL.device/config.lua`).

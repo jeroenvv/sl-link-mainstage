@@ -1,14 +1,15 @@
 -- Offline regression harness for MainStageScript/STUDIOLOGIC/SL.device/config.lua.
 --
--- Plain top-level assertions (no test framework), run by `lua`, the same
--- "why not XCTest" shape as Tests/SLLinkCodecTests.swift (see that file /
--- Scripts/run-codec-tests.sh for the rationale: no Xcode test target).
+-- Plain top-level assertions (no test framework), run by `lua` - this repo has no Xcode test
+-- target and never did one for the Lua side; the analogous Swift-side rationale, back when a Swift
+-- companion app lived in this repo, is preserved on the archive/swift-app branch.
 --
 -- config.lua is driven directly - it is plain Lua, no CoreMIDI, no MainStage
 -- - by stubbing exactly what MainStage injects (settriggertimer, the MIDI_*
--- constants) per .claude/skills/lua-harness/SKILL.md. Byte-shape assertions
--- (golden vectors) are cross-checked against SL-Link-Mainstage/SLLink/
--- SLLinkEncoder.swift separately - see Scripts/run-lua-tests.sh's header.
+-- constants) per .claude/skills/lua-harness/SKILL.md. Byte-shape assertions (golden vectors) were
+-- originally cross-checked by hand against this project's Swift SLLinkEncoder.swift (now on
+-- archive/swift-app); they are maintained today against docs/implementing-sl-link.md and the
+-- upstream spec - see Scripts/run-lua-tests.sh's header.
 --
 -- Run via Scripts/run-lua-tests.sh, not directly - that script also gates on
 -- `luac -p` first. Path to config.lua is passed as arg[1].
@@ -104,12 +105,13 @@ end
 
 -- MARK: - 1. Golden byte vectors for every msg_* builder
 --
--- Cross-checked against SLLinkEncoder.swift by hand at id1=SL_HOST_ID
--- (0x03), id2=SL_INSTANCE_START (0x6D) - see Scripts/run-lua-tests.sh's
--- header for the swiftc invocation used to derive these. Do NOT "fix" one
--- of these to match whatever config.lua currently emits - a mismatch here
--- means the Lua codec has drifted from the Swift one, which is the exact
--- regression this harness exists to catch.
+-- Derived from the spec's message tables (docs/implementing-sl-link.md, the upstream spec pinned
+-- at 4c0824d) at id1=SL_HOST_ID (0x03), id2=SL_INSTANCE_START (0x6D). Originally cross-checked by
+-- hand against this project's own Swift SLLinkEncoder.swift too - see Scripts/run-lua-tests.sh's
+-- header for that history and for the archive/swift-app recipe if a byte-for-byte second opinion
+-- is ever wanted again. Do NOT "fix" one of these to match whatever config.lua currently emits - a
+-- mismatch here means the Lua codec has drifted from the spec, which is the exact regression this
+-- harness exists to catch.
 
 checkHex(
 	'msg_identification_request',
@@ -147,10 +149,11 @@ checkHex(
 	'F0 00 20 1A 16 03 6D 04 02 00 0A 00 14 00 1E 00 28 64 32 19 F7'
 )
 
--- Cross-checked against SLLinkEncoder.displayPlotBitmap(id1: 0x03, id2: 0x6D, x: 100, y: 50,
--- groupIndex: 0x00, iconIndex: 0x05, foreground: SLColor(r: 255, g: 140, b: 0),
--- background: SLColor(r: 0, g: 0, b: 0)) via the swiftc recipe in .claude/skills/lua-harness/
--- SKILL.md. groupIndex/iconIndex are single bytes (0x00, 0x05), NOT msb/lsb split, unlike x/y.
+-- Derived from the spec's Plot Bitmap message table (id1: 0x03, id2: 0x6D, x: 100, y: 50,
+-- groupIndex: 0x00, iconIndex: 0x05, foreground RGB: 255, 140, 0, background RGB: 0, 0, 0).
+-- Originally cross-checked against SLLinkEncoder.displayPlotBitmap via the swiftc recipe now
+-- documented for a checkout of archive/swift-app in .claude/skills/lua-harness/SKILL.md.
+-- groupIndex/iconIndex are single bytes (0x00, 0x05), NOT msb/lsb split, unlike x/y.
 checkHex(
 	'msg_plot_bitmap(100, 50, BMP_GROUP_KNOB, 5, 255, 140, 0, 0, 0, 0)',
 	msg_plot_bitmap(100, 50, BMP_GROUP_KNOB, 5, 255, 140, 0, 0, 0, 0),
@@ -752,6 +755,33 @@ do
 	check('zset draws at a real, non-zero maxWidth', byRegion['zset'] ~= nil and max_width_of(byRegion['zset']) > 0)
 	check('zname draws ALIGN_CENTER', byRegion['zname'] ~= nil and align_of(byRegion['zname']) == ALIGN_CENTER)
 	check('zname draws at a real, non-zero maxWidth', byRegion['zname'] ~= nil and max_width_of(byRegion['zname']) > 0)
+end
+
+-- MARK: - 22. SCRIPT_VERSION: strict semver shape, and matches the repo-root VERSION file
+--
+-- The harness runs under real `lua` (io exists here - this is NOT config.lua's MainStage sandbox,
+-- see the stub notes at the top of this file), so it can read VERSION directly rather than trusting
+-- the two stay in sync by hand. repoRoot is derived from THIS FILE's own location (Tests/lua/
+-- harness.lua is always two directories below the repo root) via debug.getinfo, not from configPath
+-- (arg[1]) - so this stays correct even when config.lua is driven from a mutated copy living
+-- elsewhere, e.g. a temp file used to prove this assertion actually fails on drift.
+do
+	check(
+		'SCRIPT_VERSION matches strict semver shape (MAJOR.MINOR.PATCH)',
+		SCRIPT_VERSION:match('^%d+%.%d+%.%d+$') ~= nil
+	)
+
+	local harnessSource = debug.getinfo(1, 'S').source:sub(2) -- strip the leading '@'
+	local harnessDir = harnessSource:match('^(.*)[/\\][^/\\]+$') or '.'
+	local versionPath = harnessDir .. '/../../VERSION'
+	local f = io.open(versionPath, 'r')
+	check('VERSION file is readable at ' .. versionPath, f ~= nil)
+	if f then
+		local contents = f:read('*a')
+		f:close()
+		local trimmed = contents:gsub('^%s+', ''):gsub('%s+$', '')
+		check('SCRIPT_VERSION matches the repo-root VERSION file', SCRIPT_VERSION == trimmed)
+	end
 end
 
 -- MARK: - Summary

@@ -10,7 +10,9 @@
 --   docs/mainstage-integration.md     status, and the historical record
 --   docs/config-lua-history.md        the reasoning behind THIS file's display
 --                                     pacing / session clock / flush constraints
--- SL-Link-Mainstage/SLLink/ is the Swift implementation every byte here is checked against.
+-- The byte-level authority every message here is checked against is docs/implementing-sl-link.md
+-- plus the upstream spec (github.com/fatarsrl/sl-link, pinned at 4c0824d). This project's own Swift
+-- implementation, once the checkable cross-check, now lives on the archive/swift-app branch.
 --
 -- MainStage's Lua sandbox has NO `io` and NO `os` - no file access, no clock, no environment. Never
 -- add a call to either; it errors immediately (`attempt to index global 'io'`/`'os'`), and there is
@@ -63,7 +65,7 @@
 --     rearm_timer() and timerPending's declaration.
 -- =========================================================================
 
--- MARK: - Protocol constants (mirror SLLinkProtocol.swift exactly)
+-- MARK: - Protocol constants (mirror the spec's ID tables exactly)
 
 SL_PORT = 'LINK' -- see the banner above; NOT 'SL LINK'
 
@@ -80,8 +82,7 @@ IT_ENCODER = 0x03 -- handled for every EID in ENCODER_CC; other EIDs (just A) ar
 IT_DISPLAY = 0x04
 IT_IDENTIFICATION = 0x7F
 
--- Button IDs, matching SLButtonID in SLLinkProtocol.swift (verified against that file, not
--- re-derived here - see docs/implementing-sl-link.md).
+-- Button IDs, matching the spec's button ID table (see docs/implementing-sl-link.md).
 BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
 BID_JOY_UP = 0x11
 BID_JOY_LEFT = 0x12
@@ -102,7 +103,7 @@ BID_B_ENC = 0x0C -- SLButtonID.bEncoderButton
 PRESS_SHORT = 0x01
 PRESS_LONG = 0x02
 
--- Encoder IDs, matching SLEncoderID in SLLinkProtocol.swift.
+-- Encoder IDs, matching the spec's encoder ID table.
 EID_ZONE1 = 0x00
 EID_ZONE2 = 0x01
 EID_ZONE3 = 0x02
@@ -254,6 +255,12 @@ REIDENTIFY_WAIT_MS = 6000
 MAX_SAME_ID_RETRIES = 2
 
 APP_NAME = 'MainStage'
+
+-- Must be kept in step with the repo-root VERSION file; Tests/lua/harness.lua asserts the two
+-- match, since /tmp/lua.log's controller_initialize line is the only way to tell which build
+-- MainStage actually has loaded, and the installed copy has repeatedly drifted from the working
+-- tree during development.
+SCRIPT_VERSION = '1.0.0'
 
 -- MARK: - Session state
 
@@ -618,7 +625,7 @@ function sl_header()
 	return m
 end
 
--- ASCII-clamps to the SLMK2 font range and 0x00-terminates, matching SLLinkEncoder.asciiTerminated.
+-- ASCII-clamps to the SLMK2 font range and 0x00-terminates, per the spec's text field encoding.
 function append_text(msg, text, maxLength)
 	if text ~= nil then
 		local limit = math.min(#text, maxLength or 32)
@@ -631,15 +638,15 @@ function append_text(msg, text, maxLength)
 	table.insert(msg, 0x00)
 end
 
--- Splits a value >127 into (msb, lsb) - mirrors SLLinkEncoder.msbLsb.
+-- Splits a value >127 into (msb, lsb), per the spec's 7-bit MIDI payload encoding.
 function append_msb_lsb(msg, value)
 	if value == nil or value < 0 then value = 0 end
 	table.insert(msg, math.floor(value / 128) % 128)
 	table.insert(msg, value % 128)
 end
 
--- 8-bit RGB -> the 7-bit-per-channel form every SL Link colour field uses (SLLinkEncoder.rgb7 drops
--- the least significant bit).
+-- 8-bit RGB -> the 7-bit-per-channel form every SL Link colour field uses (the spec's colour fields
+-- drop the least significant bit).
 function append_rgb(msg, r, g, b)
 	table.insert(msg, math.floor(r / 2))
 	table.insert(msg, math.floor(g / 2))
@@ -729,7 +736,7 @@ function msg_draw_rect(x, y, w, h, r, g, b)
 	return m
 end
 
--- Payload order per the spec / SLLinkEncoder.displayPlotBitmap: X(2) Y(2) GroupIdx IconIdx FG(3)
+-- Payload order per the spec's Plot Bitmap message: X(2) Y(2) GroupIdx IconIdx FG(3)
 -- BG(3) - groupIndex/iconIndex are single 7-bit bytes, NOT msb/lsb split (unlike x/y/w/h above).
 function msg_plot_bitmap(x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb)
 	local m = sl_header()
@@ -747,13 +754,13 @@ end
 
 -- MARK: - Per-region memoization
 --
--- Ported from SL-Link-Mainstage/SLLink/SLLinkDisplay.swift: draw_text/draw_rect remember the full
--- parameter tuple they last sent for a given caller-supplied id, and queue nothing when a call
--- repeats it unchanged. Mandatory, not an optimisation - at one message per ~100ms flush, a full
--- list repaint costs about a second; without this every self-heal repaint would cost the same
--- again.
+-- Ported from this project's Swift implementation (see the display layer on archive/swift-app):
+-- draw_text/draw_rect remember the full parameter tuple they last sent for a given caller-supplied
+-- id, and queue nothing when a call repeats it unchanged. Mandatory, not an optimisation - at one
+-- message per ~100ms flush, a full list repaint costs about a second; without this every self-heal
+-- repaint would cost the same again.
 --
--- NON-OVERLAP RULE (same as SLLinkDisplay's doc comment): every region id must own screen pixels
+-- NON-OVERLAP RULE (same rule the Swift display layer documents): every region id must own screen pixels
 -- that no other id draws. A change to one id's memo does not invalidate any other id, so a caller
 -- that layers draws - e.g. a filled rect under text - will corrupt the screen the moment only the
 -- bottom layer changes and the top layer is skipped as unchanged; the device has no concept of
@@ -1012,10 +1019,10 @@ popupPreviousMode = nil
 popupLastActivityIdleTick = 0
 
 -- Border: same 'four non-overlapping edge-strip rects' idiom as the Swift companion app's
--- zone-selection outline (SLLinkDemoScreen.drawZoneBorder) - top/bottom span the panel's full
--- width, left/right span only the strip between them, so no two edges cover the same pixel. The
+-- zone-selection outline (see the demo screen on archive/swift-app) - top/bottom span the panel's
+-- full width, left/right span only the strip between them, so no two edges cover the same pixel. The
 -- fill (popupBg, below) is inset by the border's thickness so it never overlaps the border either -
--- each id owns pixels no other id touches, per SLLinkDisplay's per-id-memoization rule (see this
+-- each id owns pixels no other id touches, per the per-id-memoization rule above (see this
 -- file's CLAUDE.md).
 POPUP_BORDER_THICKNESS = 4
 
@@ -1599,7 +1606,7 @@ end
 function handle_restart()
 	state = STATE_ACTIVE
 	print('[sllink] <- RESTART - repainting (SL88 retains no screen state)')
-	invalidate_all() -- SLLinkDisplay.swift: the SLMK2 forgets everything across Standby; without this
+	invalidate_all() -- the SLMK2 forgets everything across Standby (see docs/implementing-sl-link.md); without this
 		-- every id's memo would wrongly think its last content is still on screen and skip resending it.
 	paint_screen()
 end
@@ -1787,7 +1794,7 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 		APP_NAME = applicationName
 	end
 
-	print('[sllink] controller_initialize (app="' .. tostring(applicationName) .. '")')
+	print('[sllink] controller_initialize (app="' .. tostring(applicationName) .. '", version=' .. SCRIPT_VERSION .. ')')
 	start_identification()
 	return flush_pending()
 end

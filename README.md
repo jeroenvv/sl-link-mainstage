@@ -8,8 +8,8 @@ Run `./Scripts/install-mainstage-script.sh` to copy `MainStageScript/STUDIOLOGIC
 Logic Pro's folder of the same shape). It's idempotent, needs no admin rights, doesn't modify
 MainStage.app, and survives MainStage updates. Re-run it after every `config.lua` change and after
 a MainStage update that rescans its script folders, then quit and relaunch MainStage so it rescans
-for the new script. Requires an SL88 MK2 connected over USB and MainStage; the Swift app in this
-repo is not part of this path and does not need to be running.
+for the new script. Requires an SL88 MK2 connected over USB and MainStage; nothing else needs to be
+running.
 
 ## Using it
 
@@ -21,6 +21,26 @@ view; a long press forces a full repaint.
 If the app never appears in the APP list, quit and relaunch MainStage. For diagnostics,
 `defaults write com.apple.mainstage3 LUA_DEBUG -bool true` routes the script's `print()` output to
 MainStage's stdout — turn it back off afterward, since it measurably slows MainStage down.
+
+## Versioning
+
+Current version: **1.0.0** (see the repo-root `VERSION` file; also stamped into
+`config.lua`'s `SCRIPT_VERSION` and printed on every `controller_initialize`, so `/tmp/lua.log`
+shows which build MainStage actually has loaded). Semantic versioning:
+
+- **patch** — fixes and tuning, no mapping or install-layout change
+- **minor** — new features or screens, backwards-compatible
+- **major** — anything that breaks an existing MainStage MIDI-Learn mapping (the CC map in
+  `config.lua`) or changes the install layout
+
+The major bump matters in practice: the 34 CC assignments are MIDI-Learned by hand in MainStage, so
+renumbering one silently breaks a working rig.
+
+## Releases
+
+Releases are published automatically whenever a change to the device script (`MainStageScript/**`)
+lands on `main`. Grab the zip from the [Releases page](../../releases), unzip it, and run
+`./Scripts/install-mainstage-script.sh` from the unzipped folder.
 
 ## Documentation
 

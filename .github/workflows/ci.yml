@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Lua 5.4
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+
+      - name: Run offline Lua test suite
+        run: LUA=lua5.4 LUAC=luac5.4 ./Scripts/run-lua-tests.sh
+
+      - name: Build release zip
+        run: LUA=lua5.4 LUAC=luac5.4 ./Scripts/build-release.sh --output-dir "$RUNNER_TEMP/dist"
+
+      - name: Upload release zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: sl-link-mainstage-dist
+          path: ${{ runner.temp }}/dist/*.zip
+          if-no-files-found: error
