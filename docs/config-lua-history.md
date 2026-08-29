@@ -491,9 +491,18 @@ symptom whose real cause got fixed separately, by queueing the clear twice. The 
 also nearly pure waste on its own terms: it only delays the *second* clear, which is itself gated by the
 same guard.
 
-Lowered `MODE_SWITCH_SETTLE_TICKS` from 3 to 1 on this basis. **This is an experiment pending hardware
-confirmation**, not a settled fact - watch for stale text or dropped lines reappearing on a mode switch.
-Revert ladder: try 2 first; 3 is the last known-good value.
+Lowered `MODE_SWITCH_SETTLE_TICKS` from 3 to 1 on this basis. **Confirmed on hardware 2026-08-29**
+(SL88 MK2 + MainStage, LUA_DEBUG capture, 210 ticks / 4 popup entries / 10 mode switches / 12 knob
+bitmap draws / 0 Lua errors): dead time from the first Clear Screen to the first popup pixel dropped
+from 8 ticks to 4, measured at every popup entry in the run (ticks 16->20, 83->87, 129->133 - all
+exactly 4). At `FLUSH_SOON_MS = 50` that's roughly 400ms down to 200ms. No stale text was observed on
+either the popup or the Zoom-button zoom<->list toggle, including the first switch after login - the
+case the original raise to 3 was meant to protect. The reasoning above - that the double Clear Screen
+already fixed the delivery bug the raise to 3 was compensating for, making the wider settle
+unnecessary - is vindicated by this result.
+
+Revert ladder, unchanged, if stale text or dropped lines ever reappear on a mode switch: try 2 first;
+3 is the last known-good value.
 
 ### FIX 5 audit: the first-switch anomaly
 

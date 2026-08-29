@@ -333,9 +333,10 @@ displayFlushReady = true
 -- Named as its own constant, not folded into FLUSH_SOON_MS, so the two can be retuned
 -- independently. Lowered from 3 to 1 on 2026-08-29 - the double Clear Screen in flush_pending()
 -- already fixed the delivery bug the raise to 3 was compensating for, so the settle no longer needs
--- to carry it. Experimental, pending hardware confirmation: if stale text or dropped lines reappear
--- on a mode switch, try 2 next; 3 is the last known-good value. See
--- docs/config-lua-history.md#mode_switch_settle_ticks-lowered-to-1-2026-08-29.
+-- to carry it. Confirmed on hardware 2026-08-29: Clear-Screen-to-first-pixel dead time dropped from
+-- 8 ticks to 4, with no stale text on popups or the Zoom-button zoom<->list toggle. Revert ladder if
+-- stale text or dropped lines ever reappear on a mode switch: try 2 next; 3 is the last known-good
+-- value. See docs/config-lua-history.md#mode_switch_settle_ticks-lowered-to-1-2026-08-29.
 MODE_SWITCH_SETTLE_TICKS = 1
 displaySettleTicks = 0
 
