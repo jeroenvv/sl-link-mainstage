@@ -206,9 +206,10 @@ Project-specific notes that live only here:
   **Out of scope:** device icon upload, Master Volume, Hardware/Pedal Settings queries — their
   constants are kept in `SLLinkProtocol.swift` as spec references, but nothing encodes or decodes them.
 - **Plot Bitmap draws from the SL88's internal bitmap library** (Groups/Icons, no pixel upload
-  needed) — see `docs/implementing-sl-link.md` §5 for the group table and the unverified-on-hardware
-  caveat. The device-logo form of it (`GIDX 0x7F`) is the part that still needs icon upload, so it
-  stays out of scope; the library itself is a separate, unused opportunity.
+  needed) — see `docs/implementing-sl-link.md` §5 for the group table; verified on hardware, Knob
+  group renders as a filling 13-step ring gauge. The device-logo form of it (`GIDX 0x7F`) is the
+  part that still needs icon upload, so it stays out of scope; the library itself is a separate,
+  unused opportunity — the encoder popup doesn't use it yet.
 - **Two discrepancies are switchable from the dev console** without a rebuild, because they were
   inferred from the reference JUCE implementations rather than confirmed on hardware:
   `SLLinkHeader.defaultHostID = 0x03` with the DeviceID pair persisted in `UserDefaults` (the spec
@@ -235,8 +236,9 @@ Confirmed working: identification and approval; 3s keepalive holding the app in 
 confirmation; the demo screen painting correctly (coordinates, alignment, colours, bitmap); all seven
 encoders including A and the joystick encoder, with speed-sensitive multi-step ticks (±8 observed in
 ordinary use, not just ±1); buttons `0x00`-`0x07` and `0x0B`, SHORT and LONG; white LEDs tracking the
-RGB rings; logout in both directions; force logout followed by re-identify; and standby -> restart
-with a full repaint.
+RGB rings; logout in both directions; force logout followed by re-identify; standby -> restart
+with a full repaint; and Plot Bitmap, including the Knob group's 13-step fill gauge and device-side
+gradient colouring.
 
 Not yet exercised, so treat as unproven: USB unplug/replug mid-session; the Identification Rejected
 retry path, which needs a deliberate DeviceID collision; and Login Recall (`00 06`), which only fires

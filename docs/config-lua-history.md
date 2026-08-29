@@ -466,6 +466,44 @@ one), each earning its own flush. It's idempotent, and a dropped copy costs noth
 ~50–70ms flush. `flush_pending()`'s settle guard resets on every Clear Screen it emits, so the settle
 window still lands after the *last* one.
 
+### `MODE_SWITCH_SETTLE_TICKS` lowered to 1 (2026-08-29)
+
+A hardware trace of a popup entry showed 8 ticks of dead time before the first pixel appeared:
+
+```
+tick 35  Clear Screen #1 (13 bytes)
+tick 36,37,38   nothing drawn - settle guard withholding displayFlushReady
+tick 39  Clear Screen #2 (13 bytes)
+tick 40,41,42   nothing drawn - settle guard again
+tick 43  popupBg  <- first real pixel
+```
+
+`set_display_mode()` queues two Clear Screens (see [above](#the-double-clear-screen)); `flush_pending()`
+resets `displaySettleTicks` to `MODE_SWITCH_SETTLE_TICKS` on *each* one, so the guard gets paid twice per
+switch. At `FLUSH_SOON_MS = 50` that's roughly 400ms of blank screen on every popup entry and again on
+every dismissal - reported by the user as "it takes some time before screen redraw starts."
+
+[The double-Clear-Screen entry above](#the-double-clear-screen) already traced the stale-text symptom
+that motivated raising this constant from 1 to 3 to a *delivery* problem - the clear going out bundled
+with the Identification Query, a flush shape already on record as unreliable - and states explicitly
+that the settle timing "was already fine" at 1. The 2026-08-21 raise to 3 was therefore treating a
+symptom whose real cause got fixed separately, by queueing the clear twice. The first clear's settle is
+also nearly pure waste on its own terms: it only delays the *second* clear, which is itself gated by the
+same guard.
+
+Lowered `MODE_SWITCH_SETTLE_TICKS` from 3 to 1 on this basis. **Confirmed on hardware 2026-08-29**
+(SL88 MK2 + MainStage, LUA_DEBUG capture, 210 ticks / 4 popup entries / 10 mode switches / 12 knob
+bitmap draws / 0 Lua errors): dead time from the first Clear Screen to the first popup pixel dropped
+from 8 ticks to 4, measured at every popup entry in the run (ticks 16->20, 83->87, 129->133 - all
+exactly 4). At `FLUSH_SOON_MS = 50` that's roughly 400ms down to 200ms. No stale text was observed on
+either the popup or the Zoom-button zoom<->list toggle, including the first switch after login - the
+case the original raise to 3 was meant to protect. The reasoning above - that the double Clear Screen
+already fixed the delivery bug the raise to 3 was compensating for, making the wider settle
+unnecessary - is vindicated by this result.
+
+Revert ladder, unchanged, if stale text or dropped lines ever reappear on a mode switch: try 2 first;
+3 is the last known-good value.
+
 ### FIX 5 audit: the first-switch anomaly
 
 See [Open questions](#open-questions).
@@ -591,6 +629,29 @@ occupies the card's top, so the bottom margin can stay tighter than the top one.
 Lit-segment count scales by `value / 127` (not `/ 128`), so `value = 0` lights zero segments and
 `value = 127` — the actual maximum — lights all 20 exactly, rather than topping out at 19 the way a
 `/128` divisor would (`127/128*20 = 19.84`, floors to 19).
+
+### The Knob bitmap replaces the ring (2026-08-29)
+
+v5's hand-drawn 20-segment ring is gone. Plot Bitmap and the Knob icon group (`BMP_GROUP_KNOB`,
+icons `0x00`–`0x0C`, 61×54 px, a filling ring gauge with device-side gradient colouring) were
+verified on hardware — see `docs/implementing-sl-link.md` §5 — closing the question the
+`BITMAP_PROBE` scaffolding existed to answer, so that scaffolding (the constant, the probe grid
+screen, the `handle_login` branch, the harness assertion pinning it false) is removed along with the
+ring. The popup is now three stacked, non-overlapping bands: the control's name and CC number
+(`SIZE_MEDIUM`, e.g. `ENC 1 - CC 59`) above a single centred Knob bitmap, and the 0–127 value
+(`SIZE_MEDIUM`, white) below it — not inside it, because a 61×54 icon cannot host a legible
+`SIZE_BIG` number the way the old ring's open centre could.
+
+This collapses `paint_popup_screen()`'s message count from 27 (bg + 4 border strips + label + 20
+ring segments + value) to 8 (bg + 4 border strips + label + knob + value) — a ~70% cut, all still
+inside `FLUSH_BUDGET` per message. The value/knob-index mapping keeps the old ring's `/127`-not-
+`/128` reasoning: `math.floor(value * (BMP_KNOB_LEVELS - 1) / 127)` so `value = 0` selects icon 0
+(empty) and `value = 127` — the actual maximum — selects icon `0x0C` (full) exactly, the same
+endpoint-correctness argument as the ring's lit-segment count above, just against 12 icon steps
+instead of 20 segments.
+
+This closes out the v1–v5 popup history above — the popup's visual design is now the Knob bitmap
+described here, not the ring.
 
 ---
 

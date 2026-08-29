@@ -177,6 +177,17 @@ ENCODER_CC = {
 	[EID_B] = 'ENCB_TURN',
 }
 
+-- EID -> short display name, for the encoder value popup's label (see "MARK: - Encoder value
+-- popup"). Same key set as ENCODER_CC, since only encoders wired to a CC ever show a popup.
+ENCODER_NAME = {
+	[EID_ZONE1] = 'ENC 1',
+	[EID_ZONE2] = 'ENC 2',
+	[EID_ZONE3] = 'ENC 3',
+	[EID_ZONE4] = 'ENC 4',
+	[EID_JOYSTICK] = 'JOY',
+	[EID_B] = 'ENC B',
+}
+
 -- Batch cap for one controller_midi_in return: 16 CCs (48 bytes, 3 bytes each) - well under
 -- MainStage's measured ~78-byte injection ceiling, where an oversized array is discarded WHOLE
 -- rather than truncated (rule 2 in the banner above). A fast encoder sweep or many simultaneous
@@ -203,6 +214,16 @@ SYS_LOGIN_RECALL = 0x06
 DISP_WRITE_TEXT = 0x00
 DISP_CLEAR_SCREEN = 0x01
 DISP_DRAW_RECT = 0x02
+DISP_PLOT_BITMAP = 0x03
+
+-- Internal bitmap library (Plot Bitmap draws a device-stored black-and-white icon, coloured
+-- on-device from the message's own FG/BG - see docs/implementing-sl-link.md §5's Group/Icon
+-- table for the rest of the library). Only the Knob group is used by this project; kept minimal
+-- here rather than transcribing the whole appendix.
+BMP_GROUP_KNOB = 0x00
+BMP_KNOB_LEVELS = 13 -- icons 0x00-0x0C, a filling ring gauge: 0x00 empty, 0x0C full
+BMP_ICON_W = 61
+BMP_ICON_H = 54
 
 -- Text align / size
 ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT = 0x00, 0x01, 0x02
@@ -310,10 +331,13 @@ displayFlushReady = true
 -- regardless.
 --
 -- Named as its own constant, not folded into FLUSH_SOON_MS, so the two can be retuned
--- independently. Raised from 1 to 3 after a hardware report of stale text after mode switches - see
--- docs/config-lua-history.md#the-clear-screen-ban-and-its-lift and
--- #fix-5-audit-the-first-switch-anomaly for what this did and didn't explain.
-MODE_SWITCH_SETTLE_TICKS = 3
+-- independently. Lowered from 3 to 1 on 2026-08-29 - the double Clear Screen in flush_pending()
+-- already fixed the delivery bug the raise to 3 was compensating for, so the settle no longer needs
+-- to carry it. Confirmed on hardware 2026-08-29: Clear-Screen-to-first-pixel dead time dropped from
+-- 8 ticks to 4, with no stale text on popups or the Zoom-button zoom<->list toggle. Revert ladder if
+-- stale text or dropped lines ever reappear on a mode switch: try 2 next; 3 is the last known-good
+-- value. See docs/config-lua-history.md#mode_switch_settle_ticks-lowered-to-1-2026-08-29.
+MODE_SWITCH_SETTLE_TICKS = 1
 displaySettleTicks = 0
 
 -- Counts every display message queue_message() handles (append OR coalesced replace-in-place).
@@ -701,6 +725,22 @@ function msg_draw_rect(x, y, w, h, r, g, b)
 	return m
 end
 
+-- Payload order per the spec / SLLinkEncoder.displayPlotBitmap: X(2) Y(2) GroupIdx IconIdx FG(3)
+-- BG(3) - groupIndex/iconIndex are single 7-bit bytes, NOT msb/lsb split (unlike x/y/w/h above).
+function msg_plot_bitmap(x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb)
+	local m = sl_header()
+	table.insert(m, IT_DISPLAY)
+	table.insert(m, DISP_PLOT_BITMAP)
+	append_msb_lsb(m, x)
+	append_msb_lsb(m, y)
+	table.insert(m, groupIndex)
+	table.insert(m, iconIndex)
+	append_rgb(m, fr, fg, fb)
+	append_rgb(m, br, bg, bb)
+	table.insert(m, SL_END)
+	return m
+end
+
 -- MARK: - Per-region memoization
 --
 -- Ported from SL-Link-Mainstage/SLLink/SLLinkDisplay.swift: draw_text/draw_rect remember the full
@@ -744,6 +784,16 @@ function draw_rect(id, x, y, w, h, r, g, b)
 	if tuple_equal(drawn[id], t, #t) then return end
 	drawn[id] = t
 	queue_message(msg_draw_rect(x, y, w, h, r, g, b), id)
+end
+
+-- Like draw_text/draw_rect, but for Plot Bitmap. A bitmap fully replaces the pixels beneath it -
+-- no alpha channel (docs/implementing-sl-link.md §5) - so it is self-clearing the same way a
+-- Write Text redraw is, and satisfies the non-overlap rule above on its own.
+function draw_bitmap(id, x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb)
+	local t = { x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb }
+	if tuple_equal(drawn[id], t, #t) then return end
+	drawn[id] = t
+	queue_message(msg_plot_bitmap(x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb), id)
 end
 
 -- MARK: - Screen
@@ -904,19 +954,24 @@ ROW_COLORS = {
 
 -- MARK: - Encoder value popup
 --
--- Shows a transient panel - 'CC <n>' small and dim above, the 0-127 value big and centred, ringed
--- by a 20-segment LED dial - whenever ANY mapped encoder moves, so the value and its wire CC number
--- are visible without a MainStage round-trip. controller_midi_out was confirmed on hardware to
--- report nil name/valueString/color for the mapped CC itself, so this never attempts to show a
--- MainStage parameter name, only the CC number and value, both already known locally via
--- CC_MAP/ENCODER_CC/encoderValue.
+-- Shows a transient panel - the control's name and wire CC number above, the native Knob bitmap
+-- centred as a filling ring gauge, the 0-127 value below it - whenever ANY mapped encoder moves,
+-- so the value and its CC number are visible without a MainStage round-trip. controller_midi_out
+-- was confirmed on hardware to report nil name/valueString/color for the mapped CC itself, so this
+-- never attempts to show a MainStage parameter name, only the encoder's own name, its CC number,
+-- and its value, all already known locally via ENCODER_NAME/CC_MAP/ENCODER_CC/encoderValue.
+--
+-- v6 replaced a hand-drawn 20-segment ring with the native Knob bitmap (BMP_GROUP_KNOB, verified on
+-- hardware - see docs/implementing-sl-link.md §5) once Plot Bitmap was confirmed working; see
+-- docs/config-lua-history.md#the-knob-bitmap-replaces-the-ring-2026-08-29 for the message-count and
+-- layout rationale, and docs/config-lua-history.md#the-encoder-value-popup-v1-v5 for the v1-v5
+-- history this closes out.
 --
 -- A genuine full-screen display mode (displayMode == 'popup', alongside 'list'/'zoom'), not a
 -- floating overlay - see set_display_mode's 'popup' branch and paint_popup_screen below. Owning the
 -- whole screen means dismiss_popup() can reuse set_display_mode's proven double-Clear-Screen/
 -- invalidate sequence instead of an ad-hoc redraw, and there is nothing underneath to protect from
--- overlap. This was not always true - see docs/config-lua-history.md#the-encoder-value-popup-v1-v5
--- for the v1-v4 visual iteration and the placement trade-off v5's full-screen mode removed.
+-- overlap.
 --
 -- How often controller_timer_trigger fires while the popup is up and idle, so
 -- POPUP_DISMISS_IDLE_TICKS ticks at roughly this cadence instead of KEEPALIVE_MS's ~3s - see
@@ -927,73 +982,40 @@ POPUP_W = 280
 POPUP_H = 200
 POPUP_X = math.floor((SCREEN_WIDTH - POPUP_W) / 2)
 POPUP_Y = math.floor((SCREEN_HEIGHT - POPUP_H) / 2)
-POPUP_PAD = 10 -- inset for the label, so it doesn't touch the panel's top edge
+POPUP_PAD = 10 -- inset for the label/value text, so neither touches the panel's side edges
 
 POPUP_CONTENT_X = POPUP_X + POPUP_PAD
 POPUP_CONTENT_W = POPUP_W - 2 * POPUP_PAD
-POPUP_LABEL_Y = POPUP_Y + 12 -- small dim label, above the ring entirely (see geometry check below)
 
-POPUP_CENTER_X = POPUP_X + POPUP_W / 2
--- Ring/value centre deliberately NOT the card's raw vertical midpoint (POPUP_Y + POPUP_H/2 = 120):
--- shifted down so the label has headroom above the ring without shrinking the ring to match a
--- symmetric top/bottom margin it doesn't need (the label only ever occupies the top of the card).
-POPUP_CENTER_Y = POPUP_Y + 120
+POPUP_CENTER_X = POPUP_X + POPUP_W / 2 -- the panel is itself screen-centred, so this also centres on SCREEN_WIDTH
 
--- Ring geometry. Radius/segment size/count/sweep were chosen so that every one of the 20 segment
--- positions clears (a) the value text's bounding box, (b) the panel border's inner edge, and (c)
--- the label's bottom edge - CHECKED PROGRAMMATICALLY for this exact combination (all 20 positions
--- checked against both boxes for rectangle overlap). RE-RUN THAT CHECK if POPUP_W/POPUP_H/
--- POPUP_RING_RADIUS/POPUP_SEG_SIZE/POPUP_SEG_COUNT ever change - do not eyeball a replacement. See
--- docs/config-lua-history.md#popup-ring-geometry-derivation for the numbers and clearances this was
--- verified against.
---
--- The ring does not close a full 360deg - POPUP_SWEEP_DEG (300) leaves a 60deg gap centred at the
--- bottom (90deg, 6 o'clock), gauge-style. Segments are spaced evenly across the sweep via
--- POPUP_SWEEP_DEG / (POPUP_SEG_COUNT - 1) so the first and last land exactly on the sweep's two
--- endpoints, keeping the gap exactly 60deg wide and centred.
-POPUP_RING_RADIUS = 68
-POPUP_SEG_SIZE = 5
-POPUP_SEG_COUNT = 20
-POPUP_SWEEP_DEG = 300 -- full sweep in degrees; the remaining (360 - POPUP_SWEEP_DEG) is the gap
-POPUP_GAP_START_DEG = 270 - POPUP_SWEEP_DEG / 2 -- angle of segment 1 (see loop below)
+-- Three non-overlapping vertical bands (label, knob, value - top to bottom), all inside the
+-- panel's border-inset content area (POPUP_Y+POPUP_BORDER_THICKNESS .. POPUP_Y+POPUP_H-
+-- POPUP_BORDER_THICKNESS). Offsets are bare numbers tied to POPUP_Y (same idiom the old ring
+-- geometry used), sized against SIZE_MEDIUM's ~27px glyph height (see SIZE_MEDIUM's declaration
+-- comment above) and the Knob bitmap's fixed BMP_ICON_W x BMP_ICON_H size - not eyeballed.
+POPUP_LABEL_Y = POPUP_Y + 20 -- clears the border's inner top edge (+4) with headroom for the label
+POPUP_KNOB_X = math.floor(POPUP_CENTER_X - BMP_ICON_W / 2) -- horizontally centred (screen-centred, see above); floored - BMP_ICON_W is odd, so the raw centring math lands on a half-pixel
+POPUP_KNOB_Y = POPUP_Y + 70 -- clears the label band (20 + ~27 tall = 47) with a comfortable gap
+POPUP_VALUE_Y = POPUP_KNOB_Y + BMP_ICON_H + 16 -- BELOW the dial, not inside it - 16px gap under it
 
--- Value text: SIZE_BIG, centred in the ring's open middle. Width chosen to clear every segment box
--- per the geometry note above - re-check alongside the ring if this changes.
-POPUP_VALUE_W = 100
-POPUP_VALUE_X = POPUP_CENTER_X - POPUP_VALUE_W / 2
-POPUP_VALUE_Y = POPUP_CENTER_Y - 20
+-- Value shares the label's box: same width/x as the label, both centred - a 61x54 icon can't host
+-- a legible SIZE_BIG number, so unlike the old ring the value no longer lives inside the dial.
+POPUP_VALUE_X = POPUP_CONTENT_X
+POPUP_VALUE_W = POPUP_CONTENT_W
 
--- Lit ring segments are true orange, deliberately NOT ROW_ACTIVE's amber/gold - the ring reads as
--- its own 'dial' idiom rather than reusing the list's 'this is the active row' colour.
 POPUP_BG_COLOR = { 0, 0, 0 }
-POPUP_SEG_LIT = { 255, 140, 0 } -- true orange, not amber/gold
-POPUP_SEG_UNLIT = { 180, 180, 180 } -- light grey track, clearly visible against the black panel - matches the SL88's own native overlay screens
+POPUP_KNOB_FG = { 255, 140, 0 } -- true orange, carried over from the old ring's lit-segment colour
 POPUP_VALUE_FG = { 255, 255, 255 }
 POPUP_LABEL_FG = { ROW_COLORS[ROW_PATCH][1], ROW_COLORS[ROW_PATCH][2], ROW_COLORS[ROW_PATCH][3] }
-POPUP_BORDER_COLOR = { 200, 210, 220 } -- thin light neutral border, matching the native overlay's frame - NOT orange, keep orange exclusive to the ring's active fill
-
--- Segment ids and their (x,y) top-left draw_rect positions, computed ONCE here at load time (not
--- per-draw) via math.cos/math.sin. Segment 1 sits at POPUP_GAP_START_DEG (120deg, just past the
--- gap's bottom-left edge) and segments proceed clockwise across POPUP_SWEEP_DEG, evenly spaced
--- every POPUP_SWEEP_DEG/(POPUP_SEG_COUNT-1) ~= 15.8 degrees, ending at segment 20 on the gap's
--- bottom-right edge (60deg) - a 60deg gap at the bottom (90deg, 6 o'clock), not a full circle.
--- Positions are top-left corners (draw_rect's convention - see msg_draw_rect), i.e.
--- centre-on-circle minus half the segment size.
-POPUP_SEG_IDS = {}
-POPUP_SEG_POS = {}
-for i = 1, POPUP_SEG_COUNT do
-	POPUP_SEG_IDS[i] = 'popupSeg' .. i
-	local angleRad = math.rad(POPUP_GAP_START_DEG + (i - 1) * (POPUP_SWEEP_DEG / (POPUP_SEG_COUNT - 1)))
-	local segX = POPUP_CENTER_X + POPUP_RING_RADIUS * math.cos(angleRad) - POPUP_SEG_SIZE / 2
-	local segY = POPUP_CENTER_Y + POPUP_RING_RADIUS * math.sin(angleRad) - POPUP_SEG_SIZE / 2
-	POPUP_SEG_POS[i] = { math.floor(segX), math.floor(segY) }
-end
+POPUP_BORDER_COLOR = { 200, 210, 220 } -- thin light neutral border, matching the native overlay's frame - NOT orange, keep orange exclusive to the knob's fill
 
 popupActive = false
--- Cached label/value for the CURRENTLY showing popup, updated by show_popup() and read by
+-- Cached name/CC/value for the CURRENTLY showing popup, updated by show_popup() and read by
 -- paint_popup_screen() - so a repaint triggered from elsewhere (paint_screen() dispatching to
 -- paint_popup_screen() because displayMode=='popup', or set_display_mode('popup') itself) can
 -- redraw the popup's content without needing the encoder id threaded through every call site.
+popupControlName = nil
 popupCcNumber = nil
 popupValue = 0
 -- displayMode to restore when the popup dismisses - set by show_popup() to whatever displayMode was
@@ -1007,8 +1029,7 @@ popupLastActivityIdleTick = 0
 -- width, left/right span only the strip between them, so no two edges cover the same pixel. The
 -- fill (popupBg, below) is inset by the border's thickness so it never overlaps the border either -
 -- each id owns pixels no other id touches, per SLLinkDisplay's per-id-memoization rule (see this
--- file's CLAUDE.md). Thickness picked thin enough to stay clear of the ring/value geometry above,
--- which already has >=26px of margin between the ring's outer edge and the panel edge.
+-- file's CLAUDE.md).
 POPUP_BORDER_THICKNESS = 4
 
 function draw_popup_border()
@@ -1026,48 +1047,55 @@ function draw_popup_bg()
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
-function draw_popup_label(ccNumber)
-	draw_text('popupLabel', 'CC ' .. ccNumber, POPUP_CONTENT_X, POPUP_LABEL_Y, POPUP_CONTENT_W,
-		ALIGN_CENTER, SIZE_SMALL, POPUP_LABEL_FG[1], POPUP_LABEL_FG[2], POPUP_LABEL_FG[3],
-		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
+-- SIZE_MEDIUM + non-zero maxWidth is safe here, unlike the zoom screen's SIZE_BIG text: Max Width
+-- truncation is only confirmed broken at SIZE_BIG (docs/config-lua-history.md#max-width-truncation-
+-- broken-at-size_big), and 'ENC 1 - CC 59'-shaped strings are far shorter than POPUP_CONTENT_W, so
+-- truncation never triggers. A non-zero maxWidth also means Write Text's own background box makes
+-- this self-clearing (see MARK: - Per-region memoization's non-overlap rule above) - no erase rect
+-- needed. Plain ASCII ' - ' separator, not a middle dot/en dash: the SLMK2 font only covers 0x20-0x80
+-- (see append_text's clamp).
+function draw_popup_label(name, ccNumber)
+	draw_text('popupLabel', name .. ' - CC ' .. ccNumber, POPUP_CONTENT_X, POPUP_LABEL_Y,
+		POPUP_CONTENT_W, ALIGN_CENTER, SIZE_MEDIUM, POPUP_LABEL_FG[1], POPUP_LABEL_FG[2],
+		POPUP_LABEL_FG[3], POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
+-- Same SIZE_MEDIUM/non-zero-maxWidth safety as draw_popup_label above - a 1-3 digit value is even
+-- shorter than the label, so truncation is not in play here either.
 function draw_popup_value(value)
 	draw_text('popupValue', tostring(value), POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
-		ALIGN_CENTER, SIZE_BIG, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
+		ALIGN_CENTER, SIZE_MEDIUM, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
--- Lit-segment count for a 0-127 value: linear scaling by value/127 (NOT value/128), so that value=0
--- lights 0 segments and value=127 - the actual maximum - lights all 20 exactly, rather than topping
--- out at 19 the way a /128 divisor would (127/128*20 = 19.84, floors to 19).
-function popup_lit_count(value)
-	return math.floor(value * POPUP_SEG_COUNT / 127)
+-- Knob icon index for a 0-127 value: linear scaling by value/127 (NOT value/128), so that value=0
+-- selects icon 0 (empty) and value=127 - the actual maximum - selects icon 0x0C (full) exactly,
+-- rather than topping out one icon short the way a /128 divisor would (127/128*12 = 11.9, floors to
+-- 11, not 12).
+function popup_knob_icon(value)
+	return math.floor(value * (BMP_KNOB_LEVELS - 1) / 127)
 end
 
-function draw_popup_ring(value)
-	local litCount = popup_lit_count(value)
-	for i = 1, POPUP_SEG_COUNT do
-		local pos = POPUP_SEG_POS[i]
-		local color = (i <= litCount) and POPUP_SEG_LIT or POPUP_SEG_UNLIT
-		draw_rect(POPUP_SEG_IDS[i], pos[1], pos[2], POPUP_SEG_SIZE, POPUP_SEG_SIZE, color[1], color[2], color[3])
-	end
+function draw_popup_knob(value)
+	draw_bitmap('popupKnob', POPUP_KNOB_X, POPUP_KNOB_Y, BMP_GROUP_KNOB, popup_knob_icon(value),
+		POPUP_KNOB_FG[1], POPUP_KNOB_FG[2], POPUP_KNOB_FG[3],
+		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
 -- The popup's own content-painting function, in the same family as paint_zoom_screen()/
 -- paint_list_screen() - dispatched to from set_display_mode('popup') (the mode-switch path, once
 -- per popup 'session') and from paint_screen() (an ordinary content-driven repaint that lands while
 -- displayMode=='popup', e.g. a patch-name change arriving mid-popup - see paint_screen's 3-way
--- branch). Reads popupCcNumber/popupValue rather than taking parameters, since both call sites
--- dispatch generically by mode with no encoder id in hand. Safe to call repeatedly - every draw_*
--- call underneath is per-id memoized (drawn[]), so a call that changes nothing queues nothing (see
--- show_popup's repeat-call path, which relies on exactly this).
+-- branch). Reads popupControlName/popupCcNumber/popupValue rather than taking parameters, since
+-- both call sites dispatch generically by mode with no encoder id in hand. Safe to call repeatedly -
+-- every draw_* call underneath is per-id memoized (drawn[]), so a call that changes nothing queues
+-- nothing (see show_popup's repeat-call path, which relies on exactly this).
 function paint_popup_screen()
 	draw_popup_bg()
 	draw_popup_border()
-	draw_popup_label(popupCcNumber)
+	draw_popup_label(popupControlName, popupCcNumber)
+	draw_popup_knob(popupValue)
 	draw_popup_value(popupValue)
-	draw_popup_ring(popupValue)
 end
 
 -- Call from handle_sl_frame's IT_ENCODER branch, right after encoderValue[eid] is updated, for
@@ -1084,6 +1112,7 @@ function show_popup(eid)
 	local control = ENCODER_CC[eid]
 	if control == nil then return end
 
+	popupControlName = ENCODER_NAME[eid]
 	popupCcNumber = CC_MAP[control]
 	popupValue = encoderValue[eid]
 	popupLastActivityIdleTick = idleTicks

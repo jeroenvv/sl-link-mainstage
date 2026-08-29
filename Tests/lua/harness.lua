@@ -147,6 +147,16 @@ checkHex(
 	'F0 00 20 1A 16 03 6D 04 02 00 0A 00 14 00 1E 00 28 64 32 19 F7'
 )
 
+-- Cross-checked against SLLinkEncoder.displayPlotBitmap(id1: 0x03, id2: 0x6D, x: 100, y: 50,
+-- groupIndex: 0x00, iconIndex: 0x05, foreground: SLColor(r: 255, g: 140, b: 0),
+-- background: SLColor(r: 0, g: 0, b: 0)) via the swiftc recipe in .claude/skills/lua-harness/
+-- SKILL.md. groupIndex/iconIndex are single bytes (0x00, 0x05), NOT msb/lsb split, unlike x/y.
+checkHex(
+	'msg_plot_bitmap(100, 50, BMP_GROUP_KNOB, 5, 255, 140, 0, 0, 0, 0)',
+	msg_plot_bitmap(100, 50, BMP_GROUP_KNOB, 5, 255, 140, 0, 0, 0, 0),
+	'F0 00 20 1A 16 03 6D 04 03 00 64 00 32 00 05 7F 46 00 00 00 00 F7'
+)
+
 -- MARK: - 2. Flush budget
 --
 -- Every flush_pending(true) must stay <= FLUSH_BUDGET and end with an
@@ -609,6 +619,112 @@ do
 		'append_text clamps output length to maxLength before the terminator',
 		#clampMsg == 4 and clampMsg[1] == 0x41 and clampMsg[2] == 0x42 and clampMsg[3] == 0x43 and clampMsg[4] == 0x00
 	)
+end
+
+-- MARK: - 17. draw_bitmap memoizes, same idiom as draw_text/draw_rect
+--
+-- pendingMessages is reset between steps (rather than accumulated) because queue_message
+-- COALESCES same-regionId updates in place (see its own comment) - counting cumulatively would
+-- conflate "queued nothing" with "replaced the existing entry", both of which leave the array the
+-- same length.
+do
+	drawn = {}
+	pendingMessages = {}
+	draw_bitmap('test:bitmap', 10, 20, BMP_GROUP_KNOB, 3, 255, 140, 0, 0, 0, 0)
+	check('draw_bitmap queues a message on first draw', #pendingMessages == 1)
+
+	pendingMessages = {}
+	draw_bitmap('test:bitmap', 10, 20, BMP_GROUP_KNOB, 3, 255, 140, 0, 0, 0, 0)
+	check(
+		'draw_bitmap queues nothing when the repeat call is byte-for-byte identical',
+		#pendingMessages == 0
+	)
+
+	draw_bitmap('test:bitmap', 10, 20, BMP_GROUP_KNOB, 4, 255, 140, 0, 0, 0, 0)
+	check(
+		'draw_bitmap queues exactly one message when only the icon index changes',
+		#pendingMessages == 1
+	)
+end
+
+-- MARK: - 18. popup_knob_icon: value/127 -> icon/(BMP_KNOB_LEVELS-1), both endpoints and a midpoint
+--
+-- v6 replaced the popup's 20-segment ring with the native Knob bitmap (13 icons, 0x00 empty -
+-- 0x0C full - see docs/config-lua-history.md#the-knob-bitmap-replaces-the-ring-2026-08-29). Same
+-- /127-not-/128 reasoning as the old popup_lit_count: value=0 must land on icon 0 and value=127
+-- (the actual maximum) must land on the actual last icon, not one short of it.
+check('popup_knob_icon: value 0 -> icon 0', popup_knob_icon(0) == 0)
+check('popup_knob_icon: value 127 -> icon 12 (BMP_KNOB_LEVELS-1)', popup_knob_icon(127) == BMP_KNOB_LEVELS - 1)
+check('popup_knob_icon: value 64 -> icon 6 (midpoint)', popup_knob_icon(64) == 6)
+
+do
+	local allInRange = true
+	for v = 0, 127 do
+		local icon = popup_knob_icon(v)
+		if icon < 0 or icon > BMP_KNOB_LEVELS - 1 then allInRange = false end
+	end
+	check('popup_knob_icon stays within 0..BMP_KNOB_LEVELS-1 across the whole 0-127 range', allInRange)
+end
+
+-- BMP_ICON_W (61) is odd, so centring it (POPUP_CENTER_X - BMP_ICON_W / 2) lands on a half-pixel
+-- unless floored - append_msb_lsb's value%128 on a non-integer x would corrupt the Plot Bitmap
+-- message's x byte pair, not just draw one pixel off. math.floor(POPUP_CENTER_X - BMP_ICON_W/2)
+-- with POPUP_CENTER_X=160 gives 129, matching the suggested screen-centred x directly.
+check('POPUP_KNOB_X is a whole pixel (floored, not a fractional centring result)',
+	POPUP_KNOB_X == math.floor(POPUP_KNOB_X))
+check('POPUP_KNOB_X centres the 61px-wide icon on the 320px screen', POPUP_KNOB_X == 129)
+
+-- MARK: - 19. paint_popup_screen: reduced message count, every message fits FLUSH_BUDGET
+--
+-- The Knob-bitmap redesign collapses the old bg + 4 border strips + label + 20 ring segments +
+-- value (27 messages) down to bg + 4 border strips + label + knob + value (8 messages) - see
+-- docs/config-lua-history.md#the-knob-bitmap-replaces-the-ring-2026-08-29 for the before/after.
+do
+	drawn = {}
+	pendingMessages = {}
+	popupControlName, popupCcNumber, popupValue = 'ENC 1', 59, 64
+
+	paint_popup_screen()
+
+	check(
+		'paint_popup_screen queues bg + 4 border strips + label + knob + value = 8 messages',
+		#pendingMessages == 8
+	)
+
+	local allWithinBudget = true
+	for i = 1, #pendingMessages do
+		if #pendingMessages[i] > FLUSH_BUDGET then allWithinBudget = false end
+	end
+	check('every message paint_popup_screen queues fits within FLUSH_BUDGET', allWithinBudget)
+end
+
+-- MARK: - 20. Popup label names the physical encoder AND its CC number
+--
+-- draw_popup_label's text is 'ENC 1 - CC 59'-shaped (name .. ' - CC ' .. ccNumber). Decoded back
+-- from the Write Text message's own byte layout (msg_write_text: 7-byte header, IT_DISPLAY,
+-- DISP_WRITE_TEXT, x(2)/y(2)/maxWidth(2), align, size, fg(3), bg(3), then the 0x00-terminated
+-- text - text starts at byte 24) rather than re-deriving the string, so this catches a real
+-- encoding bug, not just a Lua string-concatenation bug.
+local function write_text_body(msg)
+	local chars = {}
+	for i = 24, #msg do
+		if msg[i] == 0x00 then break end
+		chars[#chars + 1] = string.char(msg[i])
+	end
+	return table.concat(chars)
+end
+
+do
+	drawn = {}
+	pendingMessages = {}
+	local name = ENCODER_NAME[EID_ZONE1]
+	local ccNumber = CC_MAP[ENCODER_CC[EID_ZONE1]]
+
+	draw_popup_label(name, ccNumber)
+
+	local text = write_text_body(pendingMessages[1])
+	check('popup label contains the encoder name (ENC 1)', text:find(name, 1, true) ~= nil)
+	check('popup label contains the CC number (CC 59)', text:find('CC ' .. ccNumber, 1, true) ~= nil)
 end
 
 -- MARK: - Summary
