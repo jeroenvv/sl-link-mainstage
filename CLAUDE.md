@@ -105,6 +105,15 @@ loaded. **major** is anything that breaks an existing MIDI-Learn mapping (the CC
 renumbering one silently breaks a working rig. **minor** is a backwards-compatible feature/screen
 addition; **patch** is fixes/tuning with no mapping or layout change.
 
+`.github/workflows/release.yml` automates this bump on every push to `main`, but only when
+`MainStageScript/**` differs from the last release tag - that check is authoritative and comes
+first; docs/CI/test-harness-only changes never move the version. When a bump is warranted, the part
+is read from commit subjects since the last tag: `feat:` -> minor; `fix:`/`perf:`/`refactor:` ->
+patch; `docs:`/`chore:`/`test:` -> no bump on their own; `feat!:` (or any prefix with `!`, or a
+`BREAKING CHANGE:` trailer) -> major. If the script changed but no commit carries a bump-worthy
+prefix, it defaults to **patch** - a shipped change always gets a version. History predating this
+convention has no prefixes, which is why the workflow only reads commits since the last tag.
+
 ## Architecture
 
 `config.lua` is one flat file, laid out top-to-bottom in the order MainStage needs it and marked with

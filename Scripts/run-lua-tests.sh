@@ -35,15 +35,22 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_LUA="$REPO_ROOT/MainStageScript/STUDIOLOGIC/SL.device/config.lua"
 HARNESS="$REPO_ROOT/Tests/lua/harness.lua"
 
-if ! command -v luac >/dev/null 2>&1 || ! command -v lua >/dev/null 2>&1; then
-    echo "error: lua/luac not found on PATH. Install with: brew install lua" >&2
+# Overridable so CI can point at Ubuntu's lua5.4 package, which installs its interpreter and
+# compiler as `lua5.4`/`luac5.4` rather than `lua`/`luac`.
+LUA="${LUA:-lua}"
+LUAC="${LUAC:-luac}"
+
+if ! command -v "$LUAC" >/dev/null 2>&1 || ! command -v "$LUA" >/dev/null 2>&1; then
+    echo "error: $LUA/$LUAC not found on PATH." >&2
+    echo "  macOS:          brew install lua" >&2
+    echo "  Debian/Ubuntu:  apt-get install lua5.4   (binaries are lua5.4/luac5.4 - set LUA=lua5.4 LUAC=luac5.4)" >&2
     exit 1
 fi
 
-echo "== Gate 1: luac -p (syntax) =="
-luac -p "$CONFIG_LUA"
+echo "== Gate 1: $LUAC -p (syntax) =="
+"$LUAC" -p "$CONFIG_LUA"
 echo "OK"
 
 echo ""
 echo "== Gate 2: Tests/lua/harness.lua =="
-lua "$HARNESS" "$CONFIG_LUA"
+"$LUA" "$HARNESS" "$CONFIG_LUA"

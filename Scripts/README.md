@@ -34,6 +34,35 @@ the bug it's meant to catch — before relying on it.
 ./Scripts/run-lua-tests.sh
 ```
 
+`lua`/`luac` are resolved from `PATH` by default; override with `LUA`/`LUAC` env vars for
+distros that install them under versioned names (e.g. Debian/Ubuntu's `lua5.4`/`luac5.4`).
+
+## `bump-version.sh`
+
+Bumps `VERSION` and `config.lua`'s `SCRIPT_VERSION` together, then re-runs `run-lua-tests.sh` so
+its drift assertion proves the two still agree. Versioning rule: the version moves only when the
+shipped Lua device script changes — minor for features, patch for fixes, major only for a change
+that breaks an existing MIDI-Learn mapping or the install layout.
+
+```bash
+./Scripts/bump-version.sh <major|minor|patch> [--dry-run]
+```
+
+`--dry-run` prints old -> new and changes nothing — used by CI to compute the next version before
+deciding whether to commit a bump.
+
+## `build-release.sh`
+
+Builds `dist/sl-link-mainstage-<version>.zip`: verifies `config.lua`'s `SCRIPT_VERSION` matches
+`VERSION`, runs `luac -p` and the full `run-lua-tests.sh` suite (never packages an untested
+script), then stages and zips exactly `README.md`, `VERSION`,
+`Scripts/install-mainstage-script.sh` and `MainStageScript/STUDIOLOGIC/SL.device/config.lua`. The
+layout mirrors the repo so the same install command works from a checkout or an unzip.
+
+```bash
+./Scripts/build-release.sh [--output-dir <dir>]   # default: dist/, already .gitignore'd
+```
+
 ## `restart-mainstage.sh`
 
 Quits MainStage (answering the "save the concert?" prompt with **Don't Save**), waits for it to

@@ -36,6 +36,12 @@ shows which build MainStage actually has loaded). Semantic versioning:
 The major bump matters in practice: the 34 CC assignments are MIDI-Learned by hand in MainStage, so
 renumbering one silently breaks a working rig.
 
+## Releases
+
+Releases are published automatically whenever a change to the device script (`MainStageScript/**`)
+lands on `main`. Grab the zip from the [Releases page](../../releases), unzip it, and run
+`./Scripts/install-mainstage-script.sh` from the unzipped folder.
+
 ## Documentation
 
 - [`docs/implementing-sl-link.md`](docs/implementing-sl-link.md) — reusable guide to implementing the
