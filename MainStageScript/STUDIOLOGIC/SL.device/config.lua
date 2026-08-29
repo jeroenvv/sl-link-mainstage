@@ -1296,18 +1296,25 @@ end
 -- (see docs/config-lua-history.md#max-width-truncation-broken-at-size_big).
 --
 -- zname and zset both draw at a real, non-zero maxWidth now and let the DEVICE's own ALIGN_CENTER
--- centre them - see docs/config-lua-history.md#zoom-screen-centring-moved-to-the-device-2026-08-29
--- for why the previous approach (maxWidth=0 plus a Lua pixel-width estimate to fake centring) was
--- abandoned: both lines rendered slightly right of centre no matter how the per-character width
--- constants were retuned, so the estimate itself was the wrong tool. truncate_text() still runs
--- first on both (belt-and-braces - see BIG_MAX_CHARS's comment: Max Width TRUNCATION, a different
--- device feature from centring, is confirmed broken at SIZE_BIG). A real maxWidth also makes both
--- lines self-clearing (Write Text's background fills the whole box - see "Settled facts" in
--- docs/config-lua-history.md), so neither needs an erase rect any more. REVERT PATH: if a long patch
--- name ever renders on hardware as a single letter plus '...', the device's own truncation is firing
--- again - go back to maxWidth=0 with manual ALIGN_LEFT centring (see that same docs section for the
--- removed implementation) rather than retuning anything here. znext always draws SIZE_SMALL, at a
--- real maxWidth, unconditionally - it never needed this migration. Layout
+-- centre them - CONFIRMED on hardware 2026-08-29 (SL88 MK2 + MainStage: zset/zname render correctly
+-- centred, the too-far-right symptom is gone, 0 Lua errors over a 255-tick session) - see
+-- docs/config-lua-history.md#zoom-screen-centring-moved-to-the-device-2026-08-29 for the full
+-- observation and for why the previous approach (maxWidth=0 plus a Lua pixel-width estimate to fake
+-- centring) was abandoned: both lines rendered slightly right of centre no matter how the
+-- per-character width constants were retuned, so the estimate itself was the wrong tool. That same
+-- run's visible truncation '...' on long names is truncate_text()'s own ASCII ellipsis, added before
+-- either line ever reaches the device - NOT evidence the device's own SIZE_BIG Max Width truncation
+-- is fixed; that bug stays on the books as unresolved (see BIG_MAX_CHARS's comment: Max Width
+-- TRUNCATION, a different device feature from centring, is confirmed broken at SIZE_BIG), and
+-- pre-truncation in Lua is what keeps the device from ever having to truncate a name itself. A real
+-- maxWidth also makes both lines self-clearing (Write Text's background fills the whole box - see
+-- "Settled facts" in docs/config-lua-history.md), so neither needs an erase rect any more - confirmed
+-- on the same 2026-08-29 run: zero regionId messages split as z*:rect/z*:text appeared on the wire.
+-- REVERT PATH: if a long patch name ever renders on hardware as a single letter plus '...', the
+-- device's own truncation is firing again - go back to maxWidth=0 with manual ALIGN_LEFT centring
+-- (see that same docs section for the removed implementation) rather than retuning anything here.
+-- znext always draws SIZE_SMALL, at a real maxWidth, unconditionally - it never needed this
+-- migration. Layout
 -- (docs/full-functionality-plan.md): zcnc y=12, zset y=44, zname y=100, znext y=170, zpos y=210 -
 -- bands 12-33 / 44-71 / 100-133 / 170-191 / 210-231, all non-overlapping. Retune together with
 -- ROW_Y0-style constants if the layout ever moves again.

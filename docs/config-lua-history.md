@@ -513,17 +513,38 @@ list row have likewise trusted a real `maxWidth` at `SIZE_SMALL` since before th
 reported centring or truncation complaint. Device-side centring was therefore already proven at the
 sizes this migration needed; the zoom screen was the one holdout still estimating in Lua.
 
-**Truncation is a separate device feature, and stays broken.** Max Width *truncation* (cutting a
-string to fit visually, appending `...`) is confirmed broken at `SIZE_BIG` (a long name once rendered
-as a single letter plus `...` — see [Max Width truncation broken at
-`SIZE_BIG`](#max-width-truncation-broken-at-size_big)). Max Width *centring* (justifying a string that
-already fits within its box) is a different code path on the device and was never implicated in that
-finding. So `truncate_text(patchName, BIG_MAX_CHARS)` / `truncate_text(setName, MEDIUM_MAX_CHARS)`
-still run before every draw, belt-and-braces: pre-truncating in Lua means the device is never asked to
-truncate a name itself, regardless of what its centring logic does. **Revert path:** if a long patch
-name ever renders on hardware as a single letter plus `...`, the device's own truncation is firing —
-go back to `maxWidth = 0` with manual `ALIGN_LEFT` centring (this section's own git history has the
-removed implementation), not another `BIG_MAX_CHARS` retune.
+**Confirmed on hardware 2026-08-29** (SL88 MK2 + MainStage): `zset` and `zname` now render correctly
+centred — the too-far-right symptom is gone. Long patch names truncate with a visible `...` and no
+single-letter failure. `LUA_DEBUG` capture: 255 ticks, **0 Lua errors, 0 STANDBY, 0 identification
+rejections**. All five zoom regions were emitted (`zcnc` 7, `zset` 14, `zname` 17, `znext` 17, `zpos`
+16), and **zero** `regionId=z*:rect`/`z*:text` split-id messages appeared on the wire, confirming the
+erase-rect path described below is gone. The same build carried `FLUSH_SOON_MS = 35` (see
+[`FLUSH_SOON_MS` retuned to 35](#flush_soon_ms-retuned-to-35-2026-08-29)); the dropout-while-playing
+seen at 25 did not recur.
+
+**The durable win is the removed estimate, not the message count.** This fix deletes
+`CHAR_WIDTH_BIG`/`CHAR_WIDTH_MEDIUM` outright (see "What this removed" below) — constants that had
+already needed eye-recalibration twice (`CHAR_WIDTH_BIG` derived at 11; `CHAR_WIDTH_MEDIUM` retuned
+from a derived 7 to an eye-calibrated 8, see [`CHAR_WIDTH` calibration](#char_width-calibration)) and
+would, on this run's evidence, have needed a third guess to close the same right-of-centre symptom.
+Trusting the device's own `ALIGN_CENTER` replaces that guess with exact centring instead of a better
+guess — a stronger result than the two fewer flushes per repaint noted below.
+
+**Truncation is a separate device feature, and stays broken — do not read this run as evidence
+otherwise.** Max Width *truncation* (cutting a string to fit visually, appending `...`) is confirmed
+broken at `SIZE_BIG` (a long name once rendered as a single letter plus `...` — see [Max Width
+truncation broken at `SIZE_BIG`](#max-width-truncation-broken-at-size_big)). Max Width *centring*
+(justifying a string that already fits within its box) is a different code path on the device and was
+never implicated in that finding. So `truncate_text(patchName, BIG_MAX_CHARS)` /
+`truncate_text(setName, MEDIUM_MAX_CHARS)` still run before every draw, belt-and-braces: pre-truncating
+in Lua means the device is never asked to truncate a name itself, regardless of what its centring logic
+does. The `...` seen in the 2026-08-29 confirmation run above is `truncate_text()`'s own ASCII ellipsis,
+appended before the string ever reaches the device — pre-truncation is exactly what kept the device
+from ever being asked to truncate, so this run says nothing about whether the device's own `SIZE_BIG`
+truncation bug is fixed. It stays on the books as unresolved. **Revert path:** if a long patch name
+ever renders on hardware as a single letter plus `...`, the device's own truncation is firing — go back
+to `maxWidth = 0` with manual `ALIGN_LEFT` centring (this section's own git history has the removed
+implementation), not another `BIG_MAX_CHARS` retune.
 
 **What this removed.** `draw_text_with_erase()` existed only because `maxWidth = 0` leaves Write
 Text's background box exactly as wide as the glyphs drawn, so a shorter name doesn't fully overwrite a
