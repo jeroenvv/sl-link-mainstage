@@ -22,6 +22,20 @@ If the app never appears in the APP list, quit and relaunch MainStage. For diagn
 `defaults write com.apple.mainstage3 LUA_DEBUG -bool true` routes the script's `print()` output to
 MainStage's stdout — turn it back off afterward, since it measurably slows MainStage down.
 
+## Versioning
+
+Current version: **1.0.0** (see the repo-root `VERSION` file; also stamped into
+`config.lua`'s `SCRIPT_VERSION` and printed on every `controller_initialize`, so `/tmp/lua.log`
+shows which build MainStage actually has loaded). Semantic versioning:
+
+- **patch** — fixes and tuning, no mapping or install-layout change
+- **minor** — new features or screens, backwards-compatible
+- **major** — anything that breaks an existing MainStage MIDI-Learn mapping (the CC map in
+  `config.lua`) or changes the install layout
+
+The major bump matters in practice: the 34 CC assignments are MIDI-Learned by hand in MainStage, so
+renumbering one silently breaks a working rig.
+
 ## Documentation
 
 - [`docs/implementing-sl-link.md`](docs/implementing-sl-link.md) — reusable guide to implementing the

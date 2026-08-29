@@ -256,6 +256,12 @@ MAX_SAME_ID_RETRIES = 2
 
 APP_NAME = 'MainStage'
 
+-- Must be kept in step with the repo-root VERSION file; Tests/lua/harness.lua asserts the two
+-- match, since /tmp/lua.log's controller_initialize line is the only way to tell which build
+-- MainStage actually has loaded, and the installed copy has repeatedly drifted from the working
+-- tree during development.
+SCRIPT_VERSION = '1.0.0'
+
 -- MARK: - Session state
 
 STATE_IDLE = 'idle'
@@ -1788,7 +1794,7 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 		APP_NAME = applicationName
 	end
 
-	print('[sllink] controller_initialize (app="' .. tostring(applicationName) .. '")')
+	print('[sllink] controller_initialize (app="' .. tostring(applicationName) .. '", version=' .. SCRIPT_VERSION .. ')')
 	start_identification()
 	return flush_pending()
 end

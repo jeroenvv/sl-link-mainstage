@@ -95,6 +95,16 @@ build step here that would pick it up either way.
 Every assertion is mutation-tested: the convention is to prove a new assertion FAILS on the bug it
 exists to catch before it's trusted.
 
+## Versioning
+
+Semantic versioning, currently **1.0.0**. Single source of truth is the repo-root `VERSION` file;
+`config.lua`'s `SCRIPT_VERSION` must be kept in step with it (the harness asserts this) and is
+stamped into the `controller_initialize` log line so `/tmp/lua.log` shows which build is actually
+loaded. **major** is anything that breaks an existing MIDI-Learn mapping (the CC map in
+`config.lua`) or changes the install layout - the 34 CCs are learned by hand in MainStage, so
+renumbering one silently breaks a working rig. **minor** is a backwards-compatible feature/screen
+addition; **patch** is fixes/tuning with no mapping or layout change.
+
 ## Architecture
 
 `config.lua` is one flat file, laid out top-to-bottom in the order MainStage needs it and marked with

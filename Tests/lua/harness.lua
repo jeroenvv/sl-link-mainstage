@@ -757,6 +757,33 @@ do
 	check('zname draws at a real, non-zero maxWidth', byRegion['zname'] ~= nil and max_width_of(byRegion['zname']) > 0)
 end
 
+-- MARK: - 22. SCRIPT_VERSION: strict semver shape, and matches the repo-root VERSION file
+--
+-- The harness runs under real `lua` (io exists here - this is NOT config.lua's MainStage sandbox,
+-- see the stub notes at the top of this file), so it can read VERSION directly rather than trusting
+-- the two stay in sync by hand. repoRoot is derived from THIS FILE's own location (Tests/lua/
+-- harness.lua is always two directories below the repo root) via debug.getinfo, not from configPath
+-- (arg[1]) - so this stays correct even when config.lua is driven from a mutated copy living
+-- elsewhere, e.g. a temp file used to prove this assertion actually fails on drift.
+do
+	check(
+		'SCRIPT_VERSION matches strict semver shape (MAJOR.MINOR.PATCH)',
+		SCRIPT_VERSION:match('^%d+%.%d+%.%d+$') ~= nil
+	)
+
+	local harnessSource = debug.getinfo(1, 'S').source:sub(2) -- strip the leading '@'
+	local harnessDir = harnessSource:match('^(.*)[/\\][^/\\]+$') or '.'
+	local versionPath = harnessDir .. '/../../VERSION'
+	local f = io.open(versionPath, 'r')
+	check('VERSION file is readable at ' .. versionPath, f ~= nil)
+	if f then
+		local contents = f:read('*a')
+		f:close()
+		local trimmed = contents:gsub('^%s+', ''):gsub('%s+$', '')
+		check('SCRIPT_VERSION matches the repo-root VERSION file', SCRIPT_VERSION == trimmed)
+	end
+end
+
 -- MARK: - Summary
 
 realPrint('')
