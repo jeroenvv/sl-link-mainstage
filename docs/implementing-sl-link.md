@@ -208,14 +208,17 @@ a redraw is.
 stored 32x32 logo" — and ignores IconIdx and both colour fields. That form depends on the icon-upload
 mechanism this project keeps out of scope; the Groups above do not.
 
-**Why it matters:** the Knob group is a native 13-step dial in one ~17-byte message. `config.lua`'s
+**Why it matters:** the Knob group is a native 13-step dial in one 22-byte message. `config.lua`'s
 encoder-value popup currently draws its ring as 20 separate Draw Rectangle messages — 20 of the
-popup's 30 — so a Knob icon would cut the popup to ~11 messages and roughly quarter its paint time.
+popup's 30 — so a Knob icon would cut the popup to ~11 messages. That's a speed win, not a pure
+upgrade: the icon is fixed at 61x54 px, under half the diameter of the popup's hand-drawn ring, and
+gives 13 steps instead of 20. The popup rework itself hasn't been done yet.
 
-**Unverified on hardware.** No Plot Bitmap has ever been sent by this project; `config.lua` has no
-bitmap builder at all. First experiment, before any popup rework: plot all 13 Knob icons in a row on
-a cleared screen, in one hardware run, and see whether they render, how the gradient colouring
-behaves, and what they actually look like.
+**Verified on hardware (2026-08-29).** Plotted all 13 Knob icons in a row on a cleared screen. Icon
+index `0x00` is empty, `0x0C` is full, filling monotonically in between — exactly the semantics
+needed for a 0-127 value. Device-side gradient colouring works: requested orange (`255,140,0`) on
+black rendered correctly and legibly. Every icon message was 22 bytes on the wire, matching
+`SLLinkEncoder.displayPlotBitmap`'s golden vector. Icons are 61x54 px as Appendix A states.
 
 ## 6. Buttons, encoders, LEDs, volume
 
