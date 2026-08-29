@@ -23,7 +23,7 @@ Offline regression suite for `config.lua`. Two gates:
 
 1. `luac -p` — syntax check, fails fast on anything MainStage's Lua host wouldn't load.
 2. `Tests/lua/harness.lua` — drives `config.lua`'s callbacks directly and asserts on the bytes/state
-   produced. 69 assertions, derived from the spec's message tables (`docs/implementing-sl-link.md`,
+   produced. 72 assertions, derived from the spec's message tables (`docs/implementing-sl-link.md`,
    the upstream spec) and originally cross-checked by hand against this project's own Swift encoder,
    now preserved on the `archive/swift-app` branch (see the script's own header for that recipe).
 

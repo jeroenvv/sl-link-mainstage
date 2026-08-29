@@ -137,22 +137,66 @@ injected substitution.
 
 - **One session dropout observed** on the zoom screen during the first hardware round (a second
   `LOGIN` at t=1787334371.9 in that run's log). Keepalives were going out on every tick beforehand,
-  so the cause is not known. Watch for it specifically next run; it has not recurred since.
-- **Zoom centring is computed in Lua from estimated character widths**, because the protocol cannot
-  centre text when the erase-path lines pass Max Width 0. It looked right on hardware, but the widths
-  are eye-calibrated, not measured.
+  so the cause is not known. Watch for it specifically next run; it has not recurred since. A later,
+  different dropout — the display "sometimes drops out while playing" at `FLUSH_SOON_MS = 25`
+  (`docs/config-lua-history.md#flush_soon_ms-retuned-to-25-backed-out-2026-08-29`) — is another
+  unexplained dropout with a healthy-looking session clock; whether the two share a cause is
+  speculation, not established.
 - **The live spec says SIZE_MEDIUM is 22px**, where this project's own notes estimate ~27px. Worth
   reconciling.
-- **`FLUSH_SOON_MS` sweep** — 50 is confirmed honoured and good. 35 and 25 are untried; 100 is the
-  last known-good fallback.
+
+## `FLUSH_SOON_MS` sweep: settled at 35 (2026-08-29)
+
+The planned sweep (50 → 35 → 25) is concluded, not paused. 35 is confirmed good on hardware —
+255-307 tick runs across 22 patch changes and 10 mode switches, every zoom/list/popup region
+rendering correctly with zero Lua errors — and **is the current value**. 25 was tried and backed out:
+both 35 and 25 were exercised while playing, and only 25 dropped out, so 25 is below the usable floor
+on this hardware; there is no plan to revisit it without a new reason. Full detail and the revert
+ladder: `docs/config-lua-history.md#flush_soon_ms-retuned-to-35-2026-08-29` and
+`docs/config-lua-history.md#flush_soon_ms-retuned-to-25-backed-out-2026-08-29`.
+
+**The mechanism is still open.** The failure that set the floor was not the one the sweep plan
+predicted — it watched for missing regions and stale tails, and every region rendered correctly at
+25. The dropout only appeared under note traffic instead, and the captured run can't explain why: the
+one STANDBY captured had a healthy session clock right up to the SL88 sending it unprompted, notes
+aren't logged, and the log has no timestamps to check whether tick intervals stretched out.
+
+## Zoom centring moved to the device (2026-08-29)
+
+Resolved: zoom centring is no longer computed in Lua from estimated character widths. `zset` and
+`zname` now draw at a real, non-zero `maxWidth` with the device's own `ALIGN_CENTER`, exactly as
+`znext` and every list row already did —
+`docs/config-lua-history.md#zoom-screen-centring-moved-to-the-device-2026-08-29`. `CHAR_WIDTH_BIG`,
+`CHAR_WIDTH_MEDIUM` and `estimate_text_width_px()` are gone from the codebase (confirmed by grep), and
+so is the erase-rect path manual centring at `maxWidth = 0` needed — a full zoom repaint dropped from
+7 queued messages to 5. Confirmed centred on hardware the same day.
+
+Truncation is untouched by this: `truncate_text()` still pre-truncates `zname`/`zset` in Lua before
+every draw, because Max Width *truncation* is still confirmed broken at `SIZE_BIG` on the device — a
+separate, still-open bug this change does not touch or fix.
 
 ## Next stage
 
-Phase 2 of `full-functionality-plan.md`: joystick navigation and patch selection. Q1a is now closed
-(above): inbound substitution does change patch, but never through the patch-selector parser, which is
-unreachable from `controller_midi_in`'s return value. Whatever Phase 2 does for patch selection has to
-go through a different route than `patchselector`. Everything drawn so far is read-only; Phase 2 is
-still the first time the script talks back to MainStage.
+There is no committed roadmap document. `full-functionality-plan.md` is marked historical, and its
+Phase 2 (CC-mapped navigation/patch selection) shipped long ago — see "Every control emits a mappable
+CC" above. Q1a's finding still holds: the patch-selector parser is unreachable from
+`controller_midi_in`'s return value, so anything reaching MainStage goes through the CC/MIDI-Learn
+route instead.
+
+What's open, drawn from what's already tracked in this file and in `docs/config-lua-history.md`:
+
+- **Two hardware paths remain unproven** (see "Refactor verification" above): Zoom LONG press (the
+  force-full-repaint path in `handle_zoom_button`), and the re-identification wait path
+  (`STATE_REIDENTIFY_WAIT`, `handle_identification_rejected`), which needs a deliberate DeviceID
+  collision to exercise.
+- **Login Recall (`00 06`)** stays blocked on a stored device icon, which is out of scope (see "Open
+  issues" above).
+- **Most of the SL Link icon library is unused.** Only the Knob group (`GIDX 0x00`) has been drawn, in
+  the encoder popup (`docs/config-lua-history.md#the-knob-bitmap-replaces-the-ring-2026-08-29`); Knob
+  Center, Toggle, Navigation, Arrow, General and Daw are all confirmed available on hardware
+  (`docs/implementing-sl-link.md`) but untried in `config.lua`.
+
+None of these is committed as *the* next stage — this is the open candidate list, not a plan.
 
 ## Open issues
 
