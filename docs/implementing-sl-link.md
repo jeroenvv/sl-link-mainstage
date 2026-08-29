@@ -188,6 +188,35 @@ unchanged regions. Give each id a region that does **not overlap** any other id'
 redrawing a lower one silently covers the unchanged ones above it. Where overlap is unavoidable (a
 pop-up), force every id sharing that area to be resent together.
 
+**Plot Bitmap draws from the SL88's internal bitmap library, not uploaded pixels.** `GroupIdx`/
+`IconIdx` (both 7-bit) select a black-and-white source icon that the device colours on-device using
+the message's own FG/BG as a gradient — you send indices, not pixel data. Like Write Text, the icon
+**completely replaces the pixels beneath it**: no alpha channel, so it is self-clearing the same way
+a redraw is.
+
+| Group | GIDX | Icons | Size |
+|:---|:---|:---|:---|
+| Knob | `0x00` | `0x00`-`0x0C`, 13 fill levels | 61x54 px |
+| Knob Center | `0x01` | `0x00`-`0x0C`, 13 levels, centre-detent variant | 61x54 px |
+| Toggle | `0x02` | on/off | 35x35 px |
+| Navigation | `0x03` | left, right, left-right, up-down, rotate, push, apply, cancel | 20x20 px |
+| Arrow | `0x04` | up, down, left, right, left-right | 10-20 px |
+| General | `0x05` | download, edit, back, keyboard, volume-off, volume-on | 16-20 px |
+| Daw | `0x06` | play, pause, stop, rec, loop, next, prev — whole-icon or circle+glyph at a 5px offset | 10-20 px |
+
+(Groups per the spec's Appendix A.) `GIDX = 0x7F` is a different form entirely — "plot this Device's
+stored 32x32 logo" — and ignores IconIdx and both colour fields. That form depends on the icon-upload
+mechanism this project keeps out of scope; the Groups above do not.
+
+**Why it matters:** the Knob group is a native 13-step dial in one ~17-byte message. `config.lua`'s
+encoder-value popup currently draws its ring as 20 separate Draw Rectangle messages — 20 of the
+popup's 30 — so a Knob icon would cut the popup to ~11 messages and roughly quarter its paint time.
+
+**Unverified on hardware.** No Plot Bitmap has ever been sent by this project; `config.lua` has no
+bitmap builder at all. First experiment, before any popup rework: plot all 13 Knob icons in a row on
+a cleared screen, in one hardware run, and see whether they render, how the gradient colouring
+behaves, and what they actually look like.
+
 ## 6. Buttons, encoders, LEDs, volume
 
 **Buttons** (`0x01`, Host ← SL): `<BID> <EVT>`. `EVT` `0x01` = SHORT (fires on *release*, if held under
@@ -270,8 +299,10 @@ any documentation and cost a great deal to discover.
   discards the **whole** array, not the overflow. Send one message per flush.
 - **`io` does not exist** in the sandbox (`attempt to index global 'io'`), so no file-based side
   channel. Wrap any attempt in `pcall`.
-- **The script is loaded once per USB-MIDI interface** — expect two instances, contending for a
-  DeviceID (hence §3's rejection recovery) and both driving the display.
+- **The script can be loaded once per USB-MIDI interface** — expect up to two instances, contending
+  for a DeviceID (hence §3's rejection recovery) and both driving the display. The one hardware run
+  measured so far loaded a single instance instead (see
+  `docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28`).
 - **MainStage tears the script down and re-initialises it repeatedly.** Do not treat
   `controller_finalize` as "the user quit" and do not send a Logout Request there, or every churn
   removes you from the App Menu.

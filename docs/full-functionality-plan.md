@@ -454,9 +454,11 @@ shared pop-up.
 - **No Clear Screen, ever.** Erase by redrawing regions.
 - **Redraw only what changed.** The budget makes full repaints expensive; per-region memoization is
   mandatory, not an optimisation.
-- **Two script instances.** MainStage loads the script once per USB-MIDI interface. Both will try to
-  drive the screen. Today they get distinct DeviceIDs; with interactive control this could mean two
-  competing UIs, so decide whether the second instance should stay passive.
+- **Two script instances (possible).** MainStage can load the script once per USB-MIDI interface —
+  the one hardware run measured so far ran as a single instance instead (see
+  `docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28`). If it happens, both
+  instances will try to drive the screen. Today they get distinct DeviceIDs; with interactive control
+  this could mean two competing UIs, so decide whether the second instance should stay passive.
 - **Never swallow musical MIDI.** `controller_midi_in` must keep returning `nil` for notes, pitch bend
   and sustain, or notes hang.
 
