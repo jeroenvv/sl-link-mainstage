@@ -466,6 +466,35 @@ one), each earning its own flush. It's idempotent, and a dropped copy costs noth
 ~50–70ms flush. `flush_pending()`'s settle guard resets on every Clear Screen it emits, so the settle
 window still lands after the *last* one.
 
+### `MODE_SWITCH_SETTLE_TICKS` lowered to 1 (2026-08-29)
+
+A hardware trace of a popup entry showed 8 ticks of dead time before the first pixel appeared:
+
+```
+tick 35  Clear Screen #1 (13 bytes)
+tick 36,37,38   nothing drawn - settle guard withholding displayFlushReady
+tick 39  Clear Screen #2 (13 bytes)
+tick 40,41,42   nothing drawn - settle guard again
+tick 43  popupBg  <- first real pixel
+```
+
+`set_display_mode()` queues two Clear Screens (see [above](#the-double-clear-screen)); `flush_pending()`
+resets `displaySettleTicks` to `MODE_SWITCH_SETTLE_TICKS` on *each* one, so the guard gets paid twice per
+switch. At `FLUSH_SOON_MS = 50` that's roughly 400ms of blank screen on every popup entry and again on
+every dismissal - reported by the user as "it takes some time before screen redraw starts."
+
+[The double-Clear-Screen entry above](#the-double-clear-screen) already traced the stale-text symptom
+that motivated raising this constant from 1 to 3 to a *delivery* problem - the clear going out bundled
+with the Identification Query, a flush shape already on record as unreliable - and states explicitly
+that the settle timing "was already fine" at 1. The 2026-08-21 raise to 3 was therefore treating a
+symptom whose real cause got fixed separately, by queueing the clear twice. The first clear's settle is
+also nearly pure waste on its own terms: it only delays the *second* clear, which is itself gated by the
+same guard.
+
+Lowered `MODE_SWITCH_SETTLE_TICKS` from 3 to 1 on this basis. **This is an experiment pending hardware
+confirmation**, not a settled fact - watch for stale text or dropped lines reappearing on a mode switch.
+Revert ladder: try 2 first; 3 is the last known-good value.
+
 ### FIX 5 audit: the first-switch anomaly
 
 See [Open questions](#open-questions).

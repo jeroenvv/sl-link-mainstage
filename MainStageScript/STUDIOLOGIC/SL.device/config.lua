@@ -331,10 +331,12 @@ displayFlushReady = true
 -- regardless.
 --
 -- Named as its own constant, not folded into FLUSH_SOON_MS, so the two can be retuned
--- independently. Raised from 1 to 3 after a hardware report of stale text after mode switches - see
--- docs/config-lua-history.md#the-clear-screen-ban-and-its-lift and
--- #fix-5-audit-the-first-switch-anomaly for what this did and didn't explain.
-MODE_SWITCH_SETTLE_TICKS = 3
+-- independently. Lowered from 3 to 1 on 2026-08-29 - the double Clear Screen in flush_pending()
+-- already fixed the delivery bug the raise to 3 was compensating for, so the settle no longer needs
+-- to carry it. Experimental, pending hardware confirmation: if stale text or dropped lines reappear
+-- on a mode switch, try 2 next; 3 is the last known-good value. See
+-- docs/config-lua-history.md#mode_switch_settle_ticks-lowered-to-1-2026-08-29.
+MODE_SWITCH_SETTLE_TICKS = 1
 displaySettleTicks = 0
 
 -- Counts every display message queue_message() handles (append OR coalesced replace-in-place).
