@@ -62,6 +62,10 @@ normal directory from the terminal. Either way, nothing needs to be unpacked by 
 - [`docs/full-functionality-plan.md`](docs/full-functionality-plan.md) — plan for the full SL88 ↔
   MainStage feature set (draft).
 
+## Sponsoring
+
+If you want to sponsor my initiative, you can add a donation using the sponsor button.
+
 ## Licence
 
 Licensed under the Apache License, Version 2.0 — see [`LICENSE`](LICENSE) for the full text.
