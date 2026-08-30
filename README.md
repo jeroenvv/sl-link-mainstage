@@ -64,7 +64,7 @@ normal directory from the terminal. Either way, nothing needs to be unpacked by 
 
 ## Sponsoring
 
-If you want to sponsor my initiative, you can add a donation using the sponsor button.
+If you want to sponsor my initiative, you can [add a donation](https://buy.stripe.com/00wfZa6n6bcufu5apXebu00).
 
 ## Licence
 
