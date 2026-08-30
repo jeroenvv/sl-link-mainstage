@@ -55,7 +55,7 @@ deciding whether to commit a bump.
 
 Builds `dist/sl-link-mainstage-<version>.zip`: verifies `config.lua`'s `SCRIPT_VERSION` matches
 `VERSION`, runs `luac -p` and the full `run-lua-tests.sh` suite (never packages an untested
-script), then stages and zips exactly `README.md`, `VERSION`,
+script), then stages and zips exactly `README.md`, `VERSION`, `LICENSE`, `NOTICE`,
 `Scripts/install-mainstage-script.sh` and `MainStageScript/STUDIOLOGIC/SL.device/config.lua`. The
 layout mirrors the repo so the same install command works from a checkout or an unzip.
 

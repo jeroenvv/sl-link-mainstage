@@ -8,6 +8,8 @@
 # The staged layout deliberately mirrors the repo:
 #   README.md
 #   VERSION
+#   LICENSE
+#   NOTICE
 #   Scripts/install-mainstage-script.sh
 #   MainStageScript/STUDIOLOGIC/SL.device/config.lua
 # install-mainstage-script.sh resolves its source as $SCRIPT_DIR/../MainStageScript/..., so
@@ -29,6 +31,8 @@ VERSION_FILE="$REPO_ROOT/VERSION"
 CONFIG_LUA="$REPO_ROOT/MainStageScript/STUDIOLOGIC/SL.device/config.lua"
 INSTALL_SCRIPT="$REPO_ROOT/Scripts/install-mainstage-script.sh"
 README="$REPO_ROOT/README.md"
+LICENSE="$REPO_ROOT/LICENSE"
+NOTICE="$REPO_ROOT/NOTICE"
 
 # Overridable so CI can point at Ubuntu's lua5.4 package, which installs its interpreter and
 # compiler as `lua5.4`/`luac5.4` rather than `lua`/`luac`.
@@ -109,6 +113,8 @@ trap 'rm -rf "$STAGE_DIR"' EXIT
 mkdir -p "$STAGE_DIR/Scripts" "$STAGE_DIR/MainStageScript/STUDIOLOGIC/SL.device"
 cp "$README" "$STAGE_DIR/README.md"
 cp "$VERSION_FILE" "$STAGE_DIR/VERSION"
+cp "$LICENSE" "$STAGE_DIR/LICENSE"
+cp "$NOTICE" "$STAGE_DIR/NOTICE"
 cp "$INSTALL_SCRIPT" "$STAGE_DIR/Scripts/install-mainstage-script.sh"
 chmod +x "$STAGE_DIR/Scripts/install-mainstage-script.sh"
 cp "$CONFIG_LUA" "$STAGE_DIR/MainStageScript/STUDIOLOGIC/SL.device/config.lua"
@@ -116,7 +122,8 @@ cp "$CONFIG_LUA" "$STAGE_DIR/MainStageScript/STUDIOLOGIC/SL.device/config.lua"
 rm -f "$ARTIFACT_PATH"
 (
     cd "$STAGE_DIR"
-    zip -q -X -r "$ARTIFACT_PATH" README.md VERSION Scripts/install-mainstage-script.sh \
+    zip -q -X -r "$ARTIFACT_PATH" README.md VERSION LICENSE NOTICE \
+        Scripts/install-mainstage-script.sh \
         MainStageScript/STUDIOLOGIC/SL.device/config.lua
 )
 

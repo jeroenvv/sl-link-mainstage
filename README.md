@@ -61,3 +61,7 @@ normal directory from the terminal. Either way, nothing needs to be unpacked by 
   integration; the full investigation log is archived under `docs/archive/`.
 - [`docs/full-functionality-plan.md`](docs/full-functionality-plan.md) — plan for the full SL88 ↔
   MainStage feature set (draft).
+
+## Licence
+
+Licensed under the Apache License, Version 2.0 — see [`LICENSE`](LICENSE) for the full text.
