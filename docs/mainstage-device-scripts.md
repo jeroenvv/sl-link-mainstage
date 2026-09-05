@@ -62,6 +62,44 @@ do not need to unplug the device if it is already connected.
 requires `MIDIDeviceCreate`, which returns `paramErr` (-50) for any non-driver process. So a script
 cannot be pointed at a virtual port your own app publishes — it must match real hardware.
 
+**2026-09-05, confirmed on hardware:** **`model` is a matching key, not a label. It must equal the
+device's reported `kMIDIPropertyModel`, and a mismatch fails completely silently — the script simply
+never loads, with no error anywhere.** Hit this renaming this project's device from `SL` to `SL88` —
+the SL88 MK2 reports `model: SL` over CoreMIDI (`Scripts/list-midi.swift` prints a connected device's
+reported manufacturer/model, which is how to find the value generic matching needs), so `model =
+'SL88'` no longer matched anything. Three things were tried to keep the friendlier name and all three
+failed:
+
+1. `model = 'SL88'` alone — never loaded, zero `[sllink]` lines.
+2. `model = 'SL88'` plus correct active `usb_vendor_id`/`usb_product_id` (verified against `ioreg`) —
+   still never loaded, across two restarts. **USB IDs are an additional filter, not a substitute for
+   manufacturer/model matching.**
+3. `model = 'SL88'` plus `compatibleModels = { 'SL' }` — still never loaded, 91 seconds after launch.
+   **`compatibleModels` does not participate in device matching**, at least not in any way that lets
+   `model` differ from the hardware's reported model.
+
+Neither USB IDs nor `compatibleModels` is an escape hatch. `model` must equal the hardware's reported
+`kMIDIPropertyModel` exactly.
+
+**Confirmed:** the containing `.device` folder name must also equal `model`, which must equal the
+hardware's reported `kMIDIPropertyModel`. A fourth negative isolated it: `model = 'SL'` restored (USB
+IDs commented back out, no `compatibleModels`) — the exact configuration that worked all morning —
+still never loaded while the folder stayed named `SL88.device`. All four attempts, compactly:
+
+1. `model = 'SL88'` alone — never loaded.
+2. `model = 'SL88'` plus correct active USB IDs — never loaded.
+3. `model = 'SL88'` plus `compatibleModels = { 'SL' }` — never loaded.
+4. `model = 'SL'` (the known-working config) but folder still `SL88.device` — never loaded.
+
+The device's presented name is dictated entirely by its firmware; it cannot be relabelled from a
+device script, and every failure mode above is silent — the script simply never loads, with no error
+anywhere. Folder name, `model` and the hardware's reported model must all agree; there is no escape
+hatch. The device stays `SL.device` with `model = 'SL'`.
+
+Lesson from a separate mix-up the same day: a static finding must name the MainStage version it came
+from, and that version must be the one actually running — two installed copies can otherwise produce
+findings that silently describe the wrong app.
+
 ## 2. `controller_info` — the `items` table
 
 Each item describes one physical control and makes it mappable in MainStage.
@@ -122,13 +160,15 @@ MIDI port, not an injected substitution.
 
 ### The complete key vocabulary, read out of the binary
 
-`controller_info()`'s parser lives in `LogicPro.framework` (MainStage and Logic Pro share the
-control-surface code), not in MainStage's own binary. `strings` on
-`/Applications/MainStage 3.7.1.app/Contents/Frameworks/LogicPro.framework/Versions/A/LogicPro` finds
-one contiguous string table holding every key the parser recognises, interleaved with its own error
-strings (`LUA: controller_info() returned a non-table 'item' object in the items table`, `LUA:
-controller_info() didn't return a table`, `LUA: Script incompatible with application '%@'`) — that
-co-location is what ties this list to the Lua parser rather than to some unrelated plist schema.
+`controller_info()`'s parser lives in `LogicMainStage.framework` (MainStage and Logic Pro share the
+control-surface code; this framework was named `LogicPro.framework` in older MainStage versions such
+as 3.7.1), not in MainStage's own binary. `strings` on
+`/Applications/MainStage.app/Contents/Frameworks/LogicMainStage.framework/Versions/A/LogicMainStage`
+(version 4.3.1, the one actually running) finds one contiguous string table holding every key the
+parser recognises, interleaved with its own error strings (`LUA: controller_info() returned a
+non-table 'item' object in the items table`, `LUA: controller_info() didn't return a table`, `LUA:
+Script incompatible with application '%@'`) — that co-location is what ties this list to the Lua
+parser rather than to some unrelated plist schema.
 
 Top-level keys, in the order the table stores them (usage counts are `grep -rl` over the 98 bundled
 scripts under `MIDI Device Scripts/`, §1; "—" means not independently counted):
@@ -153,7 +193,7 @@ scripts under `MIDI Device Scripts/`, §1; "—" means not independently counted
 | `copyright` | — | documented above |
 | `OSC_pattern` | 0 | **unproven** |
 | `dBToFader` / `dbToFader` | 0 / 0 | both cases present in the binary — the parser evidently accepts either; **unproven** |
-| `replacingPlugInModel` / `replacingPlugInManufacturer` | 1 / 0 | from the table's second copy (offset 9819117); `replacingPlugInModel` associates the script with a plug-in for `PreferPlugIn()` (Roland `A-PRO`'s own comment); `replacingPlugInManufacturer` **unproven** |
+| `replacingPlugInModel` / `replacingPlugInManufacturer` | 1 / 0 | from the table's second copy (re-locate via the anchor string in 4.3.1's binary rather than an offset, since offsets differ between versions); `replacingPlugInModel` associates the script with a plug-in for `PreferPlugIn()` (Roland `A-PRO`'s own comment); `replacingPlugInManufacturer` **unproven** |
 
 Per-item keys: `objectType` and `midiType` sit immediately after `action` in the table. The ones the 98
 scripts actually use — `name`, `label`, `midi`, `inport`, `outport`, `startKey`, `numberKeys` — are
@@ -187,8 +227,9 @@ Arturia's shipped `KeyLab 88 mk3.device/config.lua` (v1.4) declares seven items 
 
 The seven values it uses: `Metronome`, `PanicFull`, `PlayStop`, `Record`, `TapTempo`, `Undo`, `Redo`.
 
-The literal string `action_mainstage` appears **nowhere** in MainStage 3.7.1's binaries or resources
-(verified by a recursive binary-safe grep of the whole app bundle). The bare prefix `action_` **does**,
+The literal string `action_mainstage` appears **nowhere** in MainStage 4.3.1's binaries or resources
+(verified by a recursive binary-safe grep of the whole app bundle; also absent from 3.7.1's binaries).
+The bare prefix `action_` **does**,
 inside the key table above, next to the sibling keys `logicpro`/`logicprox`. **Inference, not fact:**
 the key is composed at runtime as `action_` followed by the lower-cased application name — MainStage
 passes `applicationName = "MainStage"` to `controller_initialize` (seen in this project's own
@@ -197,7 +238,7 @@ writing.
 
 The values are MainStage **command IDs**, not free text. The full set — 138 lines, ~127 commands
 across 11 groups — lives in
-`/Applications/MainStage 3.7.1.app/Contents/Resources/en.lproj/WsCommands.plist` (`plutil -p` to read
+`/Applications/MainStage.app/Contents/Resources/en.lproj/WsCommands.plist` (4.3.1; `plutil -p` to read
 it; re-dump after a MainStage update, since the ID→menu mapping is not otherwise documented). All
 seven Arturia names match an ID there exactly. The groups most relevant to this project:
 
@@ -244,7 +285,8 @@ MainStage's own command dispatch, not of this field, so they remain valid input 
 that does reach them.
 
 **VERIFIED NEGATIVE (2026-09-05).** A hardware spike tested `action_<app>`/`action` against a real
-SL88 MK2 under MainStage 3.7.1. Inert on every reachable path:
+SL88 MK2 under MainStage 4.3.1 — the version actually running during this test. Inert on every
+reachable path:
 
 | CC source | Channel | Key | `objectType` | Command | Fired |
 |:--|:--|:--|:--|:--|:--|
@@ -271,14 +313,15 @@ Why this is a sound negative rather than a missed signal:
   **vacuous** — MainStage had no MIDI to match, so it rules nothing in or out.
 
 Supporting static evidence, already above: the literal `action_mainstage` appears nowhere in
-MainStage 3.7.1's binaries (only the bare `action_` prefix, in `LogicPro.framework`'s key table), and
-zero of the 98 bundled MainStage scripts use it.
+MainStage 4.3.1's binaries (only the bare `action_` prefix, in `LogicMainStage.framework`'s key
+table; also absent from 3.7.1's binaries), and zero of the 98 bundled MainStage scripts use it.
 
-**Do not overstate this.** The honest conclusion is: inert in MainStage 3.7.1 across every path
+**Do not overstate this.** The honest conclusion is: inert in MainStage 4.3.1 across every path
 reachable from a device script. It is NOT established as inert everywhere — the key table lives in
-`LogicPro.framework`, so this may be a Logic Pro feature MainStage does not implement, and Logic Pro
-is not installed on this machine, so that remains untested rather than disproven. Arturia's shipped
-KeyLab mk3 script declares seven such items, which under this result do nothing under MainStage.
+`LogicMainStage.framework`, so this may be a Logic Pro feature MainStage does not implement, and
+Logic Pro is not installed on this machine, so that remains untested rather than disproven. Arturia's
+shipped KeyLab mk3 script declares seven such items, which under this result do nothing under
+MainStage.
 
 ## 3. Callbacks
 

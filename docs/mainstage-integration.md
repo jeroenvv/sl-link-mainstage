@@ -1,7 +1,7 @@
 # MainStage integration — status
 
 The SL88 ↔ MainStage integration runs **entirely from the Lua device script**
-(`MainStageScript/STUDIOLOGIC/SL88.device/config.lua`). The Swift app is not part of this path.
+(`MainStageScript/STUDIOLOGIC/SL.device/config.lua`). The Swift app is not part of this path.
 
 ## Where things stand
 

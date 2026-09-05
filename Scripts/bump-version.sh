@@ -2,7 +2,7 @@
 # Bumps the project version and keeps VERSION and config.lua's SCRIPT_VERSION in step.
 #
 # Versioning rule: the version changes ONLY when the shipped Lua device script
-# (MainStageScript/STUDIOLOGIC/SL88.device/config.lua) changes. Docs, shell scripts, CI config and
+# (MainStageScript/STUDIOLOGIC/SL.device/config.lua) changes. Docs, shell scripts, CI config and
 # the test harness do not move it. Minor for new features, patch for fixes, major only for a
 # change that breaks an existing MainStage MIDI-Learn mapping or the install layout.
 #
@@ -21,7 +21,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/VERSION"
-CONFIG_LUA="$REPO_ROOT/MainStageScript/STUDIOLOGIC/SL88.device/config.lua"
+CONFIG_LUA="$REPO_ROOT/MainStageScript/STUDIOLOGIC/SL.device/config.lua"
 
 usage() {
     echo "usage: $(basename "$0") <major|minor|patch> [--dry-run]" >&2

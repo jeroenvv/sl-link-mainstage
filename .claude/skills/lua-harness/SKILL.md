@@ -26,7 +26,7 @@ not numbers:
 MIDI_Wildcard, MIDI_MSB, MIDI_LSB, MIDI_CtrChange = '??', 'bb', 'aa', 176
 armed = nil
 function settriggertimer(ms) armed = ms end
-dofile("MainStageScript/STUDIOLOGIC/SL88.device/config.lua")
+dofile("MainStageScript/STUDIOLOGIC/SL.device/config.lua")
 ```
 
 Assert on an item's CC number and `objectType`, never on the `MIDI_*` placeholders themselves — they

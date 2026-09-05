@@ -2313,7 +2313,9 @@ function controller_info()
 	}
 
 	return {
-		model = 'SL88',
+		-- model MUST equal the hardware's reported kMIDIPropertyModel ('SL'), not the
+		-- product name - a mismatch fails silently. See docs/mainstage-device-scripts.md §1.
+		model = 'SL',
 		manufacturer = 'STUDIOLOGIC',
 
 		-- usb_vendor_id = 38166,  -- 0x9516

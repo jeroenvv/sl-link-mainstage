@@ -1,4 +1,4 @@
--- Offline regression harness for MainStageScript/STUDIOLOGIC/SL88.device/config.lua.
+-- Offline regression harness for MainStageScript/STUDIOLOGIC/SL.device/config.lua.
 --
 -- Plain top-level assertions (no test framework), run by `lua` - this repo has no Xcode test
 -- target and never did one for the Lua side; the analogous Swift-side rationale, back when a Swift
@@ -32,7 +32,7 @@ if not verbose then
 	print = function() end
 end
 
-local configPath = arg[1] or 'MainStageScript/STUDIOLOGIC/SL88.device/config.lua'
+local configPath = arg[1] or 'MainStageScript/STUDIOLOGIC/SL.device/config.lua'
 dofile(configPath)
 
 -- MARK: - Helpers (SKILL.md)

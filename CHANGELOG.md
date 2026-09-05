@@ -8,10 +8,6 @@ All notable changes to this project are documented in this file. The format foll
 
 ### BREAKING
 
-- The device is renamed from `SL` to `SL88`. The install path moves from
-  `MainStage Devices/STUDIOLOGIC/SL.device/` to `.../SL88.device/` - remove the old folder. Because
-  MainStage identifies a device by manufacturer and model, every existing MIDI-Learn mapping must be
-  re-learned.
 - The five encoders and the joystick rotary ring now send `Relative2C` two's-complement relative
   deltas instead of an absolute 0-127 value. Any mapping learned against the old absolute behaviour
   must be redone. The wire encoding is inferred from the name and is not yet confirmed on hardware.
@@ -39,9 +35,12 @@ No CC numbers moved in this release.
 
 ### Documented
 
-- The `controller_info()` key vocabulary extracted from `LogicPro.framework`, and the finding that
-  the undocumented `action_<app>` field is inert in MainStage 3.7.1 (added, then removed once proven
-  to do nothing on hardware).
+- The `controller_info()` key vocabulary extracted from `LogicMainStage.framework`, and the finding
+  that the undocumented `action_<app>` field is inert in MainStage 4.3.1 (added, then removed once
+  proven to do nothing on hardware).
+- MainStage's device matching requires the `.device` folder name, `controller_info()`'s `model`, and
+  the hardware's reported `kMIDIPropertyModel` to all agree exactly; a mismatch on any one fails
+  silently, with no error anywhere.
 
 ## [1.0.0] - 2026-08-29
 

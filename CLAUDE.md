@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A MainStage Lua device script that connects Apple MainStage to a Studiologic SL88 MK2 keyboard over
 the **SL Link** SysEx protocol - entirely from Lua, no helper app. The product is
-`MainStageScript/STUDIOLOGIC/SL88.device/config.lua` (~2,200 lines); `Scripts/run-lua-tests.sh` is its
+`MainStageScript/STUDIOLOGIC/SL.device/config.lua` (~2,200 lines); `Scripts/run-lua-tests.sh` is its
 offline regression gate (see "Lua tests" below). A handful of standalone Swift probes remain under
 `Scripts/` (`sniff.swift`, `probe-sllink.swift`, `probe-display.swift`, `list-midi.swift`,
 `sniff-all-sl-ports.swift`) for hardware debugging only - they are not part of the shipped product and

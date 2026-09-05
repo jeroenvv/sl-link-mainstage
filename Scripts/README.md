@@ -2,11 +2,11 @@
 
 ## `install-mainstage-script.sh`
 
-The primary user-facing command. Copies `MainStageScript/STUDIOLOGIC/SL88.device/` into MainStage's
+The primary user-facing command. Copies `MainStageScript/STUDIOLOGIC/SL.device/` into MainStage's
 device script folder:
 
 ```
-~/Music/Audio Music Apps/MainStage Devices/STUDIOLOGIC/SL88.device/
+~/Music/Audio Music Apps/MainStage Devices/STUDIOLOGIC/SL.device/
 ```
 
 **Not** Logic Pro's identically-shaped "MIDI Device Scripts" folder — that's a different app.
@@ -56,7 +56,7 @@ deciding whether to commit a bump.
 Builds `dist/sl-link-mainstage-<version>.zip`: verifies `config.lua`'s `SCRIPT_VERSION` matches
 `VERSION`, runs `luac -p` and the full `run-lua-tests.sh` suite (never packages an untested
 script), then stages and zips exactly `README.md`, `VERSION`, `LICENSE`, `NOTICE`,
-`Scripts/install-mainstage-script.sh` and `MainStageScript/STUDIOLOGIC/SL88.device/config.lua`. The
+`Scripts/install-mainstage-script.sh` and `MainStageScript/STUDIOLOGIC/SL.device/config.lua`. The
 layout mirrors the repo so the same install command works from a checkout or an unzip.
 
 ```bash
