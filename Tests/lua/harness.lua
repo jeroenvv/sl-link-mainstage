@@ -18,7 +18,8 @@
 -- do not exist in the real sandbox - config.lua must never touch them, but
 -- this HARNESS is plain `lua`, so using `os.exit` etc. here is fine)
 
-MIDI_Wildcard, MIDI_MSB, MIDI_LSB = 0, 0, 0
+-- Observed runtime values (2026-09-05 hardware log); the first three are strings, not numbers.
+MIDI_Wildcard, MIDI_MSB, MIDI_LSB, MIDI_CtrChange = '??', 'bb', 'aa', 176
 armed = nil
 function settriggertimer(ms) armed = ms end
 

@@ -597,11 +597,13 @@ function flush_pending_cc()
 	local out = {}
 	local emitted = 0
 	local remaining = {}
+	local emittedCCs = {}
 	for i = 1, #pendingCCOrder do
 		local control = pendingCCOrder[i]
 		if emitted < CC_BATCH_CAP then
 			local msg = build_cc_message(control, pendingCC[control])
 			for j = 1, #msg do out[#out + 1] = msg[j] end
+			emittedCCs[#emittedCCs + 1] = CC_MAP[control] .. '=' .. pendingCC[control]
 			pendingCC[control] = nil
 			emitted = emitted + 1
 		else
@@ -609,7 +611,7 @@ function flush_pending_cc()
 		end
 	end
 	pendingCCOrder = remaining
-	print('[sllink] CC batch: ' .. emitted .. ' CC(s), ' .. #out .. ' bytes' ..
+	print('[sllink] CC batch: ' .. emitted .. ' CC(s) [' .. table.concat(emittedCCs, ', ') .. '], ' .. #out .. ' bytes' ..
 		(#remaining > 0 and (', ' .. #remaining .. ' deferred to next round') or ''))
 	return { midi = out }
 end
@@ -1795,6 +1797,10 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	end
 
 	print('[sllink] controller_initialize (app="' .. tostring(applicationName) .. '", version=' .. SCRIPT_VERSION .. ')')
+	-- MIDI_LSB/MSB are strings, not numbers
+	print('[sllink] injected globals: MIDI_CtrChange=' .. tostring(MIDI_CtrChange) ..
+		' MIDI_LSB=' .. tostring(MIDI_LSB) .. ' MIDI_MSB=' .. tostring(MIDI_MSB) ..
+		' MIDI_Wildcard=' .. tostring(MIDI_Wildcard))
 	start_identification()
 	return flush_pending()
 end
@@ -2200,22 +2206,6 @@ function controller_info()
 
 			{name='Sustain Pedal', label='Sustain', objectType='Sustain Pedal', midiType='Momentary',
 				midi={0xB0,0x40,MIDI_LSB}, inport='LINK', outport='LINK'},
-
-			-- action_<app> binds a control to a MainStage command with no MIDI-Learn (undocumented;
-			-- values are WsCommands.plist IDs). UNVERIFIED on hardware - see
-			-- docs/mainstage-device-scripts.md §2.
-			{name='Previous Patch', midiType='Momentary',
-				midi={0xB0 + CC_CHANNEL, CC_MAP.JOY_LEFT_SHORT, MIDI_LSB},
-				inport='LINK', outport='LINK', action_mainstage='PreviousPatch'},
-			{name='Next Patch', midiType='Momentary',
-				midi={0xB0 + CC_CHANNEL, CC_MAP.JOY_RIGHT_SHORT, MIDI_LSB},
-				inport='LINK', outport='LINK', action_mainstage='NextPatch'},
-			{name='Previous Set', midiType='Momentary',
-				midi={0xB0 + CC_CHANNEL, CC_MAP.JOY_UP_SHORT, MIDI_LSB},
-				inport='LINK', outport='LINK', action_mainstage='PreviousSet'},
-			{name='Next Set', midiType='Momentary',
-				midi={0xB0 + CC_CHANNEL, CC_MAP.JOY_DOWN_SHORT, MIDI_LSB},
-				inport='LINK', outport='LINK', action_mainstage='NextSet'},
 		}
 	}
 end
