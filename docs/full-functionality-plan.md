@@ -5,7 +5,7 @@
 
 **Status: draft for revision.** Nothing here is implemented yet. Written 2026-08-19, on top of the
 working Lua-only SL Link session (see `docs/mainstage-integration.md` and
-`MainStageScript/STUDIOLOGIC/SL.device/config.lua`).
+`MainStageScript/STUDIOLOGIC/SL88.device/config.lua`).
 
 ## Target behaviour (as specified)
 

@@ -1,7 +1,7 @@
 # MainStage integration — status
 
 The SL88 ↔ MainStage integration runs **entirely from the Lua device script**
-(`MainStageScript/STUDIOLOGIC/SL.device/config.lua`). The Swift app is not part of this path.
+(`MainStageScript/STUDIOLOGIC/SL88.device/config.lua`). The Swift app is not part of this path.
 
 ## Where things stand
 
@@ -377,6 +377,17 @@ control. See `Tests/lua/harness.lua`'s "Relative CC coalescing" checks.
 `controller_info()` declares it `objectType='Knob'`, `midiType='Relative2C'`, matching the other five
 turn gestures instead of the stale `Button`/`Momentary` it kept when this file's encoding first
 changed.
+
+### Stick layout corrected (confirmed by Jeroen, 2026-09-05)
+
+**Confirmed:** the SL88 has two physical sticks. Stick 1 is an XY stick whose X axis is pitch bend by
+default. Stick 2 is the modulation stick. The previous `controller_info()` item names had modulation
+and "Stick 2" transposed — guessed from captured CC numbers without knowing which physical stick
+produced them. Renamed, wire bytes unchanged: `0xE0` (pitch bend) is now `Stick 1 X`, `0xB0,0x01`
+(CC 1) is now `Stick 2 Mod`, `0xB0,0x10` (CC 16) is now `Stick 1 Y`.
+
+**Inferred, not yet confirmed:** that CC 16 specifically carries Stick 1's Y axis. Worth checking in
+MainStage's MIDI Message Monitor by moving Stick 1 vertically and confirming CC 16 is what moves.
 
 ### Status: Confirmed on hardware (2026-08-22)
 

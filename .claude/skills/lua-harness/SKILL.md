@@ -24,7 +24,7 @@ Requires `lua` (`brew install lua`). `luac -p` is the syntax gate — run it fir
 MIDI_Wildcard, MIDI_MSB, MIDI_LSB = 0, 0, 0
 armed = nil
 function settriggertimer(ms) armed = ms end
-dofile("MainStageScript/STUDIOLOGIC/SL.device/config.lua")
+dofile("MainStageScript/STUDIOLOGIC/SL88.device/config.lua")
 ```
 
 Inbound events are **0-indexed** tables, matching what MainStage passes:

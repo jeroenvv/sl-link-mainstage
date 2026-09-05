@@ -1,6 +1,6 @@
 ---
 name: test-mainstage-script
-description: Deploy and verify a change to the MainStage Lua device script (MainStageScript/STUDIOLOGIC/SL.device/config.lua) against the real SL88. Use whenever a config.lua edit needs checking on hardware - installing it, relaunching MainStage, capturing LUA_DEBUG output and MIDI traffic, and judging the result soundly.
+description: Deploy and verify a change to the MainStage Lua device script (MainStageScript/STUDIOLOGIC/SL88.device/config.lua) against the real SL88. Use whenever a config.lua edit needs checking on hardware - installing it, relaunching MainStage, capturing LUA_DEBUG output and MIDI traffic, and judging the result soundly.
 ---
 
 # Testing a MainStage device script on hardware
@@ -31,7 +31,7 @@ offline first with the `lua-harness` skill, and make each hardware run answer a 
 
 ## Before deploying
 
-1. `luac -p "MainStageScript/STUDIOLOGIC/SL.device/config.lua"` — never deploy a file that will not
+1. `luac -p "MainStageScript/STUDIOLOGIC/SL88.device/config.lua"` — never deploy a file that will not
    parse; a syntax error looks exactly like "the feature does not work".
 2. Run the offline harness (`lua-harness` skill) over whatever changed.
 3. Change **one variable** per run. Several rounds were wasted here by moving two things at once and

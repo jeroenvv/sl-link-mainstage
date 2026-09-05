@@ -1,5 +1,5 @@
 #!/bin/bash
-# Offline regression suite for MainStageScript/STUDIOLOGIC/SL.device/config.lua.
+# Offline regression suite for MainStageScript/STUDIOLOGIC/SL88.device/config.lua.
 #
 # config.lua is a 2,900-line single-file MainStage device script with no
 # CoreMIDI, no Xcode target, and (per .claude/skills/lua-harness/SKILL.md)
@@ -32,7 +32,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONFIG_LUA="$REPO_ROOT/MainStageScript/STUDIOLOGIC/SL.device/config.lua"
+CONFIG_LUA="$REPO_ROOT/MainStageScript/STUDIOLOGIC/SL88.device/config.lua"
 HARNESS="$REPO_ROOT/Tests/lua/harness.lua"
 
 # Overridable so CI can point at Ubuntu's lua5.4 package, which installs its interpreter and

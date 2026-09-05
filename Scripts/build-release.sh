@@ -11,10 +11,10 @@
 #   LICENSE
 #   NOTICE
 #   Scripts/install-mainstage-script.sh
-#   MainStageScript/STUDIOLOGIC/SL.device/config.lua
+#   MainStageScript/STUDIOLOGIC/SL88.device/config.lua
 # install-mainstage-script.sh resolves its source as $SCRIPT_DIR/../MainStageScript/..., so
 # keeping that relative shape means the same install command works whether it's run from a git
-# checkout or from an unzipped copy of this archive. The STUDIOLOGIC/SL.device path segments are
+# checkout or from an unzipped copy of this archive. The STUDIOLOGIC/SL88.device path segments are
 # load-bearing, not cosmetic - they must match controller_info()'s manufacturer/model in
 # config.lua, or MainStage's own script matching fails silently (see install-mainstage-script.sh).
 #
@@ -28,7 +28,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/VERSION"
-CONFIG_LUA="$REPO_ROOT/MainStageScript/STUDIOLOGIC/SL.device/config.lua"
+CONFIG_LUA="$REPO_ROOT/MainStageScript/STUDIOLOGIC/SL88.device/config.lua"
 INSTALL_SCRIPT="$REPO_ROOT/Scripts/install-mainstage-script.sh"
 README="$REPO_ROOT/README.md"
 LICENSE="$REPO_ROOT/LICENSE"
@@ -110,21 +110,21 @@ ARTIFACT_PATH="$OUTPUT_DIR/$ARTIFACT_NAME"
 STAGE_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 
-mkdir -p "$STAGE_DIR/Scripts" "$STAGE_DIR/MainStageScript/STUDIOLOGIC/SL.device"
+mkdir -p "$STAGE_DIR/Scripts" "$STAGE_DIR/MainStageScript/STUDIOLOGIC/SL88.device"
 cp "$README" "$STAGE_DIR/README.md"
 cp "$VERSION_FILE" "$STAGE_DIR/VERSION"
 cp "$LICENSE" "$STAGE_DIR/LICENSE"
 cp "$NOTICE" "$STAGE_DIR/NOTICE"
 cp "$INSTALL_SCRIPT" "$STAGE_DIR/Scripts/install-mainstage-script.sh"
 chmod +x "$STAGE_DIR/Scripts/install-mainstage-script.sh"
-cp "$CONFIG_LUA" "$STAGE_DIR/MainStageScript/STUDIOLOGIC/SL.device/config.lua"
+cp "$CONFIG_LUA" "$STAGE_DIR/MainStageScript/STUDIOLOGIC/SL88.device/config.lua"
 
 rm -f "$ARTIFACT_PATH"
 (
     cd "$STAGE_DIR"
     zip -q -X -r "$ARTIFACT_PATH" README.md VERSION LICENSE NOTICE \
         Scripts/install-mainstage-script.sh \
-        MainStageScript/STUDIOLOGIC/SL.device/config.lua
+        MainStageScript/STUDIOLOGIC/SL88.device/config.lua
 )
 
 echo "== Artifact =="

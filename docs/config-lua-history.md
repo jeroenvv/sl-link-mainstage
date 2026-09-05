@@ -1,6 +1,6 @@
 # config.lua: implementation history
 
-`MainStageScript/STUDIOLOGIC/SL.device/config.lua` used to carry its own changelog inline — dated
+`MainStageScript/STUDIOLOGIC/SL88.device/config.lua` used to carry its own changelog inline — dated
 hardware reports, rejected fixes, measurement traces, revision-by-revision narratives — until comments
 outweighed code roughly 3:1. This document is where that reasoning now lives.
 

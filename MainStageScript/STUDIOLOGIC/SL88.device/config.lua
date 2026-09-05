@@ -2255,11 +2255,13 @@ function controller_info()
 			startKey=21, numberKeys=88, midi={0x90,MIDI_Wildcard,MIDI_Wildcard},
 			inport='LINK', outport='LINK'},
 
-		{name='Pitch Bend', label='Pitch', objectType='Wheel', midi={0xE0,MIDI_MSB,MIDI_LSB},
+		-- Stick 1 is the XY stick (X = pitch bend); Stick 2 is the modulation stick. The CC 16 ->
+		-- Stick 1 Y attribution is inferred, not yet confirmed on hardware.
+		{name='Stick 1 X', label='Pitch', objectType='Wheel', midi={0xE0,MIDI_MSB,MIDI_LSB},
 			inport='LINK', outport='LINK'},
-		{name='Modulation', label='Mod', objectType='Wheel', midi={0xB0,0x01,MIDI_LSB},
+		{name='Stick 2 Mod', label='Mod', objectType='Wheel', midi={0xB0,0x01,MIDI_LSB},
 			inport='LINK', outport='LINK'},
-		{name='Stick 2', label='Stick2', objectType='Wheel', midi={0xB0,0x10,MIDI_LSB},
+		{name='Stick 1 Y', label='Stick1Y', objectType='Wheel', midi={0xB0,0x10,MIDI_LSB},
 			inport='LINK', outport='LINK'},
 
 		{name='Sustain Pedal', label='Sustain', objectType='Sustain Pedal', midiType='Momentary',
@@ -2311,7 +2313,7 @@ function controller_info()
 	}
 
 	return {
-		model = 'SL',
+		model = 'SL88',
 		manufacturer = 'STUDIOLOGIC',
 
 		-- usb_vendor_id = 38166,  -- 0x9516

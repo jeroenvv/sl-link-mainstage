@@ -3,7 +3,7 @@ Mainstage integration for SL88 MK2
 
 ## Installing the MainStage script
 
-Run `./Scripts/install-mainstage-script.sh` to copy `MainStageScript/STUDIOLOGIC/SL.device` into
+Run `./Scripts/install-mainstage-script.sh` to copy `MainStageScript/STUDIOLOGIC/SL88.device` into
 `~/Music/Audio Music Apps/MainStage Devices/STUDIOLOGIC/` (not "MIDI Device Scripts", which is
 Logic Pro's folder of the same shape). It's idempotent, needs no admin rights, doesn't modify
 MainStage.app, and survives MainStage updates. Re-run it after every `config.lua` change and after
@@ -42,10 +42,10 @@ Releases are published automatically whenever a change to the device script (`Ma
 lands on `main`. Grab the zip from the [Releases page](../../releases), unzip it, and run
 `./Scripts/install-mainstage-script.sh` from the unzipped folder.
 
-After unzipping, `SL.device` shows up in Finder as a single file rather than a folder — that's
+After unzipping, `SL88.device` shows up in Finder as a single file rather than a folder — that's
 expected, not a broken download. MainStage registers `.device` as a package type, so Finder
 presents it as one item; it's still a real directory containing `config.lua` (the nested
-`STUDIOLOGIC/SL.device` layout matches the manufacturer/model `controller_info()` reports).
+`STUDIOLOGIC/SL88.device` layout matches the manufacturer/model `controller_info()` reports).
 Right-click and choose **Show Package Contents** to look inside from Finder, or just treat it as a
 normal directory from the terminal. Either way, nothing needs to be unpacked by hand —
 `install-mainstage-script.sh` copies the whole bundle to where MainStage expects it.
