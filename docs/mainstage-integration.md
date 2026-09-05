@@ -474,3 +474,31 @@ this branch:
 - **Zoom LONG press** (the force-full-repaint path in `handle_zoom_button`).
 - **The re-identification wait path** (`STATE_REIDENTIFY_WAIT`, `handle_identification_rejected`) —
   needs a deliberate DeviceID collision.
+
+## `action_<app>` spike: verified inert (2026-09-05)
+
+Tested whether `controller_info()` items' undocumented `action_<app>`/`action` fields could invoke a
+MainStage command (`NextPatch`/`PreviousPatch`/etc.) directly, bypassing MIDI entirely. If it had
+worked, it would have removed the one-time MIDI-Learn per concert that "Every control emits a
+mappable CC" (above) currently requires, and given a relative patch/set-navigation primitive for
+free.
+
+**Result: inert on every reachable path** — six configurations tried (script-injected CCs on two
+channels, and two genuine hardware CCs with `controller_midi_in` returning `nil`), none fired the
+bound command. Byte-level detail, the full evidence table and the Logic-Pro caveat live in
+[`mainstage-device-scripts.md`](mainstage-device-scripts.md#2-controller_info--the-items-table) §2 —
+not repeated here.
+
+What this means for this project: `action_<app>` is not a route to patch navigation. The CC map plus
+one-time MIDI-Learn per concert ("Every control emits a mappable CC", above) remains the only working
+mechanism. The parked `feature/joystick-browse` branch's relative-commit idea is unaffected — it
+already builds on the CC/assignment-layer route from "Round 5" above and never depended on
+`action_<app>`.
+
+This spike is also a concrete instance of this project's standing rule to prove a signal is
+observable before trusting a negative result (see the three-findings list at the top of this file for
+the pattern). Its first round produced a false negative: the gesture performed emitted a different CC
+than the item under test was bound to, and nothing in the log showed the mismatch, so the "no command
+fired" result was uninterpretable. Adding a log line that prints the CC numbers in each batch
+(`[sllink] CC batch: 1 CC(s) [74=127], 3 bytes`) closed that gap and made the second round's negative
+trustworthy.

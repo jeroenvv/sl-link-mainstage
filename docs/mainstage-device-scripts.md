@@ -72,7 +72,10 @@ Each item describes one physical control and makes it mappable in MainStage.
 ```
 
 `MIDI_LSB`, `MIDI_MSB` and `MIDI_Wildcard` are globals MainStage injects — placeholders in the `midi`
-pattern for "the value goes here" and "match anything".
+pattern for "the value goes here" and "match anything". Hardware logging (2026-09-05) showed their
+actual runtime values are the **strings** `'aa'`, `'bb'` and `'??'` respectively; `MIDI_CtrChange` also
+exists and is `176` (`0xB0`). The offline harness had stubbed the three as the number `0`, which was
+wrong.
 
 Vocabulary actually used across the 98 bundled scripts:
 
@@ -236,9 +239,46 @@ one-time MIDI-Learn per concert that the whole 34-CC map currently requires, and
 *relative* patch-navigation primitive for free — see `docs/mainstage-integration.md`, "Next thing to
 try: a relative control instead of an absolute one".
 
-**UNVERIFIED.** Nothing in this subsection has been tested against MainStage on this rig. Next step:
-declare four `action_mainstage`-carrying items (`NextPatch`/`PreviousPatch`/`NextSet`/`PreviousSet`)
-and check on hardware whether a joystick tilt changes patch with nothing learned.
+The command table above is retained regardless of the result below — the IDs are a property of
+MainStage's own command dispatch, not of this field, so they remain valid input to any future route
+that does reach them.
+
+**VERIFIED NEGATIVE (2026-09-05).** A hardware spike tested `action_<app>`/`action` against a real
+SL88 MK2 under MainStage 3.7.1. Inert on every reachable path:
+
+| CC source | Channel | Key | `objectType` | Command | Fired |
+|:--|:--|:--|:--|:--|:--|
+| script-injected (CC 74) | 16 | `action_mainstage` | absent | Metronome | no |
+| script-injected (CC 58) | 16 | `action_mainstage` | absent | Metronome | no |
+| script-injected (CC 58) | 1 | `action_mainstage` | absent | ToggleChannelStrips | no |
+| script-injected (CC 57) | 1 | `action` | absent | ToggleInspectors | no |
+| real hardware CC 1 (mod wheel) | 1 | `action_mainstage` | `Wheel` | Metronome | no |
+| real hardware CC 16 (stick 2) | 1 | `action` | absent | TogglePatchList | no |
+
+Why this is a sound negative rather than a missed signal:
+
+- Every injected CC was confirmed emitted with its exact declared number, via a log line added for
+  this spike that prints the CC numbers in each batch (`[sllink] CC batch: 1 CC(s) [74=127], 3
+  bytes`). An earlier round of this same spike produced a false negative precisely because that line
+  did not exist — the gesture performed emitted CC 58 while the item under test was bound to CC 74,
+  and nothing in the log showed the mismatch.
+- The two real-hardware CCs were confirmed arriving in MainStage's own **Window > MIDI Message
+  Monitor**.
+- For CC 1 and CC 16 the script's `controller_midi_in` returns `nil` — the falsy path, already
+  documented above as the condition MainStage's own parsers require (it is what `patchselector`
+  needs). So the real-hardware rows are the best-case configuration, not a degraded one.
+- A variant emitting no CC at all was also run and produced nothing, as predicted. That result is
+  **vacuous** — MainStage had no MIDI to match, so it rules nothing in or out.
+
+Supporting static evidence, already above: the literal `action_mainstage` appears nowhere in
+MainStage 3.7.1's binaries (only the bare `action_` prefix, in `LogicPro.framework`'s key table), and
+zero of the 98 bundled MainStage scripts use it.
+
+**Do not overstate this.** The honest conclusion is: inert in MainStage 3.7.1 across every path
+reachable from a device script. It is NOT established as inert everywhere — the key table lives in
+`LogicPro.framework`, so this may be a Logic Pro feature MainStage does not implement, and Logic Pro
+is not installed on this machine, so that remains untested rather than disproven. Arturia's shipped
+KeyLab mk3 script declares seven such items, which under this result do nothing under MainStage.
 
 ## 3. Callbacks
 
