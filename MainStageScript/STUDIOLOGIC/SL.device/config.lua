@@ -2184,6 +2184,7 @@ function controller_info()
 		-- usb_product_id = 16441, -- 0x4039
 
 		patchselector = true,
+		logicprox = false,
 
 		items = {
 			{name='Keyboard', label='SL88', objectType='Keyboard', midiType='Keyboard',
@@ -2199,6 +2200,22 @@ function controller_info()
 
 			{name='Sustain Pedal', label='Sustain', objectType='Sustain Pedal', midiType='Momentary',
 				midi={0xB0,0x40,MIDI_LSB}, inport='LINK', outport='LINK'},
+
+			-- action_<app> binds a control to a MainStage command with no MIDI-Learn (undocumented;
+			-- values are WsCommands.plist IDs). UNVERIFIED on hardware - see
+			-- docs/mainstage-device-scripts.md §2.
+			{name='Previous Patch', midiType='Momentary',
+				midi={0xB0 + CC_CHANNEL, CC_MAP.JOY_LEFT_SHORT, MIDI_LSB},
+				inport='LINK', outport='LINK', action_mainstage='PreviousPatch'},
+			{name='Next Patch', midiType='Momentary',
+				midi={0xB0 + CC_CHANNEL, CC_MAP.JOY_RIGHT_SHORT, MIDI_LSB},
+				inport='LINK', outport='LINK', action_mainstage='NextPatch'},
+			{name='Previous Set', midiType='Momentary',
+				midi={0xB0 + CC_CHANNEL, CC_MAP.JOY_UP_SHORT, MIDI_LSB},
+				inport='LINK', outport='LINK', action_mainstage='PreviousSet'},
+			{name='Next Set', midiType='Momentary',
+				midi={0xB0 + CC_CHANNEL, CC_MAP.JOY_DOWN_SHORT, MIDI_LSB},
+				inport='LINK', outport='LINK', action_mainstage='NextSet'},
 		}
 	}
 end
