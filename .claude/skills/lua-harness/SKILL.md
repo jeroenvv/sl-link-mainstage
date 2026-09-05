@@ -18,14 +18,19 @@ Requires `lua` (`brew install lua`). `luac -p` is the syntax gate — run it fir
 
 ## The stub
 
-`config.lua` only needs `settriggertimer` and the `MIDI_*` constants MainStage injects:
+`config.lua` only needs `settriggertimer` and the `MIDI_*` constants MainStage injects. Stub them at
+their real observed runtime values, not at `0` — `MIDI_Wildcard`/`MIDI_MSB`/`MIDI_LSB` are **strings**,
+not numbers:
 
 ```lua
-MIDI_Wildcard, MIDI_MSB, MIDI_LSB = 0, 0, 0
+MIDI_Wildcard, MIDI_MSB, MIDI_LSB, MIDI_CtrChange = '??', 'bb', 'aa', 176
 armed = nil
 function settriggertimer(ms) armed = ms end
 dofile("MainStageScript/STUDIOLOGIC/SL88.device/config.lua")
 ```
+
+Assert on an item's CC number and `objectType`, never on the `MIDI_*` placeholders themselves — they
+stand in for wildcard/LSB/MSB bytes MainStage fills in at runtime, not values to compare against.
 
 Inbound events are **0-indexed** tables, matching what MainStage passes:
 
@@ -59,6 +64,10 @@ and writable from the harness — set up a state directly instead of replaying a
 - **Musical MIDI passes through.** `controller_midi_in(frame(0x90,0x40,0x64), "LINK")` must return
   `nil`. Returning a table swallows the event and hangs notes.
 - **Timer re-arm interval** via the `armed` stub — fast while draining, keepalive cadence when idle.
+- **`controller_info()` matches `CC_MAP`.** Its item declarations are written out literally rather
+  than generated, so these assertions are the only thing preventing that literal list from drifting
+  out of step with `CC_MAP`/`CC_LABEL` — check every `CC_MAP` key produces exactly one item, at its
+  own CC number, with no two items colliding on CC number.
 
 ## Cross-check bytes against the spec
 
