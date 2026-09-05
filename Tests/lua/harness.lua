@@ -785,6 +785,90 @@ do
 	end
 end
 
+-- MARK: - 23. controller_info(): generated CC_MAP items (Layout mode names/types)
+--
+-- controller_info() appends one item per CC_MAP key after the 5 physical-MIDI items, generated from
+-- CC_MAP/CC_LABEL/CC_TURN so the Layout-mode list can never drift from CC_MAP. These checks confirm
+-- the generation, not any specific label text.
+do
+	local info = controller_info()
+	local items = info.items
+	local PHYSICAL_ITEM_COUNT = 5
+	local generated = {}
+	for i = PHYSICAL_ITEM_COUNT + 1, #items do
+		generated[#generated + 1] = items[i]
+	end
+
+	local ccMapCount = 0
+	for _ in pairs(CC_MAP) do ccMapCount = ccMapCount + 1 end
+
+	check(
+		'controller_info() generates exactly one item per CC_MAP key (' .. ccMapCount .. ')',
+		#generated == ccMapCount
+	)
+
+	-- Index generated items by their own CC number and by name, to check both "every CC_MAP key
+	-- produced exactly one item" and "no two items collide on CC number" without assuming order.
+	local byCcNumber = {}
+	local byName = {}
+	local duplicateCc = false
+	for _, item in ipairs(generated) do
+		local ccNumber = item.midi[2]
+		if byCcNumber[ccNumber] ~= nil then duplicateCc = true end
+		byCcNumber[ccNumber] = item
+		if item.name ~= nil then byName[item.name] = item end
+	end
+	check('no two generated items share a CC number', not duplicateCc)
+
+	local everyControlHasOneItem = true
+	for control, ccNumber in pairs(CC_MAP) do
+		if byCcNumber[ccNumber] == nil or byCcNumber[ccNumber].name ~= CC_LABEL[control] then
+			everyControlHasOneItem = false
+		end
+	end
+	check('every CC_MAP key has exactly one generated item, at its own CC number', everyControlHasOneItem)
+
+	local everyItemOnChannel16 = true
+	for _, item in ipairs(generated) do
+		if item.midi[1] ~= 0xB0 + CC_CHANNEL then everyItemOnChannel16 = false end
+	end
+	check('every generated item addresses CC_CHANNEL', everyItemOnChannel16)
+
+	-- CC_MAP <-> CC_LABEL: every key has exactly one label, no orphaned label.
+	local everyMapKeyHasLabel = true
+	for control in pairs(CC_MAP) do
+		if CC_LABEL[control] == nil then everyMapKeyHasLabel = false end
+	end
+	check('every CC_MAP key has a CC_LABEL entry', everyMapKeyHasLabel)
+
+	local noOrphanedLabel = true
+	for control in pairs(CC_LABEL) do
+		if CC_MAP[control] == nil then noOrphanedLabel = false end
+	end
+	check('no CC_LABEL entry is orphaned (missing from CC_MAP)', noOrphanedLabel)
+
+	-- CC_TURN gestures -> Knob; a spot-checked button gesture -> Button.
+	local allTurnsAreKnobs = true
+	for control in pairs(CC_TURN) do
+		local item = byName[CC_LABEL[control]]
+		if item == nil or item.objectType ~= 'Knob' then allTurnsAreKnobs = false end
+	end
+	check('all five CC_TURN gestures generate objectType Knob', allTurnsAreKnobs)
+
+	local joyUpItem = byName[CC_LABEL['JOY_UP_SHORT']]
+	check(
+		'a spot-checked button gesture (JOY_UP_SHORT) generates objectType Button',
+		joyUpItem ~= nil and joyUpItem.objectType == 'Button'
+	)
+
+	-- Determinism: generated items must come out in ascending CC order (guards sorted_cc_keys()).
+	local ascending = true
+	for i = 2, #generated do
+		if generated[i].midi[2] <= generated[i - 1].midi[2] then ascending = false end
+	end
+	check('generated items are in strictly ascending CC order', ascending)
+end
+
 -- MARK: - Summary
 
 realPrint('')

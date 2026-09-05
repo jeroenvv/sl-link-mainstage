@@ -149,6 +149,38 @@ CC_MAP = {
 	SEL4_SHORT = 73, SEL4_LONG = 74,
 }
 
+-- Human-readable name per CC_MAP key, for the controller_info() items generated below - shown in
+-- MainStage's Layout mode. One entry per CC_MAP key, no more, no less (asserted by the harness).
+CC_LABEL = {
+	JOY_UP_SHORT = 'Joy Up',       JOY_UP_LONG = 'Joy Up (long)',
+	JOY_DOWN_SHORT = 'Joy Down',   JOY_DOWN_LONG = 'Joy Down (long)',
+	JOY_LEFT_SHORT = 'Joy Left',   JOY_LEFT_LONG = 'Joy Left (long)',
+	JOY_RIGHT_SHORT = 'Joy Right', JOY_RIGHT_LONG = 'Joy Right (long)',
+	JOY_PRESS_SHORT = 'Joy Press', JOY_PRESS_LONG = 'Joy Press (long)',
+	JOY_ROTATE = 'Joy Rotate',
+
+	ENC1_PRESS_SHORT = 'Zone 1 Push', ENC1_PRESS_LONG = 'Zone 1 Push (long)',
+	ENC2_PRESS_SHORT = 'Zone 2 Push', ENC2_PRESS_LONG = 'Zone 2 Push (long)',
+	ENC3_PRESS_SHORT = 'Zone 3 Push', ENC3_PRESS_LONG = 'Zone 3 Push (long)',
+	ENC4_PRESS_SHORT = 'Zone 4 Push', ENC4_PRESS_LONG = 'Zone 4 Push (long)',
+
+	ENC1_TURN = 'Zone 1 Encoder', ENC2_TURN = 'Zone 2 Encoder',
+	ENC3_TURN = 'Zone 3 Encoder', ENC4_TURN = 'Zone 4 Encoder',
+
+	ENCB_TURN = 'B Encoder',
+	ENCB_PRESS_SHORT = 'B Push', ENCB_PRESS_LONG = 'B Push (long)',
+
+	SEL1_SHORT = 'Zone 1 Select', SEL1_LONG = 'Zone 1 Select (long)',
+	SEL2_SHORT = 'Zone 2 Select', SEL2_LONG = 'Zone 2 Select (long)',
+	SEL3_SHORT = 'Zone 3 Select', SEL3_LONG = 'Zone 3 Select (long)',
+	SEL4_SHORT = 'Zone 4 Select', SEL4_LONG = 'Zone 4 Select (long)',
+}
+
+-- The continuous (Knob) gestures; every other CC_MAP key is a momentary Button.
+CC_TURN = {
+	ENC1_TURN = true, ENC2_TURN = true, ENC3_TURN = true, ENC4_TURN = true, ENCB_TURN = true,
+}
+
 -- BID -> { short, long } CC_MAP keys, for every button wired to a CC.
 BUTTON_CC = {
 	[BID_JOY_UP]    = { short = 'JOY_UP_SHORT',    long = 'JOY_UP_LONG' },
@@ -2178,10 +2210,47 @@ end
 
 -- MARK: - Device declaration
 
+-- CC_MAP keys ordered by CC number, for a deterministic Layout-mode item order (CC_MAP is a hash;
+-- pairs() order is unspecified and would shuffle the list between runs).
+local function sorted_cc_keys()
+	local keys = {}
+	for key in pairs(CC_MAP) do keys[#keys + 1] = key end
+	table.sort(keys, function(a, b) return CC_MAP[a] < CC_MAP[b] end)
+	return keys
+end
+
 -- Items describe MIDI the SL88 **actually transmits**, captured live (notes, pitch bend,
 -- modulation, second stick, sustain - all on LINK, none on CTRL). Ports use the short names for the
 -- same reason outport does; see the banner at the top of this file.
 function controller_info()
+	local items = {
+		{name='Keyboard', label='SL88', objectType='Keyboard', midiType='Keyboard',
+			startKey=21, numberKeys=88, midi={0x90,MIDI_Wildcard,MIDI_Wildcard},
+			inport='LINK', outport='LINK'},
+
+		{name='Pitch Bend', label='Pitch', objectType='Wheel', midi={0xE0,MIDI_MSB,MIDI_LSB},
+			inport='LINK', outport='LINK'},
+		{name='Modulation', label='Mod', objectType='Wheel', midi={0xB0,0x01,MIDI_LSB},
+			inport='LINK', outport='LINK'},
+		{name='Stick 2', label='Stick2', objectType='Wheel', midi={0xB0,0x10,MIDI_LSB},
+			inport='LINK', outport='LINK'},
+
+		{name='Sustain Pedal', label='Sustain', objectType='Sustain Pedal', midiType='Momentary',
+			midi={0xB0,0x40,MIDI_LSB}, inport='LINK', outport='LINK'},
+	}
+
+	-- One item per CC_MAP gesture, generated so these can never drift from CC_MAP/CC_LABEL.
+	for _, control in ipairs(sorted_cc_keys()) do
+		local isTurn = CC_TURN[control]
+		items[#items + 1] = {
+			name = CC_LABEL[control],
+			objectType = isTurn and 'Knob' or 'Button',
+			midiType = isTurn and 'Absolute' or 'Momentary',
+			midi = {0xB0 + CC_CHANNEL, CC_MAP[control], MIDI_LSB},
+			inport = 'LINK', outport = 'LINK',
+		}
+	end
+
 	return {
 		model = 'SL',
 		manufacturer = 'STUDIOLOGIC',
@@ -2192,20 +2261,6 @@ function controller_info()
 		patchselector = true,
 		logicprox = false,
 
-		items = {
-			{name='Keyboard', label='SL88', objectType='Keyboard', midiType='Keyboard',
-				startKey=21, numberKeys=88, midi={0x90,MIDI_Wildcard,MIDI_Wildcard},
-				inport='LINK', outport='LINK'},
-
-			{name='Pitch Bend', label='Pitch', objectType='Wheel', midi={0xE0,MIDI_MSB,MIDI_LSB},
-				inport='LINK', outport='LINK'},
-			{name='Modulation', label='Mod', objectType='Wheel', midi={0xB0,0x01,MIDI_LSB},
-				inport='LINK', outport='LINK'},
-			{name='Stick 2', label='Stick2', objectType='Wheel', midi={0xB0,0x10,MIDI_LSB},
-				inport='LINK', outport='LINK'},
-
-			{name='Sustain Pedal', label='Sustain', objectType='Sustain Pedal', midiType='Momentary',
-				midi={0xB0,0x40,MIDI_LSB}, inport='LINK', outport='LINK'},
-		}
+		items = items,
 	}
 end
