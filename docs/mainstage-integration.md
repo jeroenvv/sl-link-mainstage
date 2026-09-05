@@ -362,9 +362,10 @@ rather than the tracked absolute position, using MainStage's `Relative2C` (two's
 `encoderValue` is still tracked internally 0–127 — the encoder value popup's ring gauge reads it —
 only what's *emitted* changed.
 
-**Unconfirmed on hardware**: the `Relative2C` byte encoding above is inferred from the name
-(standard two's-complement relative CC), not yet verified against a real MainStage instance. Needs a
-hardware check before being trusted the way the rest of this document's findings are.
+**Confirmed on hardware (2026-09-05)**: the `Relative2C` byte encoding above was verified by
+remapping the B encoder to a relative control in MainStage 4.3.1 against a real SL88 MK2 - smooth
+bidirectional movement, confirming the two's-complement encoding rather than merely inferring it
+from the name.
 
 **Fixed 2026-09-05**: `queue_cc`'s per-control coalescing (see "Momentary buttons" above) replaces
 rather than sums a pending value — harmless for the old absolute encoding, but a relative delta needs
@@ -386,8 +387,8 @@ and "Stick 2" transposed — guessed from captured CC numbers without knowing wh
 produced them. Renamed, wire bytes unchanged: `0xE0` (pitch bend) is now `Stick 1 X`, `0xB0,0x01`
 (CC 1) is now `Stick 2 Mod`, `0xB0,0x10` (CC 16) is now `Stick 1 Y`.
 
-**Inferred, not yet confirmed:** that CC 16 specifically carries Stick 1's Y axis. Worth checking in
-MainStage's MIDI Message Monitor by moving Stick 1 vertically and confirming CC 16 is what moves.
+**Confirmed on hardware (2026-09-05):** that CC 16 specifically carries Stick 1's Y axis, verified
+in MainStage's MIDI Message Monitor by moving Stick 1 vertically and observing CC 16 move.
 
 ### Status: Confirmed on hardware (2026-08-22)
 

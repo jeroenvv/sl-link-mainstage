@@ -1776,7 +1776,7 @@ function handle_sl_frame(e)
 			if newValue < 0 then newValue = 0 elseif newValue > 127 then newValue = 127 end
 			encoderValue[eid] = newValue -- still tracked for show_popup's ring gauge, not for what's emitted below
 			if delta ~= 0 then
-				-- Relative2C two's complement; wire encoding UNCONFIRMED on hardware, see
+				-- Relative2C two's complement; wire encoding confirmed on hardware 2026-09-05, see
 				-- docs/mainstage-integration.md. queue_relative_cc accumulates the raw signed delta;
 				-- flush_pending_cc clamps and encodes it at emit time.
 				queue_relative_cc(control, delta)
@@ -2256,7 +2256,7 @@ function controller_info()
 			inport='LINK', outport='LINK'},
 
 		-- Stick 1 is the XY stick (X = pitch bend); Stick 2 is the modulation stick. The CC 16 ->
-		-- Stick 1 Y attribution is inferred, not yet confirmed on hardware.
+		-- Stick 1 Y attribution was confirmed on hardware 2026-09-05.
 		{name='Stick 1 X', label='Pitch', objectType='Wheel', midi={0xE0,MIDI_MSB,MIDI_LSB},
 			inport='LINK', outport='LINK'},
 		{name='Stick 2 Mod', label='Mod', objectType='Wheel', midi={0xB0,0x01,MIDI_LSB},

@@ -10,7 +10,7 @@ All notable changes to this project are documented in this file. The format foll
 
 - The five encoders and the joystick rotary ring now send `Relative2C` two's-complement relative
   deltas instead of an absolute 0-127 value. Any mapping learned against the old absolute behaviour
-  must be redone. The wire encoding is inferred from the name and is not yet confirmed on hardware.
+  must be redone. The wire encoding is hardware-verified (2026-09-05).
 
 No CC numbers moved in this release.
 
