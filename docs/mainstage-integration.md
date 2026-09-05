@@ -354,13 +354,29 @@ next inbound SL frame** (in practice, usually within one Identification Query/re
 that heartbeat keeps inbound frames arriving even with no further user input) — before that frame's
 own event is handled.
 
-### Encoders send absolute position, not relative ticks
+### Encoders send relative deltas (changed 2026-09-05)
 
-Encoders send their tracked value **absolutely**, 0–127, which MIDI Learns like an ordinary knob.
-`CC_ENCODER_RELATIVE` exists in `config.lua` as a documented escape hatch to switch to relative
-increments (65 = up one tick, 63 = down one) instead, but it is **not implemented** — flipping it
-alone does nothing, since the accumulate-and-clamp path and `queue_cc`'s replace-in-place coalescing
-both assume absolute values.
+The six `CC_TURN` encoders (`ENC1-4_TURN`, `ENCB_TURN`, `JOY_ROTATE`) emit each tick's signed delta
+rather than the tracked absolute position, using MainStage's `Relative2C` (two's complement, 7-bit)
+`midiType`: `+1` on the wire as `0x01`, `-1` as `0x7F`, clamped to `-63..63` then `% 128`-encoded.
+`encoderValue` is still tracked internally 0–127 — the encoder value popup's ring gauge reads it —
+only what's *emitted* changed.
+
+**Unconfirmed on hardware**: the `Relative2C` byte encoding above is inferred from the name
+(standard two's-complement relative CC), not yet verified against a real MainStage instance. Needs a
+hardware check before being trusted the way the rest of this document's findings are.
+
+**Fixed 2026-09-05**: `queue_cc`'s per-control coalescing (see "Momentary buttons" above) replaces
+rather than sums a pending value — harmless for the old absolute encoding, but a relative delta needs
+two ticks for the same control before a flush to SUM rather than lose the first tick's motion.
+`queue_relative_cc`/`flush_pending_cc` now accumulate the delta in signed `pendingDelta` and only
+clamp/encode it at emit time; `queue_cc`/`pendingCC` are unchanged and still used for every absolute
+control. See `Tests/lua/harness.lua`'s "Relative CC coalescing" checks.
+
+`JOY_ROTATE` (CC 50) goes through the same `handle_sl_frame` encoder branch and now joins `CC_TURN`:
+`controller_info()` declares it `objectType='Knob'`, `midiType='Relative2C'`, matching the other five
+turn gestures instead of the stale `Button`/`Momentary` it kept when this file's encoding first
+changed.
 
 ### Status: Confirmed on hardware (2026-08-22)
 

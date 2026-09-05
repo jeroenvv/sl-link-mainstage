@@ -179,6 +179,7 @@ CC_LABEL = {
 -- The continuous (Knob) gestures; every other CC_MAP key is a momentary Button.
 CC_TURN = {
 	ENC1_TURN = true, ENC2_TURN = true, ENC3_TURN = true, ENC4_TURN = true, ENCB_TURN = true,
+	JOY_ROTATE = true,
 }
 
 -- BID -> { short, long } CC_MAP keys, for every button wired to a CC.
@@ -309,7 +310,8 @@ pendingMessages = {}
 
 -- Phase 2 CC dispatch state - see the CC_MAP block above and queue_cc()/ flush_pending_cc() below.
 pendingCC = {} -- control name (a CC_MAP key) -> pending value, coalesced
-pendingCCOrder = {} -- insertion order of pendingCC's keys, for a deterministic batch
+pendingDelta = {} -- control name -> accumulated SIGNED relative delta, for CC_TURN/JOY_ROTATE (see queue_relative_cc())
+pendingCCOrder = {} -- insertion order of pendingCC's/pendingDelta's keys, for a deterministic batch
 pendingReleases = {} -- controls whose 127 press already went out; queue their 0 release the NEXT
 	-- round (see queue_momentary_cc())
 encoderValue = { -- absolute 0-127 tracked value per encoder wired to a CC
@@ -590,16 +592,26 @@ end
 
 -- Coalesces into the pending-CC table, keyed by CONTROL (a CC_MAP key), not by CC number. A second
 -- call for the same control before it flushes REPLACES the pending value rather than queuing a
--- duplicate - this is what lets a fast encoder sweep collapse to one CC per control instead of one
--- per tick (see controller_midi_in's return path). Encoders send this absolute 0-127 tracked value,
--- not relative increments; switching to relative would mean changing the accumulate-and-clamp path
--- that produces `value` and this replace-in-place coalescing, not just a constant.
+-- duplicate - this is what lets a fast button re-press collapse to one CC per control instead of one
+-- per event (see controller_midi_in's return path). For the CC_TURN/JOY_ROTATE relative encoders, use
+-- queue_relative_cc() instead - replacing an unflushed delta would lose motion.
 function queue_cc(control, value)
 	if value < 0 then value = 0 elseif value > 127 then value = 127 end
 	if pendingCC[control] == nil then
 		pendingCCOrder[#pendingCCOrder + 1] = control
 	end
 	pendingCC[control] = value
+end
+
+-- Companion to queue_cc for relative controls (CC_TURN/JOY_ROTATE): ACCUMULATES the signed delta
+-- instead of replacing, so two ticks for the same control before a flush sum rather than lose the
+-- first tick's motion. Left in signed space - clamped and Relative2C-encoded only at emit time, in
+-- flush_pending_cc().
+function queue_relative_cc(control, delta)
+	if pendingDelta[control] == nil then
+		pendingCCOrder[#pendingCCOrder + 1] = control
+	end
+	pendingDelta[control] = (pendingDelta[control] or 0) + delta
 end
 
 -- Buttons read as momentary in MainStage (127 then 0), but queue_cc's own per-control coalescing
@@ -633,11 +645,24 @@ function flush_pending_cc()
 	for i = 1, #pendingCCOrder do
 		local control = pendingCCOrder[i]
 		if emitted < CC_BATCH_CAP then
-			local msg = build_cc_message(control, pendingCC[control])
-			for j = 1, #msg do out[#out + 1] = msg[j] end
-			emittedCCs[#emittedCCs + 1] = CC_MAP[control] .. '=' .. pendingCC[control]
-			pendingCC[control] = nil
-			emitted = emitted + 1
+			local value = pendingCC[control]
+			if value ~= nil then
+				pendingCC[control] = nil
+			else
+				-- Relative control: clamp the accumulated signed total, then Relative2C-encode (two's
+				-- complement) only now - see queue_relative_cc(). A net-zero total (e.g. +1 then -1 before
+				-- this flush) emits nothing and does not occupy a batch slot.
+				local total = pendingDelta[control]
+				pendingDelta[control] = nil
+				if total > 63 then total = 63 elseif total < -63 then total = -63 end
+				if total ~= 0 then value = total % 128 end
+			end
+			if value ~= nil then
+				local msg = build_cc_message(control, value)
+				for j = 1, #msg do out[#out + 1] = msg[j] end
+				emittedCCs[#emittedCCs + 1] = CC_MAP[control] .. '=' .. value
+				emitted = emitted + 1
+			end
 		else
 			remaining[#remaining + 1] = control
 		end
@@ -1749,8 +1774,13 @@ function handle_sl_frame(e)
 		if control ~= nil then
 			local newValue = encoderValue[eid] + delta
 			if newValue < 0 then newValue = 0 elseif newValue > 127 then newValue = 127 end
-			encoderValue[eid] = newValue
-			queue_cc(control, newValue)
+			encoderValue[eid] = newValue -- still tracked for show_popup's ring gauge, not for what's emitted below
+			if delta ~= 0 then
+				-- Relative2C two's complement; wire encoding UNCONFIRMED on hardware, see
+				-- docs/mainstage-integration.md. queue_relative_cc accumulates the raw signed delta;
+				-- flush_pending_cc clamps and encodes it at emit time.
+				queue_relative_cc(control, delta)
+			end
 			show_popup(eid)
 		else
 			print('[sllink] <- ENCODER eid=' .. string.format('0x%02X', eid)
@@ -1811,6 +1841,7 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
 	pendingMessages = {}
 	pendingCC = {}
+	pendingDelta = {}
 	pendingCCOrder = {}
 	pendingReleases = {}
 	encoderValue = {
@@ -2210,18 +2241,14 @@ end
 
 -- MARK: - Device declaration
 
--- CC_MAP keys ordered by CC number, for a deterministic Layout-mode item order (CC_MAP is a hash;
--- pairs() order is unspecified and would shuffle the list between runs).
-local function sorted_cc_keys()
-	local keys = {}
-	for key in pairs(CC_MAP) do keys[#keys + 1] = key end
-	table.sort(keys, function(a, b) return CC_MAP[a] < CC_MAP[b] end)
-	return keys
-end
-
 -- Items describe MIDI the SL88 **actually transmits**, captured live (notes, pitch bend,
 -- modulation, second stick, sustain - all on LINK, none on CTRL). Ports use the short names for the
 -- same reason outport does; see the banner at the top of this file.
+--
+-- The 34 gesture items below are written out literally, one per line, fields in the same order every
+-- time, ordered by ascending CC number (40-74) to match CC_MAP - not generated - so they can be
+-- compared by eye against CC_MAP/CC_LABEL above. CC_LABEL is still the source of truth for the names;
+-- the harness asserts these literal strings match it.
 function controller_info()
 	local items = {
 		{name='Keyboard', label='SL88', objectType='Keyboard', midiType='Keyboard',
@@ -2237,19 +2264,51 @@ function controller_info()
 
 		{name='Sustain Pedal', label='Sustain', objectType='Sustain Pedal', midiType='Momentary',
 			midi={0xB0,0x40,MIDI_LSB}, inport='LINK', outport='LINK'},
-	}
 
-	-- One item per CC_MAP gesture, generated so these can never drift from CC_MAP/CC_LABEL.
-	for _, control in ipairs(sorted_cc_keys()) do
-		local isTurn = CC_TURN[control]
-		items[#items + 1] = {
-			name = CC_LABEL[control],
-			objectType = isTurn and 'Knob' or 'Button',
-			midiType = isTurn and 'Absolute' or 'Momentary',
-			midi = {0xB0 + CC_CHANNEL, CC_MAP[control], MIDI_LSB},
-			inport = 'LINK', outport = 'LINK',
-		}
-	end
+		-- joystick
+		{name='Joy Up',            objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 40, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Joy Up (long)',     objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 41, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Joy Down',          objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 42, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Joy Down (long)',   objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 43, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Joy Left',          objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 44, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Joy Left (long)',   objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 45, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Joy Right',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 46, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Joy Right (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 47, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Joy Press',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 48, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Joy Press (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 49, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Joy Rotate',        objectType='Knob',    midiType='Relative2C', midi={0xB0 + CC_CHANNEL, 50, MIDI_LSB}, inport='LINK', outport='LINK'},
+
+		-- zone encoder pushes
+		{name='Zone 1 Push',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 51, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 1 Push (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 52, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Push',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 53, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Push (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 54, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Push',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 55, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Push (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 56, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Push',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 57, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Push (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 58, MIDI_LSB}, inport='LINK', outport='LINK'},
+
+		-- zone encoder turns
+		{name='Zone 1 Encoder',  objectType='Knob',  midiType='Relative2C',  midi={0xB0 + CC_CHANNEL, 59, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Encoder',  objectType='Knob',  midiType='Relative2C',  midi={0xB0 + CC_CHANNEL, 60, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Encoder',  objectType='Knob',  midiType='Relative2C',  midi={0xB0 + CC_CHANNEL, 61, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Encoder',  objectType='Knob',  midiType='Relative2C',  midi={0xB0 + CC_CHANNEL, 62, MIDI_LSB}, inport='LINK', outport='LINK'},
+
+		-- B encoder
+		{name='B Encoder',      objectType='Knob',    midiType='Relative2C',  midi={0xB0 + CC_CHANNEL, 63, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='B Push',         objectType='Button',  midiType='Momentary',   midi={0xB0 + CC_CHANNEL, 65, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='B Push (long)',  objectType='Button',  midiType='Momentary',   midi={0xB0 + CC_CHANNEL, 66, MIDI_LSB}, inport='LINK', outport='LINK'},
+
+		-- zone selects
+		{name='Zone 1 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 67, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 1 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 68, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 69, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 70, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 71, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 72, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 73, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 74, MIDI_LSB}, inport='LINK', outport='LINK'},
+	}
 
 	return {
 		model = 'SL',
