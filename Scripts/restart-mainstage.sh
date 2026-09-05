@@ -38,13 +38,13 @@ if [ "$save_mode" = "yes" ]; then
 else
     echo "Quitting MainStage..."
 fi
-# Newline-separated so AppleScript can read them as `paragraphs`. Localised builds
-# title the buttons differently, so match the known spellings rather than assuming
-# English - a name that does not match means no click, and a silent stall.
+# Only an ASCII mode word crosses the environment boundary - the button names
+# themselves are built inside the AppleScript below, since `system attribute`
+# mis-decodes UTF-8 (e.g. the curly apostrophe in "Don't Save") as MacRoman.
 if [ "$save_mode" = "yes" ]; then
-    wanted_buttons=$'Save\nSave…\nBewaar\nBewaren\nOpslaan'
+    button_mode="save"
 else
-    wanted_buttons=$'Don\'t Save\nDon’t Save\nNiet bewaren\nNiet saven\nNiet opslaan'
+    button_mode="dontsave"
 fi
 
 osascript -e 'tell application "MainStage" to quit' >/dev/null 2>&1 &
@@ -53,7 +53,7 @@ quit_pid=$!
 # Dismiss the save prompt if it shows up. Poll rather than sleep-then-click:
 # the dialog can take a moment to appear, and on a concert with no changes it
 # never appears at all.
-for _ in $(seq 1 20); do
+for _ in $(seq 1 120); do
     if ! pgrep -f "$MAINSTAGE_BIN" >/dev/null 2>&1; then
         break
     fi
@@ -62,8 +62,14 @@ for _ in $(seq 1 20); do
     # window silently found nothing and the quit stalled with the dialog on
     # screen, which is exactly the failure this script exists to prevent. Search
     # both, and every sheet rather than assuming sheet 1.
-    WANTED="$wanted_buttons" osascript >/dev/null 2>&1 <<'APPLESCRIPT'
-set wantedNames to paragraphs of (system attribute "WANTED")
+    BUTTON_MODE="$button_mode" osascript >/dev/null 2>&1 <<'APPLESCRIPT'
+set curly to character id 8217
+set ellipsis to character id 8230
+if (system attribute "BUTTON_MODE") is "save" then
+    set wantedNames to {"Save", "Save" & ellipsis, "Bewaar", "Bewaren", "Opslaan"}
+else
+    set wantedNames to {"Don't Save", "Don" & curly & "t Save", "Niet bewaren", "Niet saven", "Niet opslaan"}
+end if
 tell application "System Events"
     if exists (process "MainStage") then
         tell process "MainStage"
@@ -93,7 +99,7 @@ done
 wait "$quit_pid" 2>/dev/null
 
 # Confirm it really exited before doing anything else.
-for _ in $(seq 1 20); do
+for _ in $(seq 1 120); do
     pgrep -f "$MAINSTAGE_BIN" >/dev/null 2>&1 || break
     sleep 0.5
 done
