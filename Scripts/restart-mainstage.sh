@@ -14,6 +14,11 @@
 #   Scripts/restart-mainstage.sh --debug      # relaunch with LUA_DEBUG output
 #                                             # redirected to /tmp/lua.log
 #   Scripts/restart-mainstage.sh --quit-only  # quit and stay quit
+#
+# Add --save BEFORE the mode to answer the prompt with Save instead:
+#   Scripts/restart-mainstage.sh --save --debug
+# The DEFAULT is deliberately Don't Save - a test run must never quietly modify
+# the concert. Only pass --save when the user has explicitly asked for it.
 
 set -uo pipefail
 
@@ -21,8 +26,27 @@ MAINSTAGE_BIN="/Applications/MainStage.app/Contents/MacOS/MainStage"
 LUA_LOG="/tmp/lua.log"
 
 mode="${1:-}"
+save_mode="no"
+if [ "$mode" = "--save" ]; then
+    save_mode="yes"
+    shift
+    mode="${1:-}"
+fi
 
-echo "Quitting MainStage..."
+if [ "$save_mode" = "yes" ]; then
+    echo "Quitting MainStage (answering SAVE)..."
+else
+    echo "Quitting MainStage..."
+fi
+# Newline-separated so AppleScript can read them as `paragraphs`. Localised builds
+# title the buttons differently, so match the known spellings rather than assuming
+# English - a name that does not match means no click, and a silent stall.
+if [ "$save_mode" = "yes" ]; then
+    wanted_buttons=$'Save\nSave…\nBewaar\nBewaren\nOpslaan'
+else
+    wanted_buttons=$'Don\'t Save\nDon’t Save\nNiet bewaren\nNiet saven\nNiet opslaan'
+fi
+
 osascript -e 'tell application "MainStage" to quit' >/dev/null 2>&1 &
 quit_pid=$!
 
@@ -33,19 +57,30 @@ for _ in $(seq 1 20); do
     if ! pgrep -f "$MAINSTAGE_BIN" >/dev/null 2>&1; then
         break
     fi
-    osascript >/dev/null 2>&1 <<'APPLESCRIPT'
+    # The prompt is a SHEET attached to a window, so its buttons are NOT in
+    # `buttons of w` - they live in `buttons of sheet 1 of w`. Searching only the
+    # window silently found nothing and the quit stalled with the dialog on
+    # screen, which is exactly the failure this script exists to prevent. Search
+    # both, and every sheet rather than assuming sheet 1.
+    WANTED="$wanted_buttons" osascript >/dev/null 2>&1 <<'APPLESCRIPT'
+set wantedNames to paragraphs of (system attribute "WANTED")
 tell application "System Events"
     if exists (process "MainStage") then
         tell process "MainStage"
             repeat with w in (every window)
                 repeat with b in (every button of w)
-                    -- Localised builds may title it differently; match the
-                    -- common spellings rather than assuming English.
-                    if (name of b is "Don't Save") or (name of b is "Don’t Save") ¬
-                        or (name of b is "Niet bewaren") or (name of b is "Niet saven") then
+                    if wantedNames contains (name of b as text) then
                         click b
                         return
                     end if
+                end repeat
+                repeat with s in (every sheet of w)
+                    repeat with b in (every button of s)
+                        if wantedNames contains (name of b as text) then
+                            click b
+                            return
+                        end if
+                    end repeat
                 end repeat
             end repeat
         end tell
