@@ -284,9 +284,9 @@ The command table above is retained regardless of the result below — the IDs a
 MainStage's own command dispatch, not of this field, so they remain valid input to any future route
 that does reach them.
 
-**VERIFIED NEGATIVE (2026-09-05).** A hardware spike tested `action_<app>`/`action` against a real
-SL88 MK2 under MainStage 4.3.1 — the version actually running during this test. Inert on every
-reachable path:
+**VERIFIED NEGATIVE (2026-09-05, MainStage 4.3.1, real SL88 MK2).** Two rounds, both inert.
+
+Round 1 tested `action_<app>`/`action` in isolation:
 
 | CC source | Channel | Key | `objectType` | Command | Fired |
 |:--|:--|:--|:--|:--|:--|
@@ -312,15 +312,60 @@ Why this is a sound negative rather than a missed signal:
 - A variant emitting no CC at all was also run and produced nothing, as predicted. That result is
   **vacuous** — MainStage had no MIDI to match, so it rules nothing in or out.
 
+Round 1 has a confound: all six of those items omitted `objectType` and used invented names on
+channel 16, so a missing `objectType` or the channel could in principle have been the reason, not
+`action_<app>` itself. Round 2 closed that gap by mirroring Arturia's shipped KeyLab mk3 declarations
+onto SL88 gestures **byte-for-byte** — same CC numbers (49/50/51/52 for Previous/Next Patch and Set,
+91/92/94/95 for Knob1-4, 113 for Fader9, 20-23/27/43-44 for the transport and DAW commands), the same
+MIDI channel 1 (`0xB0`), the same `objectType`/`midiType`, the same item names (`PreviousPatch`,
+`NextPatch`, `Knob1`, `Fader9`), and the same `action_mainstage` presence or absence per control:
+
+| Variable | Values tried |
+|:--|:--|
+| item `name` | invented (`Spike A1`), exact command ID (`NextPatch`, `Metronome`), Arturia's spaced names (`Play Stop`) |
+| `objectType` | absent, `Button`, `Knob`, `VFader` |
+| `action_<app>` | absent, present |
+| CC number | ours (40-74), Arturia's exact numbers |
+| channel | 16 and 1 |
+| CC origin | script-injected, and real hardware CC 1 / CC 16 |
+
+Result: no binding of any kind. Every gesture emitted its intended CC — confirmed in the log, e.g.
+`[sllink] CC batch: 1 CC(s) [49=127]` and a clean absolute sweep `[113=64]`..`[113=72]` — and nothing
+in MainStage responded.
+
+Incidental finding from building the mirror: `MIDI_CtrChange` is simply the number `176` (`0xB0`), so
+`MIDI_CtrChange` and `0xB0 + CC_CHANNEL` with `CC_CHANNEL = 0` are the identical value — the spelling
+difference between Arturia's script and ours is cosmetic, not a protocol difference.
+
+The mirror also moved the CC map to channel 1 to match Arturia exactly; this project's CC map stays
+on **channel 16** rather than adopting that. Channel 1 is the channel the SL88 itself uses for notes,
+mod wheel, Stick 1 Y and sustain, so synthetic control CCs there risk colliding with musical traffic a
+patch is listening to. Channel 16 is deliberate isolation, not an arbitrary choice inherited from
+elsewhere.
+
 Supporting static evidence, already above: the literal `action_mainstage` appears nowhere in
 MainStage 4.3.1's binaries (only the bare `action_` prefix, in `LogicMainStage.framework`'s key
 table; also absent from 3.7.1's binaries), and zero of the 98 bundled MainStage scripts use it.
 
 **Do not overstate this.** The honest conclusion is: inert in MainStage 4.3.1 across every path
-reachable from a device script. It is NOT established as inert everywhere — the key table lives in
+reachable from a device script, now including a byte-for-byte mirror of a real vendor script's
+declarations. It is NOT established as inert everywhere — the key table lives in
 `LogicMainStage.framework`, so this may be a Logic Pro feature MainStage does not implement, and
-Logic Pro is not installed on this machine, so that remains untested rather than disproven. Arturia's
-shipped KeyLab mk3 script declares seven such items, which under this result do nothing under
+Logic Pro is not installed on this machine, so that remains untested rather than disproven.
+
+**Conclusion.** A MainStage device script cannot bind a control to a built-in command. `action_<app>`
+is inert, item `name` is not a binding key, and mirroring a working vendor script's declarations
+exactly does not help. The one-time MIDI-Learn per concert is unavoidable — and it is unavoidable for
+Arturia too.
+
+**Corrected understanding of Arturia's nav buttons.** It would be tempting to read a working KeyLab's
+Previous/Next Patch buttons as evidence the device script has some mechanism this one lacks. It does
+not: Arturia's own script contains no mechanism to change a patch at all — no Program Change, no Bank
+Select; `SCROLL_TYPE` is redraw bookkeeping only, not patch navigation. A KeyLab whose nav buttons
+work is relying on an assignment stored in that user's own MainStage setup, not on anything the
+device script provides. MainStage itself ships no default controller-assignment presets — checked:
+the only mapping resources in the app bundle are GM instrument mappings. Arturia's shipped
+KeyLab mk3 script declares seven `action_<app>` items, which under this result do nothing under
 MainStage.
 
 ## 3. Callbacks

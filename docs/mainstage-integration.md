@@ -530,3 +530,54 @@ than the item under test was bound to, and nothing in the log showed the mismatc
 fired" result was uninterpretable. Adding a log line that prints the CC numbers in each batch
 (`[sllink] CC batch: 1 CC(s) [74=127], 3 bytes`) closed that gap and made the second round's negative
 trustworthy.
+
+## Logout, Master Volume and login findings (2026-09-05)
+
+Hardware: MainStage 4.3.1, SL88 MK2 firmware 1.1.2.
+
+**1. Cancel button logs out — but only by withholding the keepalive.** BID `0x0F` is Cancel,
+confirmed (frames `01 0F 01` short, `01 0F 02` long). A host-initiated System Logout Request (`00 02`)
+is sent correctly — byte-identical to the archived Swift implementation's `systemLogoutRequest` — and
+the SL88 **never replies with a Logout Confirmation** and does not leave the app. What actually works
+is going silent: the upstream spec says the keepalive must be sent more often than once per 5 seconds
+or the SL88 drops the app from the APP list. `STATE_LOGGED_OUT` withholds the Device Notification for
+`LOGOUT_SILENT_TICKS` ticks while still emitting the Identification Query (which keeps the one-shot
+session clock alive, per rule 6). Measured: **short press ~9s to drop, long press (force, no request
+sent) slightly less.** Both then re-identify and the app returns to the APP list.
+
+Note the timing trap found and fixed before this worked: `rearm_timer()` picks the tick interval
+dynamically (`FLUSH_SOON_MS` 35ms while draining, `POPUP_TICK_MS` 1000ms during a popup), so a tick
+*count* is not a duration. `STATE_LOGGED_OUT` now pins `KEEPALIVE_MS`, `request_quick_rearm()` refuses
+to shorten while logged out, and logout dismisses the popup and drops queued display first. Without
+all three, three ticks could be ~105ms and the keyboard never drops the app.
+
+**2. Master Volume (ItemType `0x07`) does not work on this hardware — unresolved.** Encoder A drives
+it in the script and the popup updates correctly, but the keyboard's own volume never changes. The
+outbound bytes are exactly right; logged verbatim:
+`[sllink] -> MASTER VOLUME WRITE: F0 00 20 1A 16 03 6D 07 01 64 00 F7`
+(`07` item type, `01` = write, `64` = 100%, `00` = unmuted). 129 such writes in one session, no
+effect. Reads (`07 00`) get no reply either. Cross-checked against the upstream spec
+(`fatarsrl/sl-link` `docs/hardware-io.md` at `4c0824d`), which confirms this exact layout — R/W=1
+writes, VOL 0-100 as a percentage, MUTE optional — and documents **no preconditions** about login or
+app state. The archived Swift app never implemented Master Volume, so there is no reference to
+compare against. This is unexplained; remaining hypotheses are that the SL88 MK2 does not implement
+`0x07` despite the spec, or that it applies only when the USB audio board is actually in use. Neither
+is asserted as fact.
+
+**3. `handle_login()` frequently never runs — anything hung off it is unreliable.** A 20-tick session
+showed `state=active` throughout with zero login lines. The SL88 remembers the host across runs and
+then sends neither Identification Approved nor Login Confirmation; the session reaches ACTIVE via the
+Identification-Query reply path instead. `state = STATE_ACTIVE` is assigned in three places and only
+`handle_login()` queued the Master Volume read, so the read never went out. General hazard:
+session-entry work belongs on every transition into ACTIVE, not on the login message.
+
+**4. Encoder A does reach the host** — 162 EID `0x05` frames in one session, confirming
+`docs/implementing-sl-link.md` §7's existing note against the spec's "reserved" claim. Earlier
+captures showing zero were simply sessions where A was not turned; the note needed no correction.
+
+**5. Incidental:** `MIDI_CtrChange` is the number `176` (`0xB0`), so Arturia's `MIDI_CtrChange` and
+our `0xB0 + CC_CHANNEL` with channel 0 are the identical value.
+
+**Still open:** encoder pickup of mapped parameter values via `controller_midi_out(midiEvent, name,
+valueString, color)` is designed but not implemented — it is the route to Q3/Q6 in
+`docs/full-functionality-plan.md` and to a popup showing the real parameter name and value.
