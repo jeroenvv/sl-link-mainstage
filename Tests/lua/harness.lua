@@ -988,6 +988,407 @@ do
 	check('mixed batch: both controls emitted (6 bytes)', #out.midi == 6)
 end
 
+-- MARK: - 26. Cancel button (BID_CANCEL) logs out of SL Link
+--
+-- SHORT sends a Logout Request (the keyboard never confirms it - see request_logout()'s comment) and
+-- LONG skips straight to silence (force_logout()) since the request is ignored anyway. Both end in
+-- STATE_LOGGED_OUT, which controller_timer_trigger's own branch (section 29) suspends the keepalive
+-- for.
+do
+	local function button_frame(bid, pressKind)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, bid, pressKind, 0xF7)
+	end
+
+	local savedState = state
+
+	pendingMessages = {}
+	state = STATE_ACTIVE
+	handle_sl_frame(button_frame(BID_CANCEL, PRESS_SHORT))
+	checkHex(
+		'Cancel button SHORT queues exactly a Logout Request',
+		pendingMessages[1],
+		'F0 00 20 1A 16 03 6D 00 02 F7'
+	)
+	check('Cancel button SHORT ends in STATE_LOGGED_OUT', state == STATE_LOGGED_OUT)
+
+	pendingMessages = {}
+	state = STATE_ACTIVE
+	handle_sl_frame(button_frame(BID_CANCEL, PRESS_LONG))
+	check('Cancel button LONG queues NO Logout Request', #pendingMessages == 0)
+	check('Cancel button LONG ends in STATE_LOGGED_OUT', state == STATE_LOGGED_OUT)
+
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	pendingMessages = {}
+	state = STATE_ACTIVE
+	handle_sl_frame(button_frame(BID_CANCEL, PRESS_SHORT))
+	local ccOut = flush_pending_cc()
+	check('Cancel button emits no CC (BID_CANCEL is not in BUTTON_CC)', #ccOut.midi == 0)
+
+	local function system_frame(func)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_SYSTEM, func, 0xF7)
+	end
+
+	state = STATE_ACTIVE
+	handle_sl_frame(system_frame(SYS_LOGOUT_CONFIRMATION))
+	check('inbound SYS_LOGOUT_CONFIRMATION leaves state at STATE_IDLE', state == STATE_IDLE)
+
+	state = savedState
+end
+
+-- MARK: - 27. EID_A drives Master Volume (IT_MASTER_VOLUME), not a CC
+--
+-- EID_A ticks bypass ENCODER_CC entirely: they clamp/store masterVolume (0-100) and queue a Master
+-- Volume write under its own 'mvol' regionId so a fast twist's many ticks coalesce to one queued
+-- write (see queue_message's PER-REGION COALESCING comment) - not one per tick. Assertions filter
+-- pendingMessages down to the 'mvol' entry so the popup's own display traffic (a separate concern,
+-- covered by the existing per-region memoization tests) doesn't interfere.
+do
+	local function encoder_frame(eid, tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, eid, tickByte, 0xF7)
+	end
+
+	local function mvol_messages()
+		local out = {}
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == 'mvol' then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+
+	local savedPopupActive, savedDisplayMode = popupActive, displayMode
+	-- Pre-seat the popup as already showing (the 'repeat call' branch) so show_master_volume_popup
+	-- doesn't run the full mode-switch machinery on every sub-test below - kept separate from what
+	-- this section actually tests (the Master Volume write itself).
+	popupActive = true
+	popupPreviousMode = 'zoom'
+	displayMode = 'popup'
+
+	pendingMessages = {}
+	masterVolume = 50
+	handle_sl_frame(encoder_frame(EID_A, 0x41)) -- delta +1
+	check('EID_A tick queues exactly one Master Volume write', #mvol_messages() == 1)
+	check('EID_A +1 tick updates masterVolume to 51', masterVolume == 51)
+	checkHex(
+		'EID_A +1 tick queues the exact Master Volume write vector, including the trailing MUTE byte',
+		mvol_messages()[1],
+		'F0 00 20 1A 16 03 6D 07 01 33 00 F7'
+	)
+
+	-- Clamp at 100: starting at 100, a further +5 must not exceed it.
+	pendingMessages = {}
+	masterVolume = 100
+	handle_sl_frame(encoder_frame(EID_A, 0x45)) -- delta +5
+	check('masterVolume clamps at 100', masterVolume == 100)
+	checkHex(
+		'clamped write at 100 carries VOL=100 (0x64), not 105, plus MUTE',
+		mvol_messages()[1],
+		'F0 00 20 1A 16 03 6D 07 01 64 00 F7'
+	)
+
+	-- Clamp at 0: starting at 0, a further -5 must not go negative.
+	pendingMessages = {}
+	masterVolume = 0
+	handle_sl_frame(encoder_frame(EID_A, 0x3B)) -- delta -5
+	check('masterVolume clamps at 0', masterVolume == 0)
+	checkHex(
+		'clamped write at 0 carries VOL=0, not negative, plus MUTE',
+		mvol_messages()[1],
+		'F0 00 20 1A 16 03 6D 07 01 00 00 F7'
+	)
+
+	-- Several A ticks before a flush must coalesce to ONE queued write carrying the latest value -
+	-- proving the 'mvol' regionId actually coalesces rather than piling up (queue_message's
+	-- PER-REGION COALESCING only fires when regionId is given; this is the check that it was).
+	pendingMessages = {}
+	masterVolume = 50
+	handle_sl_frame(encoder_frame(EID_A, 0x41)) -- 50 -> 51
+	handle_sl_frame(encoder_frame(EID_A, 0x41)) -- 51 -> 52
+	handle_sl_frame(encoder_frame(EID_A, 0x41)) -- 52 -> 53
+	check('three EID_A ticks before a flush leave exactly one queued Master Volume write', #mvol_messages() == 1)
+	check('...carrying the latest value (53), not an intermediate one', masterVolume == 53)
+	checkHex(
+		'...and its bytes reflect VOL=53 (0x35), plus MUTE',
+		mvol_messages()[1],
+		'F0 00 20 1A 16 03 6D 07 01 35 00 F7'
+	)
+
+	popupActive, displayMode = savedPopupActive, savedDisplayMode
+
+	-- Inbound Master Volume reply updates masterVolume - tolerant of the trailing MUTE byte being
+	-- present or absent (docs/implementing-sl-link.md §7: trailing bytes are optional more often than
+	-- documented).
+	masterVolume = 0
+	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_WRITE, 65, 0, 0xF7))
+	check('inbound Master Volume WITH trailing MUTE byte decodes VOL correctly', masterVolume == 65)
+
+	masterVolume = 0
+	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_WRITE, 42, 0xF7))
+	check('inbound Master Volume WITHOUT trailing MUTE byte decodes VOL correctly', masterVolume == 42)
+end
+
+-- MARK: - 28. popup_knob_icon scales by popupMax, not a hardcoded 127
+--
+-- Master Volume's popup uses popupMax=100 (see show_master_volume_popup); the ring must still hit
+-- its full icon at the control's own maximum, whether that's 127 (CC encoders) or 100 (Master
+-- Volume).
+do
+	local savedMax = popupMax
+
+	popupMax = 127
+	check('popup_knob_icon at popupMax=127 returns the full icon', popup_knob_icon(127) == BMP_KNOB_LEVELS - 1)
+
+	popupMax = 100
+	check('popup_knob_icon at popupMax=100 returns the full icon', popup_knob_icon(100) == BMP_KNOB_LEVELS - 1)
+
+	popupMax = savedMax
+end
+
+-- MARK: - 29. STATE_LOGGED_OUT suspends the keepalive, then resumes identification
+--
+-- request_logout()/force_logout() (section 26) move to STATE_LOGGED_OUT. controller_timer_trigger's
+-- STATE_LOGGED_OUT branch must not call send_keepalive() - that silence is what lets the SL88's own
+-- ~5s no-keepalive timeout drop us from the APP list - but must still count down LOGOUT_SILENT_TICKS
+-- and resume identification once it reaches zero, so our name returns to the APP list. Spied via a
+-- send_keepalive stub rather than inspecting pendingMessages/flush output, since a flush drains at
+-- most one message per call regardless of whether a keepalive was ever queued.
+do
+	local savedState, savedTimerPending, savedLogoutTicksLeft, savedPending, savedArmed =
+		state, timerPending, logoutTicksLeft, pendingMessages, armed
+
+	local originalSendKeepalive = send_keepalive
+	local keepaliveCalls = 0
+	send_keepalive = function()
+		keepaliveCalls = keepaliveCalls + 1
+		originalSendKeepalive()
+	end
+
+	pendingMessages = {}
+	state = STATE_LOGGED_OUT
+	timerPending = true -- as if a one-shot were already outstanding, same as a real session
+	logoutTicksLeft = LOGOUT_SILENT_TICKS
+
+	controller_timer_trigger()
+	check('STATE_LOGGED_OUT timer tick queues no Device Notification', keepaliveCalls == 0)
+	check(
+		'STATE_LOGGED_OUT timer tick decrements the silent-tick counter',
+		logoutTicksLeft == LOGOUT_SILENT_TICKS - 1
+	)
+	check('STATE_LOGGED_OUT stays logged out before the count expires', state == STATE_LOGGED_OUT)
+
+	for _ = 1, LOGOUT_SILENT_TICKS - 1 do
+		controller_timer_trigger()
+	end
+	check('STATE_LOGGED_OUT never queues a Device Notification across the whole silent window', keepaliveCalls == 0)
+	check(
+		'after LOGOUT_SILENT_TICKS silent ticks, identification resumes and state leaves STATE_LOGGED_OUT',
+		state == STATE_IDENTIFYING
+	)
+
+	send_keepalive = originalSendKeepalive
+	state, timerPending, logoutTicksLeft, pendingMessages, armed =
+		savedState, savedTimerPending, savedLogoutTicksLeft, savedPending, savedArmed
+end
+
+-- MARK: - 30. handle_login() queues the Master Volume read with the exact expected bytes
+do
+	local savedState, savedPending = state, pendingMessages
+
+	patchName, setName, currentConcert = 'Test Patch', 'Test Set', 'Test Concert'
+	pendingMessages = {}
+	handle_login()
+
+	local reads = {}
+	for i = 1, #pendingMessages do
+		local m = pendingMessages[i]
+		if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then
+			reads[#reads + 1] = m
+		end
+	end
+	check('handle_login() queues exactly one Master Volume read', #reads == 1)
+	if #reads == 1 then
+		checkHex(
+			'handle_login()\'s Master Volume read carries the exact expected bytes',
+			reads[1],
+			'F0 00 20 1A 16 03 6D 07 00 F7'
+		)
+	end
+
+	state, pendingMessages = savedState, savedPending
+end
+
+-- MARK: - 31. STATE_LOGGED_OUT suspends display traffic and pins the tick at KEEPALIVE_MS
+--
+-- Two reinforcing halves of the fix (see request_logout()'s and rearm_timer()'s comments): (a)
+-- entering STATE_LOGGED_OUT with a popup up must dismiss it and drop whatever display traffic is
+-- left queued - including the repaint dismiss_popup() itself queues - so logout actually suspends
+-- display traffic instead of quietly draining it; (b) rearm_timer() must pin KEEPALIVE_MS while
+-- logged out regardless of has_pending()/popupActive, or LOGOUT_SILENT_TICKS maps to far less than
+-- the ~9s it is meant to.
+do
+	local savedState, savedPopupActive, savedDisplayMode, savedPopupPreviousMode, savedPending, savedTimerPending, savedArmed, savedTimerArmedInterval =
+		state, popupActive, displayMode, popupPreviousMode, pendingMessages, timerPending, armed, timerArmedInterval
+
+	local function button_frame(bid, pressKind)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, bid, pressKind, 0xF7)
+	end
+
+	-- (a) Cancel while a popup is up and other display work is queued: both must be gone afterward.
+	state = STATE_ACTIVE
+	popupActive = true
+	popupPreviousMode = 'zoom'
+	displayMode = 'popup'
+	pendingMessages = {}
+	queue_message(msg_draw_rect(0, 0, 1, 1, 0, 0, 0), 'test:logout-drop')
+	handle_sl_frame(button_frame(BID_CANCEL, PRESS_SHORT))
+
+	check('Cancel press dismisses an active popup', popupActive == false)
+	local displayLeft = 0
+	for i = 1, #pendingMessages do
+		if item_type_of(pendingMessages[i]) == IT_DISPLAY then displayLeft = displayLeft + 1 end
+	end
+	check('Cancel press leaves no display traffic queued', displayLeft == 0)
+
+	-- (b) rearm_timer() must pin KEEPALIVE_MS while logged out, even when has_pending() or
+	-- popupActive would normally pick a shorter interval.
+	state = STATE_LOGGED_OUT
+	pendingMessages = {}
+	queue_message(msg_draw_rect(0, 0, 1, 1, 0, 0, 0), 'test:logout-pin')
+	popupActive = false
+	timerPending = false
+	armed = nil
+	rearm_timer()
+	check('STATE_LOGGED_OUT: rearm_timer() pins KEEPALIVE_MS even with has_pending() true', armed == KEEPALIVE_MS)
+
+	pendingMessages = {}
+	popupActive = true
+	timerPending = false
+	armed = nil
+	rearm_timer()
+	check('STATE_LOGGED_OUT: rearm_timer() pins KEEPALIVE_MS even with popupActive true', armed == KEEPALIVE_MS)
+
+	-- request_quick_rearm() must not shorten an already-outstanding logout tick either -
+	-- dismiss_popup()'s set_display_mode() call reaches it during exactly the request_logout()/
+	-- force_logout() sequence tested above.
+	timerPending = true
+	timerArmedInterval = POPUP_TICK_MS
+	armed = nil
+	request_quick_rearm()
+	check(
+		'STATE_LOGGED_OUT: request_quick_rearm() does not shorten the outstanding tick',
+		armed == nil and timerArmedInterval == POPUP_TICK_MS
+	)
+
+	state, popupActive, displayMode, popupPreviousMode, pendingMessages, timerPending, armed, timerArmedInterval =
+		savedState, savedPopupActive, savedDisplayMode, savedPopupPreviousMode, savedPending, savedTimerPending, savedArmed, savedTimerArmedInterval
+end
+
+-- MARK: - 32. enter_active_session(): every transition into STATE_ACTIVE queues one Master Volume
+-- read, and a reaffirmation while already active queues no further read
+--
+-- Covers the fix for the hardware bug where handle_login() alone never ran (the SL88 remembers the
+-- host across runs and skips APPROVED/LOGIN entirely - see enter_active_session()'s comment), so the
+-- ID_QUERY self-heal path in handle_sl_frame is the one that actually fires in practice.
+do
+	local savedState, savedPending = state, pendingMessages
+
+	local function mvol_reads()
+		local reads = {}
+		for i = 1, #pendingMessages do
+			local m = pendingMessages[i]
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then
+				reads[#reads + 1] = m
+			end
+		end
+		return reads
+	end
+
+	-- controller_midi_in() flushes what it queues before returning (see flush_pending's "one message
+	-- per flush" rule), so by the time this function returns pendingMessages is already empty - the
+	-- queued read must be found in the returned flush output instead.
+	local function mvol_reads_in(bytes)
+		local reads = {}
+		for _, m in ipairs(split_messages(bytes or {})) do
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then
+				reads[#reads + 1] = m
+			end
+		end
+		return reads
+	end
+
+	-- (a) ID_QUERY reply path: STATE_IDENTIFYING -> STATE_ACTIVE queues exactly one read.
+	state = STATE_IDENTIFYING
+	pendingMessages = {}
+	local out = controller_midi_in(qreply(), 'LINK')
+	local reads = mvol_reads_in(out and out.midi)
+	check('ID_QUERY reply into STATE_ACTIVE queues exactly one Master Volume read', #reads == 1)
+	if #reads == 1 then
+		checkHex(
+			'ID_QUERY reply\'s Master Volume read carries the exact expected bytes',
+			reads[1],
+			'F0 00 20 1A 16 03 6D 07 00 F7'
+		)
+	end
+	check('ID_QUERY reply into STATE_ACTIVE actually sets state', state == STATE_ACTIVE)
+
+	-- (b) A second reaffirmation while already STATE_ACTIVE queues NO further read - the ID_QUERY
+	-- reply path can be reached on every keepalive round-trip, so this is the case that would flood
+	-- the outbound queue without enter_active_session()'s idempotency guard.
+	pendingMessages = {}
+	out = controller_midi_in(qreply(), 'LINK')
+	check('a second ID_QUERY reply while already active queues no further read', #mvol_reads_in(out and out.midi) == 0)
+
+	-- (c) handle_restart() queues one read on a genuine transition into active.
+	state = STATE_STANDBY
+	pendingMessages = {}
+	handle_restart()
+	reads = mvol_reads()
+	check('handle_restart() queues exactly one Master Volume read', #reads == 1)
+	if #reads == 1 then
+		checkHex(
+			'handle_restart()\'s Master Volume read carries the exact expected bytes',
+			reads[1],
+			'F0 00 20 1A 16 03 6D 07 00 F7'
+		)
+	end
+
+	-- (d) handle_restart() reaffirming an already-active session queues no further read either.
+	pendingMessages = {}
+	handle_restart()
+	check('a second handle_restart() while already active queues no further read', #mvol_reads() == 0)
+
+	state, pendingMessages = savedState, savedPending
+end
+
+-- MARK: - 33. handle_login()/handle_restart() still repaint unconditionally, even on a
+-- reaffirmation - the enter_active_session() idempotency guard covers only the volume read, not the
+-- repaint the call sites are responsible for.
+do
+	local savedState, savedPending, savedLastPaintedPatch = state, pendingMessages, lastPaintedPatch
+
+	patchName, setName, currentConcert = 'Test Patch', 'Test Set', 'Test Concert'
+
+	local originalPaintScreen = paint_screen
+	local paintCalls = 0
+	paint_screen = function()
+		paintCalls = paintCalls + 1
+		originalPaintScreen()
+	end
+
+	state = STATE_ACTIVE -- already active; only the repaint call, not the transition, is under test
+	pendingMessages = {}
+	paintCalls = 0
+	handle_login()
+	check('handle_login() still repaints when called while already active', paintCalls == 1)
+
+	pendingMessages = {}
+	paintCalls = 0
+	handle_restart()
+	check('handle_restart() still repaints when called while already active', paintCalls == 1)
+
+	paint_screen = originalPaintScreen
+	state, pendingMessages, lastPaintedPatch = savedState, savedPending, savedLastPaintedPatch
+end
+
 -- MARK: - Summary
 
 realPrint('')

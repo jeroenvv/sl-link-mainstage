@@ -78,12 +78,19 @@ SL_INSTANCE_START = 0x6D -- first instance byte tried; bumped on rejection
 -- Item types
 IT_SYSTEM = 0x00
 IT_BUTTON = 0x01 -- handled for BID_ZOOM (see handle_zoom_button) and every BID in BUTTON_CC; other BIDs are logged only
-IT_ENCODER = 0x03 -- handled for every EID in ENCODER_CC; other EIDs (just A) are logged only
+IT_ENCODER = 0x03 -- handled for every EID in ENCODER_CC, plus EID_A (drives Master Volume directly)
 IT_DISPLAY = 0x04
+IT_MASTER_VOLUME = 0x07
 IT_IDENTIFICATION = 0x7F
+
+-- Master Volume R/W flag (item type IT_MASTER_VOLUME's own function byte).
+MVOL_READ = 0
+MVOL_WRITE = 1
+MVOL_UNMUTED = 0 -- trailing MUTE byte on a write; we never mute from the host, always send unmuted
 
 -- Button IDs, matching the spec's button ID table (see docs/implementing-sl-link.md).
 BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
+BID_CANCEL = 0x0F -- spec's Cancel button; NOT YET confirmed on hardware, see docs/implementing-sl-link.md
 BID_JOY_UP = 0x11
 BID_JOY_LEFT = 0x12
 BID_JOY_DOWN = 0x13
@@ -109,9 +116,8 @@ EID_ZONE2 = 0x01
 EID_ZONE3 = 0x02
 EID_ZONE4 = 0x03
 EID_JOYSTICK = 0x04
-EID_A = 0x05 -- reference only: A is intentionally excluded from the CC map (see docs' 'Two
-	-- decisions' / CC map design), not forgotten - its ticks fall through to the unhandled-ENCODER log
-	-- line.
+EID_A = 0x05 -- drives the SL88's Master Volume directly (IT_MASTER_VOLUME), not a CC - see
+	-- handle_sl_frame's IT_ENCODER branch. Deliberately absent from ENCODER_CC/CC_MAP.
 EID_B = 0x06
 
 -- MARK: - Phase 2 CC dispatch (every SL88 control emits a mappable CC)
@@ -303,8 +309,14 @@ STATE_LISTED = 'listed' -- approved, waiting for the user to pick us on the SL88
 STATE_ACTIVE = 'active'
 STATE_STANDBY = 'standby'
 STATE_REIDENTIFY_WAIT = 'reidentify_wait' -- rejected; waiting out REIDENTIFY_WAIT_MS before retrying the same id
+STATE_LOGGED_OUT = 'logged_out' -- host-initiated logout; withholding the keepalive so the SL88 drops us, see request_logout()
 
 state = STATE_IDLE
+
+-- Silent keepalive-cadence ticks to sit out in STATE_LOGGED_OUT before resuming identification: at
+-- KEEPALIVE_MS (~3s) per tick this comfortably clears the SL88's ~5s no-keepalive drop timeout.
+LOGOUT_SILENT_TICKS = 3
+logoutTicksLeft = 0
 instanceID = SL_INSTANCE_START
 pendingMessages = {}
 
@@ -318,6 +330,8 @@ encoderValue = { -- absolute 0-127 tracked value per encoder wired to a CC
 	[EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
 	[EID_JOYSTICK] = 64, [EID_B] = 64,
 }
+
+masterVolume = 100 -- 0-100 percentage, driven by EID_A; synced from hardware by handle_login's READ
 
 -- Gates EVERY settriggertimer call (rule 6 in the banner above): true whenever a one-shot is
 -- currently outstanding. rearm_timer() only calls settriggertimer when this is false, and sets it
@@ -751,6 +765,27 @@ function msg_system(func)
 	return m
 end
 
+-- vol is 0-100 (a percentage, not 0-127) - single byte, no msb/lsb split. The spec calls the
+-- trailing MUTE byte optional "for retrocompatibility", but §7 catalogues the hardware disagreeing
+-- with the spec on optional trailing bytes more often than documented, so this sends it explicitly.
+function msg_master_volume_write(vol)
+	local m = sl_header()
+	table.insert(m, IT_MASTER_VOLUME)
+	table.insert(m, MVOL_WRITE)
+	table.insert(m, vol)
+	table.insert(m, MVOL_UNMUTED)
+	table.insert(m, SL_END)
+	return m
+end
+
+function msg_master_volume_read()
+	local m = sl_header()
+	table.insert(m, IT_MASTER_VOLUME)
+	table.insert(m, MVOL_READ)
+	table.insert(m, SL_END)
+	return m
+end
+
 function msg_clear_screen(r, g, b)
 	local m = sl_header()
 	table.insert(m, IT_DISPLAY)
@@ -1071,6 +1106,7 @@ popupActive = false
 popupControlName = nil
 popupCcNumber = nil
 popupValue = 0
+popupMax = 127 -- popupValue's scale for popup_knob_icon's ring fill; 127 for CC encoders, 100 for Master Volume
 -- displayMode to restore when the popup dismisses - set by show_popup() to whatever displayMode was
 -- BEFORE it switched to 'popup' (only on the transition into showing, never overwritten while
 -- already active - see show_popup's popupActive guard), consumed once by dismiss_popup().
@@ -1108,7 +1144,9 @@ end
 -- needed. Plain ASCII ' - ' separator, not a middle dot/en dash: the SLMK2 font only covers 0x20-0x80
 -- (see append_text's clamp).
 function draw_popup_label(name, ccNumber)
-	draw_text('popupLabel', name .. ' - CC ' .. ccNumber, POPUP_CONTENT_X, POPUP_LABEL_Y,
+	-- ccNumber is nil for controls with no CC (Master Volume/EID_A) - show just the name.
+	local label = ccNumber and (name .. ' - CC ' .. ccNumber) or name
+	draw_text('popupLabel', label, POPUP_CONTENT_X, POPUP_LABEL_Y,
 		POPUP_CONTENT_W, ALIGN_CENTER, SIZE_MEDIUM, POPUP_LABEL_FG[1], POPUP_LABEL_FG[2],
 		POPUP_LABEL_FG[3], POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
@@ -1121,12 +1159,11 @@ function draw_popup_value(value)
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
--- Knob icon index for a 0-127 value: linear scaling by value/127 (NOT value/128), so that value=0
--- selects icon 0 (empty) and value=127 - the actual maximum - selects icon 0x0C (full) exactly,
--- rather than topping out one icon short the way a /128 divisor would (127/128*12 = 11.9, floors to
--- 11, not 12).
+-- Knob icon index for a 0-popupMax value: linear scaling by value/popupMax (NOT value/(popupMax+1)),
+-- so that value=0 selects icon 0 (empty) and value=popupMax - the actual maximum - selects icon 0x0C
+-- (full) exactly, whether popupMax is 127 (CC encoders) or 100 (Master Volume).
 function popup_knob_icon(value)
-	return math.floor(value * (BMP_KNOB_LEVELS - 1) / 127)
+	return math.floor(value * (BMP_KNOB_LEVELS - 1) / popupMax)
 end
 
 function draw_popup_knob(value)
@@ -1168,12 +1205,32 @@ function show_popup(eid)
 	popupControlName = ENCODER_NAME[eid]
 	popupCcNumber = CC_MAP[control]
 	popupValue = encoderValue[eid]
+	popupMax = 127
 	popupLastActivityIdleTick = idleTicks
 
 	if not popupActive then
 		popupPreviousMode = displayMode
 		popupActive = true
 		set_display_mode('popup') -- full mode-switch machinery once; its own dispatch paints the popup
+	else
+		paint_popup_screen()
+		request_quick_rearm()
+	end
+end
+
+-- EID_A's popup: same structure as show_popup, but for Master Volume (no CC number, 0-100 scale)
+-- rather than an ENCODER_CC entry.
+function show_master_volume_popup()
+	popupControlName = 'Main Volume'
+	popupCcNumber = nil
+	popupValue = masterVolume
+	popupMax = 100
+	popupLastActivityIdleTick = idleTicks
+
+	if not popupActive then
+		popupPreviousMode = displayMode
+		popupActive = true
+		set_display_mode('popup')
 	else
 		paint_popup_screen()
 		request_quick_rearm()
@@ -1648,13 +1705,24 @@ function handle_identification_rejected(reason)
 	start_identification()
 end
 
-function handle_login()
+-- Shared entry point for every transition into STATE_ACTIVE (login confirmation/recall, restart,
+-- and the ID_QUERY self-heal path - see handle_sl_frame). Idempotent: does nothing if already
+-- active, so a reaffirmation never requeues the volume read.
+function enter_active_session()
+	if state == STATE_ACTIVE then return end
 	state = STATE_ACTIVE
+	local mvolReadMsg = msg_master_volume_read() -- sync masterVolume with the hardware's current value
+	print('[sllink] -> MASTER VOLUME READ: ' .. dump_bytes(mvolReadMsg))
+	queue_message(mvolReadMsg)
+end
+
+function handle_login()
 	print('[sllink] <- LOGIN - session active')
 	-- Fresh/re-confirmed session: make sure everything is resent rather than trusting our memo, which
 	-- may record draws sent before the keyboard had actually identified/confirmed us.
 	invalidate_all()
 	paint_screen()
+	enter_active_session()
 end
 
 function handle_standby()
@@ -1663,16 +1731,48 @@ function handle_standby()
 end
 
 function handle_restart()
-	state = STATE_ACTIVE
 	print('[sllink] <- RESTART - repainting (SL88 retains no screen state)')
 	invalidate_all() -- the SLMK2 forgets everything across Standby (see docs/implementing-sl-link.md); without this
 		-- every id's memo would wrongly think its last content is still on screen and skip resending it.
 	paint_screen()
+	enter_active_session()
 end
 
 function handle_logout_request()
 	print('[sllink] <- LOGOUT REQUEST - confirming')
 	queue_message(msg_system(SYS_LOGOUT_CONFIRMATION))
+	state = STATE_IDLE
+end
+
+-- Host-initiated logout (Cancel button, SHORT). STATE_IDLE would make the next timer tick
+-- re-identify (controller_timer_trigger's STATE_IDLE branch) - instantly logging back in. The spec
+-- says a Logout Request means we want off the APP list, so STATE_LOGGED_OUT withholds the keepalive
+-- (see controller_timer_trigger's branch) until the SL88's own ~5s timeout drops us, then resumes
+-- identification on its own.
+-- The spec says a logged-out sender should suspend display traffic, so dismiss any popup and drop
+-- whatever is still queued - dismiss_popup() itself repaints the previous screen, so the drop must
+-- come AFTER it, not before, or that repaint refills the queue we just emptied.
+function request_logout()
+	print('[sllink] -> LOGOUT REQUEST (Cancel button SHORT)')
+	queue_message(msg_system(SYS_LOGOUT_REQUEST))
+	state = STATE_LOGGED_OUT
+	logoutTicksLeft = LOGOUT_SILENT_TICKS
+	if popupActive then dismiss_popup() end
+	drop_queued_display()
+end
+
+-- Cancel button, LONG: the keyboard never replies to our Logout Request anyway (see this file's
+-- header), so skip it and go straight to silence.
+function force_logout()
+	print('[sllink] -> FORCE LOGOUT (Cancel button LONG, no Logout Request sent)')
+	state = STATE_LOGGED_OUT
+	logoutTicksLeft = LOGOUT_SILENT_TICKS
+	if popupActive then dismiss_popup() end
+	drop_queued_display()
+end
+
+function handle_logout_confirmation()
+	print('[sllink] <- LOGOUT CONFIRMATION')
 	state = STATE_IDLE
 end
 
@@ -1727,7 +1827,7 @@ function handle_sl_frame(e)
 				-- Identified. Treat this as 'the session is up' regardless of whether we ever saw
 				-- APPROVED/LOGIN, and make sure the screen actually reflects the current patch.
 				if state == STATE_IDENTIFYING or state == STATE_LISTED then
-					state = STATE_ACTIVE
+					enter_active_session()
 				end
 				if patchName ~= '' and not has_pending() then
 					local stale = (lastPaintedPatch ~= patchName)
@@ -1751,13 +1851,28 @@ function handle_sl_frame(e)
 			handle_restart()
 		elseif func == SYS_LOGOUT_REQUEST then
 			handle_logout_request()
+		elseif func == SYS_LOGOUT_CONFIRMATION then
+			handle_logout_confirmation()
 		end
+	elseif itemType == IT_MASTER_VOLUME then
+		-- e[9] is VOL; a trailing MUTE byte may or may not follow (docs/implementing-sl-link.md §7 -
+		-- trailing bytes are optional more often than the spec documents) - ignored either way.
+		local vol = e[9]
+		if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
+		masterVolume = vol
+		print('[sllink] <- MASTER VOLUME ' .. masterVolume)
 	elseif itemType == IT_BUTTON then
 		local bid = func
 		local pressKind = e[9]
 		local ccButton = BUTTON_CC[bid]
 		if bid == BID_ZOOM then
 			handle_zoom_button(pressKind)
+		elseif bid == BID_CANCEL then
+			if pressKind == PRESS_LONG then
+				force_logout()
+			else
+				request_logout()
+			end
 		elseif ccButton ~= nil and (pressKind == PRESS_SHORT or pressKind == PRESS_LONG) then
 			local control = (pressKind == PRESS_SHORT) and ccButton.short or ccButton.long
 			queue_momentary_cc(control)
@@ -1770,22 +1885,34 @@ function handle_sl_frame(e)
 	elseif itemType == IT_ENCODER then
 		local eid = func
 		local delta = e[9] - 0x40
-		local control = ENCODER_CC[eid]
-		if control ~= nil then
-			local newValue = encoderValue[eid] + delta
-			if newValue < 0 then newValue = 0 elseif newValue > 127 then newValue = 127 end
-			encoderValue[eid] = newValue -- still tracked for show_popup's ring gauge, not for what's emitted below
-			if delta ~= 0 then
-				-- Relative2C two's complement; wire encoding confirmed on hardware 2026-09-05, see
-				-- docs/mainstage-integration.md. queue_relative_cc accumulates the raw signed delta;
-				-- flush_pending_cc clamps and encodes it at emit time.
-				queue_relative_cc(control, delta)
-			end
-			show_popup(eid)
+		if eid == EID_A then
+			local vol = masterVolume + delta
+			if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
+			masterVolume = vol
+			-- Own regionId so a fast twist's many ticks coalesce to one queued write, not several -
+			-- see queue_message's PER-REGION COALESCING comment.
+			local mvolWriteMsg = msg_master_volume_write(masterVolume)
+			print('[sllink] -> MASTER VOLUME WRITE: ' .. dump_bytes(mvolWriteMsg))
+			queue_message(mvolWriteMsg, 'mvol')
+			show_master_volume_popup()
 		else
-			print('[sllink] <- ENCODER eid=' .. string.format('0x%02X', eid)
-				.. ' tick=' .. string.format('0x%02X', e[9])
-				.. ' delta=' .. tostring(delta) .. ' (unhandled) frame=' .. dump_event(e))
+			local control = ENCODER_CC[eid]
+			if control ~= nil then
+				local newValue = encoderValue[eid] + delta
+				if newValue < 0 then newValue = 0 elseif newValue > 127 then newValue = 127 end
+				encoderValue[eid] = newValue -- still tracked for show_popup's ring gauge, not for what's emitted below
+				if delta ~= 0 then
+					-- Relative2C two's complement; wire encoding confirmed on hardware 2026-09-05, see
+					-- docs/mainstage-integration.md. queue_relative_cc accumulates the raw signed delta;
+					-- flush_pending_cc clamps and encodes it at emit time.
+					queue_relative_cc(control, delta)
+				end
+				show_popup(eid)
+			else
+				print('[sllink] <- ENCODER eid=' .. string.format('0x%02X', eid)
+					.. ' tick=' .. string.format('0x%02X', e[9])
+					.. ' delta=' .. tostring(delta) .. ' (unhandled) frame=' .. dump_event(e))
+			end
 		end
 	else
 		print('[sllink] <- unhandled itemType=' .. string.format('0x%02X', itemType)
@@ -1935,6 +2062,16 @@ function controller_timer_trigger()
 		-- Falling through to the send_keepalive() branch below would be wrong here: it would announce the
 		-- still-rejected instanceID instead of retrying it.
 		start_identification()
+	elseif state == STATE_LOGGED_OUT then
+		-- Deliberately no send_keepalive() - that silence is the whole point (see request_logout()).
+		-- flush_pending(true) below still appends the Identification Query, which keeps the session
+		-- clock alive (rule 6) without itself counting as a keepalive. If the SL88 confirms we've
+		-- been dropped (ID_QUERY reply e[9]==0), handle_sl_frame already re-identifies immediately;
+		-- this counter is the fallback that guarantees a resume either way.
+		logoutTicksLeft = logoutTicksLeft - 1
+		if logoutTicksLeft <= 0 then
+			start_identification()
+		end
 	else
 		-- MUST send the keepalive UNCONDITIONALLY on every keepalive-cadence tick, even while display
 		-- work is still queued - do not gate this on `not has_pending()`. A display message paces at one
@@ -1978,6 +2115,16 @@ function dump_event(e)
 	return table.concat(parts, ' ')
 end
 
+-- Mirrors dump_event, but for an OUTBOUND queue_message table (1-based, e.g. from msg_* builders),
+-- not an inbound 0-based MainStage MIDI event.
+function dump_bytes(m)
+	local parts = {}
+	for i = 1, #m do
+		parts[#parts + 1] = string.format('%02X', m[i])
+	end
+	return table.concat(parts, ' ')
+end
+
 -- SESSION CLOCK: `settriggertimer` is a ONE-SHOT that does NOT re-arm when called from inside
 -- controller_timer_trigger - confirmed on hardware, that callback fires exactly once per script
 -- instance no matter what. It DOES re-arm when called from here (controller_midi_in). Do not assume
@@ -2015,7 +2162,12 @@ function rearm_timer()
 		-- fix - see this function's comment above.
 		return
 	end
-	if has_pending() then
+	if state == STATE_LOGGED_OUT then
+		-- Pin the tick at KEEPALIVE_MS regardless of has_pending()/popupActive, so LOGOUT_SILENT_TICKS
+		-- maps to real seconds instead of whatever pace queued traffic would otherwise pick.
+		settriggertimer(KEEPALIVE_MS)
+		timerArmedInterval = KEEPALIVE_MS
+	elseif has_pending() then
 		settriggertimer(FLUSH_SOON_MS) -- still draining a repaint; come back soon
 		timerArmedInterval = FLUSH_SOON_MS
 	elseif popupActive then
@@ -2041,9 +2193,11 @@ end
 -- repaint.
 --
 -- Shares rearm_timer's STATE_REIDENTIFY_WAIT guard: that wait must never be shortened (see
--- handle_identification_rejected).
+-- handle_identification_rejected). Also excludes STATE_LOGGED_OUT: dismiss_popup()'s
+-- set_display_mode() call reaches here, and shortening the logout tick would undercut
+-- LOGOUT_SILENT_TICKS's KEEPALIVE_MS cadence.
 function request_quick_rearm()
-	if state == STATE_REIDENTIFY_WAIT then return end
+	if state == STATE_REIDENTIFY_WAIT or state == STATE_LOGGED_OUT then return end
 	if timerPending and (timerArmedInterval == KEEPALIVE_MS or timerArmedInterval == POPUP_TICK_MS) then
 		settriggertimer(FLUSH_SOON_MS)
 		timerArmedInterval = FLUSH_SOON_MS
