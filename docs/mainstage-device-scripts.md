@@ -117,6 +117,129 @@ a named symbol, and the parser's target class was not confirmed via an `isKindOf
 would confirm it: sending MSB-then-LSB on channel 1 with no Program Change from a **real** external
 MIDI port, not an injected substitution.
 
+### The complete key vocabulary, read out of the binary
+
+`controller_info()`'s parser lives in `LogicPro.framework` (MainStage and Logic Pro share the
+control-surface code), not in MainStage's own binary. `strings` on
+`/Applications/MainStage 3.7.1.app/Contents/Frameworks/LogicPro.framework/Versions/A/LogicPro` finds
+one contiguous string table holding every key the parser recognises, interleaved with its own error
+strings (`LUA: controller_info() returned a non-table 'item' object in the items table`, `LUA:
+controller_info() didn't return a table`, `LUA: Script incompatible with application '%@'`) — that
+co-location is what ties this list to the Lua parser rather than to some unrelated plist schema.
+
+Top-level keys, in the order the table stores them (usage counts are `grep -rl` over the 98 bundled
+scripts under `MIDI Device Scripts/`, §1; "—" means not independently counted):
+
+| Key | Scripts | Note |
+|:---|---:|:---|
+| `model`, `manufacturer`, `items` | 98 | required; documented above |
+| `usb_vendor_id` / `usb_product_id` | 4 / — | documented above (§1 counts 3 as *active* — `M-Audio/Axiom 25 #1`, `M-Audio/Oxygen 25 #1`, `M-Audio/Oxygen 49 #1`; the 4th is commented out, in `Arturia/KeyLab 88.device/config.lua:70` — `--usb_vendor_id = 7285,`) |
+| `preset_name` | 53 | documented above |
+| `auto_passthrough` | 10 | documented above |
+| `device_request` / `device_reply` | 3 / 0 | `device_request` documented above (SysEx inquiry); `device_reply` **unproven** |
+| `patchselector` | 2 | documented above |
+| `compatibleModels` | 0 | **unproven** |
+| `logicpro` / `logicprox` | — / 3 | presumably app-targeting flags, parallel to `action_<app>` below; **unproven** |
+| `supports_feedback` | 5 | **unproven** — presumably declares `controller_midi_out` support |
+| `always_update` | 0 | **unproven** |
+| `ignore_notes` | 2 | **unproven** — presumably suppresses passing Note events through |
+| `device_inquiry` | 37 | the most-used key with no documented meaning here; **unproven** |
+| `action_` (bare prefix) | 0 | root of the `action_<app>` family — see below |
+| `action` | 0 | a distinct, singular per-item key, sitting next to `objectType`/`midiType` in the table; **unproven** |
+| `assignments` / `alertAssignments` | 0 / 0 | sub-vocabulary below; **unexplored** |
+| `copyright` | — | documented above |
+| `OSC_pattern` | 0 | **unproven** |
+| `dBToFader` / `dbToFader` | 0 / 0 | both cases present in the binary — the parser evidently accepts either; **unproven** |
+| `replacingPlugInModel` / `replacingPlugInManufacturer` | 1 / 0 | from the table's second copy (offset 9819117); `replacingPlugInModel` associates the script with a plug-in for `PreferPlugIn()` (Roland `A-PRO`'s own comment); `replacingPlugInManufacturer` **unproven** |
+
+Per-item keys: `objectType` and `midiType` sit immediately after `action` in the table. The ones the 98
+scripts actually use — `name`, `label`, `midi`, `inport`, `outport`, `startKey`, `numberKeys` — are
+already covered above; this list adds nothing new there.
+
+So most of this vocabulary is unexercised by Apple's own scripts and unproven by this project — only
+`device_inquiry`, `supports_feedback`, `usb_vendor_id`, `logicprox` and `ignore_notes` see any use at
+all, and none of those uses has been decoded here.
+
+**`assignments` / `alertAssignments` sub-vocabulary.** The same string table continues straight into a
+second block that reads like Logic's control-surface assignment model exposed to Lua: `controlID`,
+`paramName`, `shortParamName`, `OSCValueChange`, `OSCTouched`, `OSCLabel`, `OSCValueString`,
+`midiTouched`, `gotoMarker`, `alertButton`, `liveLoopsColumn`, `globalObj`, `clockPart`,
+`faderBankTrack`, `CSTrack`, `track`, `output`, `master`, `audio`, `instr`, `extMIDI`, `trackParam`,
+`isMIDIPlugIn`, `boundManuf`, `boundSubID`, `boundPlugInID`, `keyCmd`, `CSGroupObj`, `bankType`,
+`viewFilter`, `groupObj`, `groupParam`, `flipGroup`, `textFeedback`, `fbType`, `valueFormat`,
+`valueMode`, `minVal`, `maxVal`, `minMaxOnly`, `selfFeedback`, `exclusive`, `keyRepeat`, `multiply`,
+`ignoreTrim`, `objOffset`, `paramOffset`, `zone`, `mode`, `control`. Flagged as a lead worth returning
+to, **not** as something known to work from a device script — zero of the 98 bundled scripts touch any
+of it.
+
+### `action_<app>`: binding a control to a MainStage command with no MIDI-Learn
+
+Arturia's shipped `KeyLab 88 mk3.device/config.lua` (v1.4) declares seven items carrying an
+`action_mainstage` field and **no** `objectType`:
+
+```lua
+{ name = "Play Stop", midiType = "Momentary", midi = {MIDI_CtrChange, 21, MIDI_LSB},
+  inport = 'DAW', outport = 'DAW', action_mainstage = 'PlayStop' },
+```
+
+The seven values it uses: `Metronome`, `PanicFull`, `PlayStop`, `Record`, `TapTempo`, `Undo`, `Redo`.
+
+The literal string `action_mainstage` appears **nowhere** in MainStage 3.7.1's binaries or resources
+(verified by a recursive binary-safe grep of the whole app bundle). The bare prefix `action_` **does**,
+inside the key table above, next to the sibling keys `logicpro`/`logicprox`. **Inference, not fact:**
+the key is composed at runtime as `action_` followed by the lower-cased application name — MainStage
+passes `applicationName = "MainStage"` to `controller_initialize` (seen in this project's own
+`/tmp/lua.log`), which would compose to exactly `action_mainstage`. Untested on hardware as of this
+writing.
+
+The values are MainStage **command IDs**, not free text. The full set — 138 lines, ~127 commands
+across 11 groups — lives in
+`/Applications/MainStage 3.7.1.app/Contents/Resources/en.lproj/WsCommands.plist` (`plutil -p` to read
+it; re-dump after a MainStage update, since the ID→menu mapping is not otherwise documented). All
+seven Arturia names match an ID there exactly. The groups most relevant to this project:
+
+| ID | Menu name |
+|:---|:---|
+| **Actions** | |
+| `NextPatch` | Next Patch |
+| `PreviousPatch` | Previous Patch |
+| `NextSet` | Next Set |
+| `PreviousSet` | Previous Set |
+| `Metronome` | Toggle Metronome |
+| `MasterMute` | Toggle Master Mute |
+| `Panic` | Panic |
+| `PanicFull` | Panic with External |
+| `PlayStop` | Play/Stop |
+| `Record` | Record |
+| `TapTempo` | Tap Tempo |
+| `ResetComparePatch` | Reset/Compare Patch |
+| `SelectionFollowsMIDI` | Selection follows incoming MIDI |
+| `MapParameter` | Map Parameter |
+| `NewAssignment` | New Assignment |
+| `AssignAndMap` | Assign and Map |
+| `ArticulationMIDIRemote` | Toggle Articulation MIDI Remote |
+| **Edit** | |
+| `BeginSelectPatch` | Begin Select Patch |
+| `Undo` | Undo |
+| `Redo` | Redo |
+| **View** | |
+| `ToggleFullScreen` | Enter / Exit Full Screen |
+| `TogglePatchList` | Toggle Patch List |
+| `ViewPerform` | Perform Mode |
+| `ViewLayout` | Layout Mode |
+| `ViewEdit` | Edit Mode |
+| **File** | |
+| `SaveConcert` | Save Concert |
+
+Why this matters here: `NextPatch`/`PreviousPatch` bound via `action_mainstage` would remove the
+one-time MIDI-Learn per concert that the whole 34-CC map currently requires, and would give a
+*relative* patch-navigation primitive for free — see `docs/mainstage-integration.md`, "Next thing to
+try: a relative control instead of an absolute one".
+
+**UNVERIFIED.** Nothing in this subsection has been tested against MainStage on this rig. Next step:
+declare four `action_mainstage`-carrying items (`NextPatch`/`PreviousPatch`/`NextSet`/`PreviousSet`)
+and check on hardware whether a joystick tilt changes patch with nothing learned.
+
 ## 3. Callbacks
 
 How many of the 98 bundled scripts implement each — a useful signal of what is load-bearing versus
