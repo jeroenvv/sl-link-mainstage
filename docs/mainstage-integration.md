@@ -581,3 +581,38 @@ our `0xB0 + CC_CHANNEL` with channel 0 are the identical value.
 **Still open:** encoder pickup of mapped parameter values via `controller_midi_out(midiEvent, name,
 valueString, color)` is designed but not implemented — it is the route to Q3/Q6 in
 `docs/full-functionality-plan.md` and to a popup showing the real parameter name and value.
+
+## Master Volume: upstream issue filed, Numa Player capture (2026-09-06)
+
+**Filed upstream: <https://github.com/fatarsrl/sl-link/issues/2>** — the authoritative answer is
+expected there.
+
+**Key evidence — Numa Player capture**, `/tmp/numa-sniff-keep.log` (in `/tmp`, will not survive a
+reboot). Sniffing CoreMIDI sources while Studiologic's own Numa Player drove the volume: each
+encoder-A tick is followed ~3ms later by `F0 00 20 1A 16 7E 60 07 00 <VOL> <MUTE> F7`, VOL stepping
+with the knob — 81 ticks, 81 volume reports. Under identical conditions with our script active: 133
+encoder-A ticks, **zero** `0x07` frames. This exposes a spec disagreement: the device's own traffic
+uses `R/W = 00` *with* a VOL payload, where `docs/hardware-io.md` describes `R/W = 0` as a read with
+VOL omitted — the same class of hardware-vs-spec divergence `docs/implementing-sl-link.md` §7
+catalogues.
+
+**Ruled out today, each on hardware:** audio board missing (`SL AUDIO` exists as a Core Audio
+device); audio board not in use (routing MainStage's output through it changed nothing); host
+identity (`SL_HOST_ID = 0x7E`, matching Numa Player, produced neither volume reports nor logout
+confirmations — reverted); message shape (`07 01 <vol> <mute>`, `07 01 <vol>`, `07 00 <vol> <mute>`
+all ignored, 100+ sends each).
+
+**Still unexamined, and the only route left:** Numa Player's *outbound* bytes.
+`Scripts/sniff-all-sl-ports.swift` watches CoreMIDI **sources** only and structurally cannot see a
+host→device send. Seeing them needs a MIDI proxy (a virtual destination Numa Player is pointed at,
+logged and forwarded to the real `LINK`) or Snoize MIDI Monitor's spy driver.
+
+**A real bug found and fixed along the way:** `handle_login()` frequently never runs — the SL88
+remembers the host across runs and sends neither Approved nor Login Confirmation, so the session
+reaches ACTIVE via the Identification-Query reply path instead. `enter_active_session()` now does the
+session-entry work on every transition into ACTIVE. Before this fix the Master Volume read had never
+once been sent.
+
+**Current code state:** `msg_master_volume_write` now emits `07 00 <vol> 00` (mirroring the device's
+observed format), not the spec's `07 01`. **Neither form works.** Left as-is pending the issue —
+noted here so the current form is not mistaken for known-good.
