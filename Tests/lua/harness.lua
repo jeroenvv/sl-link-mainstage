@@ -1071,7 +1071,7 @@ do
 	checkHex(
 		'EID_A +1 tick queues the exact Master Volume write vector, including the trailing MUTE byte',
 		mvol_messages()[1],
-		'F0 00 20 1A 16 03 6D 07 01 33 00 F7'
+		'F0 00 20 1A 16 03 6D 07 00 33 00 F7'
 	)
 
 	-- Clamp at 100: starting at 100, a further +5 must not exceed it.
@@ -1082,7 +1082,7 @@ do
 	checkHex(
 		'clamped write at 100 carries VOL=100 (0x64), not 105, plus MUTE',
 		mvol_messages()[1],
-		'F0 00 20 1A 16 03 6D 07 01 64 00 F7'
+		'F0 00 20 1A 16 03 6D 07 00 64 00 F7'
 	)
 
 	-- Clamp at 0: starting at 0, a further -5 must not go negative.
@@ -1093,7 +1093,7 @@ do
 	checkHex(
 		'clamped write at 0 carries VOL=0, not negative, plus MUTE',
 		mvol_messages()[1],
-		'F0 00 20 1A 16 03 6D 07 01 00 00 F7'
+		'F0 00 20 1A 16 03 6D 07 00 00 00 F7'
 	)
 
 	-- Several A ticks before a flush must coalesce to ONE queued write carrying the latest value -
@@ -1109,7 +1109,7 @@ do
 	checkHex(
 		'...and its bytes reflect VOL=53 (0x35), plus MUTE',
 		mvol_messages()[1],
-		'F0 00 20 1A 16 03 6D 07 01 35 00 F7'
+		'F0 00 20 1A 16 03 6D 07 00 35 00 F7'
 	)
 
 	popupActive, displayMode = savedPopupActive, savedDisplayMode
@@ -1197,10 +1197,12 @@ do
 	pendingMessages = {}
 	handle_login()
 
+	-- func alone no longer distinguishes a read from a write (msg_master_volume_write now also sends
+	-- MVOL_READ - see its comment); #m == 10 picks out the bare read (no VOL/MUTE payload).
 	local reads = {}
 	for i = 1, #pendingMessages do
 		local m = pendingMessages[i]
-		if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then
+		if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ and #m == 10 then
 			reads[#reads + 1] = m
 		end
 	end
@@ -1291,11 +1293,13 @@ end
 do
 	local savedState, savedPending = state, pendingMessages
 
+	-- func alone no longer distinguishes a read from a write (msg_master_volume_write now also sends
+	-- MVOL_READ - see its comment); #m == 10 picks out the bare read (no VOL/MUTE payload).
 	local function mvol_reads()
 		local reads = {}
 		for i = 1, #pendingMessages do
 			local m = pendingMessages[i]
-			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ and #m == 10 then
 				reads[#reads + 1] = m
 			end
 		end
@@ -1308,7 +1312,7 @@ do
 	local function mvol_reads_in(bytes)
 		local reads = {}
 		for _, m in ipairs(split_messages(bytes or {})) do
-			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ and #m == 10 then
 				reads[#reads + 1] = m
 			end
 		end

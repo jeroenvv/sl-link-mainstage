@@ -768,10 +768,12 @@ end
 -- vol is 0-100 (a percentage, not 0-127) - single byte, no msb/lsb split. The spec calls the
 -- trailing MUTE byte optional "for retrocompatibility", but §7 catalogues the hardware disagreeing
 -- with the spec on optional trailing bytes more often than documented, so this sends it explicitly.
+-- Hardware capture of Numa Player traffic shows func=MVOL_READ used for writes too, with VOL/MUTE
+-- appended; spec says MVOL_WRITE, but mirroring the device's own traffic is under test here.
 function msg_master_volume_write(vol)
 	local m = sl_header()
 	table.insert(m, IT_MASTER_VOLUME)
-	table.insert(m, MVOL_WRITE)
+	table.insert(m, MVOL_READ)
 	table.insert(m, vol)
 	table.insert(m, MVOL_UNMUTED)
 	table.insert(m, SL_END)
