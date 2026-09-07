@@ -1396,18 +1396,19 @@ end
 -- MARK: - 34. rearm_timer() watchdog: recovers a one-shot MainStage never delivered
 --
 -- If timerPending latches true forever (the one-shot MainStage was supposed to fire never
--- arrives), rearm_timer() must force a re-arm after TIMER_WATCHDOG_FRAMES inbound events rather
--- than waiting on a timer that will never come - see
+-- arrives), rearm_timer() must force a re-arm after TIMER_WATCHDOG_FRAMES inbound events - but only
+-- while there is queued work to push out; idle play must never trip it (rule 6) - see
 -- docs/config-lua-history.md#timer-watchdog-a-lost-one-shot-latches-timerpending-forever-2026-09-07.
 do
 	local savedState, savedTimerPending, savedFramesSinceTick, savedArmed, savedPending, savedPopupActive =
 		state, timerPending, framesSinceTick, armed, pendingMessages, popupActive
 
 	state = STATE_ACTIVE
-	pendingMessages = {}
 	popupActive = false
 
-	-- Below the threshold: rule 6's protection must hold - no re-arm.
+	-- Below the threshold, with pending work queued: rule 6's protection must hold - no re-arm yet.
+	pendingMessages = {}
+	queue_message(msg_draw_rect(0, 0, 1, 1, 0, 0, 0), 'test:timer-watchdog')
 	timerPending = true
 	framesSinceTick = 0
 	armed = nil
@@ -1417,10 +1418,22 @@ do
 	check('rearm_timer watchdog: below threshold does not re-arm', armed == nil)
 	check('rearm_timer watchdog: timerPending still latched below threshold', timerPending == true)
 
-	-- One more frame reaches the threshold: the watchdog must force a re-arm.
+	-- One more frame reaches the threshold, with pending work still queued: the watchdog must force
+	-- a re-arm.
 	controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
-	check('rearm_timer watchdog: re-arms once TIMER_WATCHDOG_FRAMES is reached', armed == KEEPALIVE_MS)
+	check('rearm_timer watchdog: re-arms once TIMER_WATCHDOG_FRAMES is reached with pending work',
+		armed == FLUSH_SOON_MS)
 	check('rearm_timer watchdog: framesSinceTick resets once it fires', framesSinceTick == 0)
+
+	-- At/over the threshold but with NO pending work: the watchdog must NOT re-arm - this is the
+	-- rule 6 case where a slow tick during idle play is not a dead clock.
+	pendingMessages = {}
+	timerPending = true
+	framesSinceTick = TIMER_WATCHDOG_FRAMES
+	armed = nil
+	rearm_timer()
+	check('rearm_timer watchdog: does not re-arm with no pending work even at threshold', armed == nil)
+	check('rearm_timer watchdog: timerPending stays latched with no pending work', timerPending == true)
 
 	-- A real tick resets the counter too, independent of the watchdog.
 	framesSinceTick = 42

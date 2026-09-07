@@ -35,6 +35,8 @@ No CC numbers moved in this release.
 - A watchdog now recovers the session clock if MainStage ever fails to deliver a `settriggertimer`
   one-shot, which previously latched `timerPending` forever and silently killed the keepalive
   (captured on hardware: stalled dead at tick #352 with no recovery short of restarting MainStage).
+  The watchdog only re-arms once queued display output is stuck behind the dead clock, so it cannot
+  fire during ordinary play and starve the clock itself (rule 6).
 
 ### Documented
 

@@ -484,9 +484,11 @@ WRITE_TEXT_OVERHEAD = 25
 FLUSH_SOON_MS = 35
 
 -- Inbound events tolerated with timerPending latched true before rearm_timer() forces a re-arm
--- anyway, recovering from a one-shot MainStage never delivered. See
--- docs/config-lua-history.md#timer-watchdog-a-lost-one-shot-latches-timerpending-forever-2026-09-07.
-TIMER_WATCHDOG_FRAMES = 300
+-- anyway, recovering from a one-shot MainStage never delivered. Only fires when has_pending() is
+-- also true (rule 6 protection - see docs/config-lua-history.md#timer-watchdog-a-lost-one-shot-
+-- latches-timerpending-forever-2026-09-07 for the measured healthy/failure distribution behind
+-- both this value and that gate).
+TIMER_WATCHDOG_FRAMES = 20
 
 -- `regionId`, when given, is stashed as a NAMED field on the message table (Lua's `#`/ipairs only
 -- see the integer-keyed byte sequence, so this rides along for free without disturbing
@@ -2170,9 +2172,10 @@ function rearm_timer()
 		return
 	end
 	if timerPending then
-		if framesSinceTick < TIMER_WATCHDOG_FRAMES then
+		if framesSinceTick < TIMER_WATCHDOG_FRAMES or not has_pending() then
 			-- A one-shot is already outstanding; it will fire on its own. This is the notes-starve-the-clock
-			-- fix - see this function's comment above.
+			-- fix - see this function's comment above. The has_pending() check keeps the watchdog from
+			-- ever firing on idle play, where a slow tick isn't a dead clock - see the doc anchor above.
 			return
 		end
 		-- Watchdog: MainStage never delivered the outstanding one-shot, so nothing was ever going to

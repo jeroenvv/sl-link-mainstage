@@ -339,11 +339,28 @@ reset to 0 by `controller_timer_trigger`. `rearm_timer()`'s `timerPending` guard
 while `framesSinceTick < TIMER_WATCHDOG_FRAMES`; past that it falls through, force-arms a new one-shot,
 and resets the counter so it can't fire again on the very next frame.
 
-`TIMER_WATCHDOG_FRAMES = 300` was chosen as a large margin over the 83-frame gap actually observed
-after the stall — big enough that it will not mistake a real, still-outstanding one-shot (rule 6's
-concern) for a lost one, but small enough to recover well within a session. At the worst case (a note
-arriving on literally every frame) it costs one extra `FLUSH_SOON_MS` (35ms) deadline push per 300
-inbound events, which is negligible next to the ~3s keepalive cadence.
+`TIMER_WATCHDOG_FRAMES = 300` never fired on hardware — the threshold was far too high relative to what
+actually separates the two regimes. A later pass across three captures measured the gap between
+consecutive HEALTHY ticks directly: across roughly 2,100 tick intervals it never exceeded 4 inbound
+frames. In the two captures where the clock died, 83 and 76 frames arrived after the final tick with no
+tick ever following. Healthy and pathological are separated by more than an order of magnitude (4 vs.
+76-83), so `TIMER_WATCHDOG_FRAMES` was retuned to **20** — comfortably above the observed healthy max,
+far below the observed failure range.
+
+Caveat that shapes the design: those counts come from log lines, and the script logs ONLY SysEx —
+note/CC musical traffic is invisible in the log but DOES increment `framesSinceTick`. So the real
+worst-case frame gap while the user is playing is unknown and could exceed 4. A threshold of 20 alone
+would risk rule 6 (re-arming during dense play cancels-and-restarts the pending one-shot and starves the
+clock) if a normal, still-outstanding one-shot ever coincided with that much uncounted note traffic.
+
+The distinguishing signal that makes a low threshold safe is queued, undrained output: in BOTH freezes
+there was queued display work (`pending=1`, `pending=2`) that could not drain — display messages are
+gated behind `displayFlushReady`, which only a tick grants, so a dead clock leaves the queue stuck.
+Playing notes with an idle display does not produce that state. `rearm_timer()`'s watchdog fallthrough
+is therefore gated on `has_pending()` in addition to the frame count: it may only force a re-arm when
+there is queued output stuck behind the dead clock. With nothing queued, the early return still applies
+regardless of `framesSinceTick`, so a long run of uncounted note traffic during a legitimate outstanding
+one-shot can never trip the watchdog.
 
 The `STATE_REIDENTIFY_WAIT` early return in `rearm_timer()` sits ABOVE this guard and is checked first,
 unconditionally — the watchdog must never shorten that wait (see `handle_identification_rejected`).
