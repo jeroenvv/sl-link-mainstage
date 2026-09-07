@@ -1393,6 +1393,45 @@ do
 	state, pendingMessages, lastPaintedPatch = savedState, savedPending, savedLastPaintedPatch
 end
 
+-- MARK: - 34. rearm_timer() watchdog: recovers a one-shot MainStage never delivered
+--
+-- If timerPending latches true forever (the one-shot MainStage was supposed to fire never
+-- arrives), rearm_timer() must force a re-arm after TIMER_WATCHDOG_FRAMES inbound events rather
+-- than waiting on a timer that will never come - see
+-- docs/config-lua-history.md#timer-watchdog-a-lost-one-shot-latches-timerpending-forever-2026-09-07.
+do
+	local savedState, savedTimerPending, savedFramesSinceTick, savedArmed, savedPending, savedPopupActive =
+		state, timerPending, framesSinceTick, armed, pendingMessages, popupActive
+
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	popupActive = false
+
+	-- Below the threshold: rule 6's protection must hold - no re-arm.
+	timerPending = true
+	framesSinceTick = 0
+	armed = nil
+	for i = 1, TIMER_WATCHDOG_FRAMES - 1 do
+		controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	end
+	check('rearm_timer watchdog: below threshold does not re-arm', armed == nil)
+	check('rearm_timer watchdog: timerPending still latched below threshold', timerPending == true)
+
+	-- One more frame reaches the threshold: the watchdog must force a re-arm.
+	controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	check('rearm_timer watchdog: re-arms once TIMER_WATCHDOG_FRAMES is reached', armed == KEEPALIVE_MS)
+	check('rearm_timer watchdog: framesSinceTick resets once it fires', framesSinceTick == 0)
+
+	-- A real tick resets the counter too, independent of the watchdog.
+	framesSinceTick = 42
+	timerPending = true
+	controller_timer_trigger()
+	check('controller_timer_trigger resets framesSinceTick', framesSinceTick == 0)
+
+	state, timerPending, framesSinceTick, armed, pendingMessages, popupActive =
+		savedState, savedTimerPending, savedFramesSinceTick, savedArmed, savedPending, savedPopupActive
+end
+
 -- MARK: - Summary
 
 realPrint('')

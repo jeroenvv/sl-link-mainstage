@@ -32,6 +32,9 @@ No CC numbers moved in this release.
   is the modulation stick.
 - Pending relative CC deltas now accumulate in signed space, so a fast encoder twist cannot lose a
   tick.
+- A watchdog now recovers the session clock if MainStage ever fails to deliver a `settriggertimer`
+  one-shot, which previously latched `timerPending` forever and silently killed the keepalive
+  (captured on hardware: stalled dead at tick #352 with no recovery short of restarting MainStage).
 
 ### Documented
 

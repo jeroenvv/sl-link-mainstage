@@ -311,6 +311,43 @@ messages are deliberately never coalesced (two Identification Queries must both 
 this guard a keepalive queued-but-not-yet-flushed would get another one appended behind it on every
 subsequent tick, growing without bound.
 
+### Timer watchdog: a lost one-shot latches `timerPending` forever (2026-09-07)
+
+Captured on hardware: a run stopped dead at `timer tick #352` and never ticked again, while 83 further
+inbound SysEx frames were handled normally afterward (CC batches still went out). No keepalive followed,
+so the SL88 dropped the app after its ~5s timeout, and the script could not recover on its own —
+MainStage had to be restarted.
+
+Mechanism, read from the code rather than guessed: at tick #352 the queue was still non-empty, so
+`rearm_timer()` armed a `FLUSH_SOON_MS` one-shot and set `timerPending = true`. MainStage never
+delivered that one-shot — for reasons outside this script's visibility, the same way rule 6 assumes
+`settriggertimer` always fires but this run shows it sometimes doesn't. `rearm_timer()` returns early
+whenever `timerPending` is true, and the ONLY place that clears it is the top of
+`controller_timer_trigger`. With the one-shot lost, nothing was ever going to call that function again,
+so `timerPending` stayed true permanently and every subsequent `rearm_timer()` call — from the 83 frames
+that kept arriving — hit the early return and did nothing.
+
+Ruled out: a Lua error inside the tick handler throwing before it finished. `timerPending = false` is
+the first statement in `controller_timer_trigger`, before anything that could error, so an exception
+anywhere later in that function would still have cleared the flag.
+
+Fix: a frame-count watchdog, not a shorter timer (shortening `FLUSH_SOON_MS` would revive rule 6's
+notes-starve-the-clock failure for legitimate cases where a one-shot is genuinely still outstanding).
+`framesSinceTick` counts inbound events since the last tick, incremented at the top of
+`controller_midi_in` (every event, not just SL frames, so it also counts while nothing decodes) and
+reset to 0 by `controller_timer_trigger`. `rearm_timer()`'s `timerPending` guard now returns early only
+while `framesSinceTick < TIMER_WATCHDOG_FRAMES`; past that it falls through, force-arms a new one-shot,
+and resets the counter so it can't fire again on the very next frame.
+
+`TIMER_WATCHDOG_FRAMES = 300` was chosen as a large margin over the 83-frame gap actually observed
+after the stall — big enough that it will not mistake a real, still-outstanding one-shot (rule 6's
+concern) for a lost one, but small enough to recover well within a session. At the worst case (a note
+arriving on literally every frame) it costs one extra `FLUSH_SOON_MS` (35ms) deadline push per 300
+inbound events, which is negligible next to the ~3s keepalive cadence.
+
+The `STATE_REIDENTIFY_WAIT` early return in `rearm_timer()` sits ABOVE this guard and is checked first,
+unconditionally — the watchdog must never shorten that wait (see `handle_identification_rejected`).
+
 ---
 
 ## Identification and instance-ID collisions

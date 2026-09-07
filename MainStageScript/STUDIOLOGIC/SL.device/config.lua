@@ -348,6 +348,10 @@ masterVolume = 100 -- 0-100 percentage, driven by EID_A; synced from hardware by
 -- genuinely arms a timer).
 timerPending = false
 
+-- Inbound events seen since the last tick. Feeds the rearm_timer() watchdog that recovers from a
+-- lost one-shot - see docs/config-lua-history.md#timer-watchdog-a-lost-one-shot-latches-timerpending-forever-2026-09-07.
+framesSinceTick = 0
+
 -- Which interval the CURRENTLY OUTSTANDING one-shot (if timerPending is true) was armed at -
 -- KEEPALIVE_MS, FLUSH_SOON_MS, POPUP_TICK_MS, or REIDENTIFY_WAIT_MS. Set at every settriggertimer
 -- call site alongside timerPending. Read by request_quick_rearm() (below) to decide whether an
@@ -478,6 +482,11 @@ WRITE_TEXT_OVERHEAD = 25
 -- docs/config-lua-history.md#flush_soon_ms-retuned-to-25-backed-out-2026-08-29 for what the capture
 -- does and doesn't show, and #flush_soon_ms-retuning-and-the-sweep-plan for the overall procedure.
 FLUSH_SOON_MS = 35
+
+-- Inbound events tolerated with timerPending latched true before rearm_timer() forces a re-arm
+-- anyway, recovering from a one-shot MainStage never delivered. See
+-- docs/config-lua-history.md#timer-watchdog-a-lost-one-shot-latches-timerpending-forever-2026-09-07.
+TIMER_WATCHDOG_FRAMES = 300
 
 -- `regionId`, when given, is stashed as a NAMED field on the message table (Lua's `#`/ipairs only
 -- see the integer-keyed byte sequence, so this rides along for free without disturbing
@@ -2027,6 +2036,7 @@ function controller_timer_trigger()
 	-- this function's own return flushes - go ahead instead of being gated out by a flag claiming a
 	-- timer is already pending when none actually is.
 	timerPending = false
+	framesSinceTick = 0
 	settriggertimer(KEEPALIVE_MS)
 	timerTicks = timerTicks + 1
 
@@ -2160,9 +2170,16 @@ function rearm_timer()
 		return
 	end
 	if timerPending then
-		-- A one-shot is already outstanding; it will fire on its own. This is the notes-starve-the-clock
-		-- fix - see this function's comment above.
-		return
+		if framesSinceTick < TIMER_WATCHDOG_FRAMES then
+			-- A one-shot is already outstanding; it will fire on its own. This is the notes-starve-the-clock
+			-- fix - see this function's comment above.
+			return
+		end
+		-- Watchdog: MainStage never delivered the outstanding one-shot, so nothing was ever going to
+		-- clear timerPending. Re-arm anyway - see
+		-- docs/config-lua-history.md#timer-watchdog-a-lost-one-shot-latches-timerpending-forever-2026-09-07.
+		print('[sllink] timer watchdog: one-shot lost after ' .. framesSinceTick .. ' frames - re-arming')
+		framesSinceTick = 0
 	end
 	if state == STATE_LOGGED_OUT then
 		-- Pin the tick at KEEPALIVE_MS regardless of has_pending()/popupActive, so LOGOUT_SILENT_TICKS
@@ -2208,6 +2225,8 @@ function request_quick_rearm()
 end
 
 function controller_midi_in(midiEvent, portName)
+	framesSinceTick = framesSinceTick + 1
+
 	if midiEvent[0] == 0xF0 then
 		print('[sllink] <- SYSEX on port=' .. tostring(portName) .. ': ' .. dump_event(midiEvent))
 	end
