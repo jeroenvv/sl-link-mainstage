@@ -86,7 +86,6 @@ IT_IDENTIFICATION = 0x7F
 -- Master Volume R/W flag (item type IT_MASTER_VOLUME's own function byte).
 MVOL_READ = 0
 MVOL_WRITE = 1
-MVOL_UNMUTED = 0 -- trailing MUTE byte on a write; we never mute from the host, always send unmuted
 
 -- Button IDs, matching the spec's button ID table (see docs/implementing-sl-link.md).
 BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
@@ -776,17 +775,13 @@ function msg_system(func)
 	return m
 end
 
--- vol is 0-100 (a percentage, not 0-127) - single byte, no msb/lsb split. The spec calls the
--- trailing MUTE byte optional "for retrocompatibility", but §7 catalogues the hardware disagreeing
--- with the spec on optional trailing bytes more often than documented, so this sends it explicitly.
--- Hardware capture of Numa Player traffic shows func=MVOL_READ used for writes too, with VOL/MUTE
--- appended; spec says MVOL_WRITE, but mirroring the device's own traffic is under test here.
+-- vol is 0-100 (a percentage, not 0-127) - single byte, no msb/lsb split. MUTE is omitted
+-- deliberately so a volume write never touches mute status - see docs/implementing-sl-link.md §6.
 function msg_master_volume_write(vol)
 	local m = sl_header()
 	table.insert(m, IT_MASTER_VOLUME)
-	table.insert(m, MVOL_READ)
+	table.insert(m, MVOL_WRITE)
 	table.insert(m, vol)
-	table.insert(m, MVOL_UNMUTED)
 	table.insert(m, SL_END)
 	return m
 end

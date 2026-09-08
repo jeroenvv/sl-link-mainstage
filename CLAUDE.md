@@ -163,8 +163,9 @@ with the published spec. Read that rather than re-deriving from the spec.
 Project-specific notes that live only here:
 
 - **Implemented:** Identification, System (device notification, login confirmation/recall, logout,
-  standby, restart), Display (rect/text/bitmap), Buttons, Encoders. **Out of scope:** device icon
-  upload, Master Volume, Hardware/Pedal Settings queries, White/RGB LED control.
+  standby, restart), Display (rect/text/bitmap), Buttons, Encoders, Master Volume (the A encoder
+  drives the audio board's volume; the host owns the value and writes it). **Out of scope:** device
+  icon upload, Hardware/Pedal Settings queries, White/RGB LED control.
 - **Plot Bitmap draws from the SL88's internal bitmap library** (Groups/Icons, no pixel upload
   needed) — see `docs/implementing-sl-link.md` §5 for the group table; verified on hardware, Knob
   group renders as a filling 13-step ring gauge, used by the encoder value popup.

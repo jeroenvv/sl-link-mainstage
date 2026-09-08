@@ -591,10 +591,10 @@ expected there.
 reboot). Sniffing CoreMIDI sources while Studiologic's own Numa Player drove the volume: each
 encoder-A tick is followed ~3ms later by `F0 00 20 1A 16 7E 60 07 00 <VOL> <MUTE> F7`, VOL stepping
 with the knob — 81 ticks, 81 volume reports. Under identical conditions with our script active: 133
-encoder-A ticks, **zero** `0x07` frames. This exposes a spec disagreement: the device's own traffic
+encoder-A ticks, **zero** `0x07` frames. This was read as a spec disagreement — the device's own traffic
 uses `R/W = 00` *with* a VOL payload, where `docs/hardware-io.md` describes `R/W = 0` as a read with
-VOL omitted — the same class of hardware-vs-spec divergence `docs/implementing-sl-link.md` §7
-catalogues.
+VOL omitted. **That conclusion was wrong; see "Master Volume: answered upstream" below.** The frame is
+the hardware's read *reply*, and only half the exchange was visible to a source-only sniffer.
 
 **Ruled out today, each on hardware:** audio board missing (`SL AUDIO` exists as a Core Audio
 device); audio board not in use (routing MainStage's output through it changed nothing); host
@@ -615,4 +615,51 @@ once been sent.
 
 **Current code state:** `msg_master_volume_write` now emits `07 00 <vol> 00` (mirroring the device's
 observed format), not the spec's `07 01`. **Neither form works.** Left as-is pending the issue —
-noted here so the current form is not mistaken for known-good.
+noted here so the current form is not mistaken for known-good. *(Superseded — see the next section.)*
+
+## Master Volume: answered upstream (2026-09-08)
+
+Andrea (FSL, hardware side) answered <https://github.com/fatarsrl/sl-link/issues/2>. The protocol
+consequences are folded into `docs/implementing-sl-link.md` §6 and §7; what belongs here is what it
+says about *our* investigation, including the parts of it that were wrong.
+
+**The capture was read backwards.** `07 00 <VOL> <MUTE>` arriving from the keyboard is a **read
+reply**, not a write — the hardware must answer a read request with the payload present. Numa Player's
+sequence is read request → this reply → `07 01 <VOL>` write; our sniffer watches CoreMIDI *sources*
+only, so it recorded the middle message of three and we mistook it for the whole exchange. There was
+never a spec disagreement here. The general lesson is the one already on file as
+`verify-observability-before-negatives`: a half-visible channel produces confident, wrong readings, and
+"the device's own traffic uses this format" is only trustworthy when both directions are visible.
+
+**`R/W = 0x00` is why the current code does nothing.** The firmware discards every byte past the R/W
+byte when it is `0x00`, so `07 00 <vol> 00` is a read request with junk attached, not a write. Mirroring
+the device was the wrong instinct: the two directions are not symmetric.
+
+**The keyboard does not own the volume — the host does.** Turning A produces an encoder message and
+nothing else; the audio board's volume only moves because a host writes it. That retires the standing
+puzzle in `docs/implementing-sl-link.md` §7 about A arriving "with no accompanying volume traffic":
+there was never supposed to be any.
+
+**The remaining suspect for `07 01` also being ignored is login state.** The precondition Andrea states
+is identified + keeping alive + **logged in**, where logged in specifically means a System Login
+Confirmation was received. Finding 3 in the 2026-09-05 section above records that `handle_login()`
+frequently never runs — the SL88 remembers the host across runs and sends neither Approved nor Login
+Confirmation, and the session reaches ACTIVE through the Identification-Query reply path instead.
+`enter_active_session()` makes our *own* state machine reach ACTIVE either way, but it cannot make the
+keyboard consider us logged in. So the `07 01` attempts recorded on 2026-09-06 may have been sent in a
+state where the firmware was entitled to ignore them.
+
+**The read is the observability probe.** The hardware *must* answer `07 00` with a payload. So a run
+that sends the read and gets no `0x07` back is positive evidence that the session is not logged in —
+which is a far better signal than "the volume did not change". Check for the read reply first; only
+if it arrives is a silent write a real write bug.
+
+**DeviceID nomenclature is retired, and `examples/` is stale on it.** Bytes 5 and 6 together are the
+DeviceID, regenerated per session; `HostID`/`InstanceID` is old documentation. Andrea confirmed the
+reference JUCE plugins still use the old static mechanics and are therefore not a reference for
+identification — one for `revalidate-findings-against-reference-implementations`. The hardware cannot
+distinguish a random DeviceID from a fixed one (it is only anti-collision), so `SL_HOST_ID = 0x03` plus
+an in-script instance byte stays valid and needs no change.
+
+**Still owed upstream:** Andrea asked whether the documentation reads as misleading on DeviceID and on
+host/device-vs-hardware nomenclature, and offered to look at a full SysEx capture.
