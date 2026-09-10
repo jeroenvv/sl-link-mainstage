@@ -377,7 +377,35 @@ encoderValue = { -- absolute 0-127 tracked value per encoder wired to a CC
 	[EID_JOYSTICK] = 64, [EID_B] = 64,
 }
 
-masterVolume = 100 -- 0-100 percentage, driven by EID_A; synced from hardware by handle_login's READ
+masterVolume = 100 -- 0-100 percentage: the value being SENT, accumulated by EID_A deltas and reseeded
+	-- from masterVolumeRead at each gesture start - see the EID_A handler and
+	-- docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10.
+	-- Never written to the device until masterVolumeRead is known - see
+	-- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
+masterVolumeRead = nil -- last VOL from an actual READ reply (07 00); nil until one arrives - seeds masterVolume, never shown directly
+
+-- True until the first READ reply lands, forcing the EID_A handler to reseed masterVolume from
+-- masterVolumeRead on that first known-value tick regardless of MVOL_GESTURE_IDLE_TICKS - see
+-- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
+mvolNeedsSeed = true
+
+-- Rate-limits the Master Volume read queued alongside each EID_A tick (see the EID_A handler): only
+-- queue another once the outstanding one has been answered, or MVOL_READ_TIMEOUT_FRAMES SL frames
+-- pass with no reply (a lost reply must not wedge this forever). Counted in SL frames
+-- (slFrameCounter), not ticks, so it tracks actual protocol round-trips regardless of tick pacing.
+mvolReadPending = false
+mvolReadPendingFrame = 0
+MVOL_READ_TIMEOUT_FRAMES = 10
+
+-- Counts calls to handle_sl_frame - feeds the read rate limit above.
+slFrameCounter = 0
+
+-- idleTicks value at the last EID_A tick, and how many ~1s idle ticks since then still count as the
+-- SAME gesture - same idleTicks/POPUP_TICK_MS cadence check_popup_dismiss() uses for the popup's own
+-- ~1s-idle dismissal. -1e6 means "no gesture yet", so the very first tick always seeds. See the
+-- EID_A handler and docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10.
+mvolLastActivityIdleTick = -1000000
+MVOL_GESTURE_IDLE_TICKS = 1
 
 -- Gates EVERY settriggertimer call (rule 6 in the banner above): true whenever a one-shot is
 -- currently outstanding. rearm_timer() only calls settriggertimer when this is false, and sets it
@@ -596,10 +624,13 @@ flushCounter = 0
 -- Emits whole messages up to the budget. `includeQuery` appends an Identification Query and
 -- reserves room for it inside the budget: its reply is the only thing that re-arms the one-shot
 -- timer (see the SESSION CLOCK note above controller_midi_in), so a flush carrying no query can
--- stall the session clock. Exception: a Master Volume write goes out unpaired - see
--- docs/config-lua-history.md#master-volume-writes-go-out-unpaired-2026-09-10.
+-- stall the session clock. A Master Volume write used to go out unpaired (dropping the query) -
+-- reverted, it was not what made Master Volume work and it starved the clock during an A-encoder
+-- sweep - see docs/config-lua-history.md#master-volume-writes-go-out-unpaired-2026-09-10.
 function flush_pending(includeQuery)
 	local out = {}
+	local query = includeQuery and msg_identification_query() or nil
+	local reserve = query and #query or 0
 	-- A queued message may tag itself with an .outport field to send on a port other than SL_PORT
 	-- (nothing currently does - the Phase 2 CC batch goes out through flush_pending_cc, not this path,
 	-- and is outport-less by design). General escape hatch: an ordinary queued message leaves .outport
@@ -624,9 +655,6 @@ function flush_pending(includeQuery)
 	-- never reorder relative to each other - only a protocol message can jump ahead of ones still
 	-- waiting on displayFlushReady. Still at most one queued message per flush, still paired with the
 	-- query below.
-	--
-	-- Peeked here (before the query is built) so a Master Volume message can drop the query and its
-	-- budget reservation both.
 	local index, m = nil, nil
 	if #pendingMessages > 0 then
 		local head = pendingMessages[1]
@@ -643,10 +671,6 @@ function flush_pending(includeQuery)
 		end
 	end
 
-	local isMasterVolume = m ~= nil and m[8] == IT_MASTER_VOLUME
-	local query = (includeQuery and not isMasterVolume) and msg_identification_query() or nil
-	local reserve = query and #query or 0
-
 	if m ~= nil and #m + reserve <= FLUSH_BUDGET then
 		local isDisplay = (m[8] == IT_DISPLAY)
 		table.remove(pendingMessages, index)
@@ -658,10 +682,6 @@ function flush_pending(includeQuery)
 			-- earns the next draw MODE_SWITCH_SETTLE_TICKS extra ticks of quiet on top of the ordinary
 			-- one-per-tick pacing.
 			if m[9] == DISP_CLEAR_SCREEN then displaySettleTicks = MODE_SWITCH_SETTLE_TICKS end
-		elseif isMasterVolume and includeQuery then
-			-- No query went out this flush to re-arm the clock - see this function's own comment
-			-- above and docs/config-lua-history.md#master-volume-writes-go-out-unpaired-2026-09-10.
-			request_quick_rearm()
 		end
 		flushCounter = flushCounter + 1
 		-- `tick=` ties this FLUSH to controller_timer_trigger's tick print, so a captured log reads as
@@ -1237,16 +1257,21 @@ end
 
 -- Same SIZE_MEDIUM/non-zero-maxWidth safety as draw_popup_label above - a 1-3 digit value is even
 -- shorter than the label, so truncation is not in play here either.
+-- value may be nil - shown as '--', never as a number (defensive; no current caller passes nil -
+-- see docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10).
 function draw_popup_value(value)
-	draw_text('popupValue', tostring(value), POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
+	local text = value and tostring(value) or '--'
+	draw_text('popupValue', text, POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
 		ALIGN_CENTER, SIZE_MEDIUM, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
 -- Knob icon index for a 0-popupMax value: linear scaling by value/popupMax (NOT value/(popupMax+1)),
 -- so that value=0 selects icon 0 (empty) and value=popupMax - the actual maximum - selects icon 0x0C
--- (full) exactly, whether popupMax is 127 (CC encoders) or 100 (Master Volume).
+-- (full) exactly, whether popupMax is 127 (CC encoders) or 100 (Master Volume). nil (no READ reply
+-- yet) also renders as icon 0 - empty, same as 0, never a misleading full ring.
 function popup_knob_icon(value)
+	if value == nil then return 0 end
 	return math.floor(value * (BMP_KNOB_LEVELS - 1) / popupMax)
 end
 
@@ -1307,7 +1332,12 @@ end
 function show_master_volume_popup()
 	popupControlName = 'Main Volume'
 	popupCcNumber = nil
-	popupValue = masterVolume
+	-- The value being SENT (masterVolume), not the device's last READ reply - stays smooth during a
+	-- fast turn regardless of reply timing. See
+	-- docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10.
+	-- nil (masterVolumeRead not yet known) shows draw_popup_value's '--' placeholder instead - see
+	-- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
+	popupValue = masterVolumeRead and masterVolume or nil
 	popupMax = 100
 	popupLastActivityIdleTick = idleTicks
 
@@ -1321,13 +1351,14 @@ function show_master_volume_popup()
 	end
 end
 
--- ~1s-idle dismissal, quantised to the session clock's existing idle-tick counter (idleTicks,
+-- ~2s-idle dismissal, quantised to the session clock's existing idle-tick counter (idleTicks,
 -- incremented once per timer-tick while nothing is draining). While popupActive is true,
 -- rearm_timer() arms the tick at POPUP_TICK_MS (~1s) instead of the normal KEEPALIVE_MS (~3s), so
--- POPUP_DISMISS_IDLE_TICKS=1 means 'wait one ~1s tick'. This reuses the single existing timer
+-- POPUP_DISMISS_IDLE_TICKS=2 means 'wait two ~1s ticks'. This reuses the single existing timer
 -- rather than adding a second settriggertimer, which risks the same starved-clock class of bug rule
--- 6 in the banner fixes.
-POPUP_DISMISS_IDLE_TICKS = 1
+-- 6 in the banner fixes. Independent of MVOL_GESTURE_IDLE_TICKS (its own constant, compared in the
+-- EID_A handler, not here) - see docs/config-lua-history.md#popup-dismiss-doubled-to-2s-2026-09-10.
+POPUP_DISMISS_IDLE_TICKS = 2
 
 -- Popup is a full-screen mode, so dismissal is just switching BACK to whatever mode was active
 -- before it took over - reusing set_display_mode's own proven double-Clear-Screen/
@@ -1793,10 +1824,20 @@ end
 
 -- Builds, logs and queues a Master Volume READ to sync masterVolume with the hardware's current
 -- value. Split out so handle_login can force one even when enter_active_session() is a no-op.
-function queue_master_volume_read()
+-- regionId is optional: the A-popup refresh passes one so rapid ticks coalesce (see EID_A handler).
+function queue_master_volume_read(regionId)
 	local mvolReadMsg = msg_master_volume_read()
 	slog('-> MASTER VOLUME READ: ' .. dump_bytes(mvolReadMsg))
-	queue_message(mvolReadMsg)
+	queue_message(mvolReadMsg, regionId)
+end
+
+-- EID_A tick's READ poll, gated by mvolReadPending/MVOL_READ_TIMEOUT_FRAMES - see their declarations.
+function poll_master_volume()
+	if not mvolReadPending or (slFrameCounter - mvolReadPendingFrame) > MVOL_READ_TIMEOUT_FRAMES then
+		queue_master_volume_read('mvolRead')
+		mvolReadPending = true
+		mvolReadPendingFrame = slFrameCounter
+	end
 end
 
 -- Shared entry point for every transition into STATE_ACTIVE (login confirmation/recall, restart,
@@ -1907,6 +1948,7 @@ end
 function handle_sl_frame(e)
 	local itemType = e[7]
 	local func = e[8]
+	slFrameCounter = slFrameCounter + 1
 
 	if itemType == IT_IDENTIFICATION then
 		if func == ID_APPROVED then
@@ -1961,7 +2003,15 @@ function handle_sl_frame(e)
 		-- trailing bytes are optional more often than the spec documents) - ignored either way.
 		local vol = e[9]
 		if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
-		masterVolume = vol
+		if func == MVOL_READ then
+			mvolReadPending = false
+			-- Only seeds the NEXT gesture start (EID_A handler) - never masterVolume itself, so a slow
+			-- or stale reply can never perturb a value already being sent. See
+			-- docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10.
+			masterVolumeRead = vol
+		else
+			masterVolume = vol
+		end
 		slog('<- MASTER VOLUME ' .. masterVolume)
 	elseif itemType == IT_BUTTON then
 		local bid = func
@@ -1988,15 +2038,31 @@ function handle_sl_frame(e)
 		local eid = func
 		local delta = e[9] - 0x40
 		if eid == EID_A then
-			local vol = masterVolume + delta
-			if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
-			masterVolume = vol
-			-- Own regionId so a fast twist's many ticks coalesce to one queued write, not several -
-			-- see queue_message's PER-REGION COALESCING comment.
-			local mvolWriteMsg = msg_master_volume_write(masterVolume)
-			slog('-> MASTER VOLUME WRITE: ' .. dump_bytes(mvolWriteMsg))
-			queue_message(mvolWriteMsg, 'mvol')
-			show_master_volume_popup()
+			if masterVolumeRead == nil then
+				-- No confirmed device value yet: never write a guess - see
+				-- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
+				poll_master_volume()
+				show_master_volume_popup()
+			else
+				-- New gesture (>= MVOL_GESTURE_IDLE_TICKS idle ticks, ~1s each, since the last A tick, OR
+				-- the first known-value tick after a run of suppressed ones) starts from the device's own
+				-- truth, not the local guess - see mvolLastActivityIdleTick's declaration.
+				if mvolNeedsSeed or idleTicks - mvolLastActivityIdleTick >= MVOL_GESTURE_IDLE_TICKS then
+					masterVolume = masterVolumeRead
+					mvolNeedsSeed = false
+				end
+				mvolLastActivityIdleTick = idleTicks
+				local vol = masterVolume + delta
+				if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
+				masterVolume = vol
+				-- Own regionId so a fast twist's many ticks coalesce to one queued write, not several -
+				-- see queue_message's PER-REGION COALESCING comment.
+				local mvolWriteMsg = msg_master_volume_write(masterVolume)
+				slog('-> MASTER VOLUME WRITE: ' .. dump_bytes(mvolWriteMsg))
+				queue_message(mvolWriteMsg, 'mvol')
+				poll_master_volume()
+				show_master_volume_popup()
+			end
 		else
 			local control = ENCODER_CC[eid]
 			if control ~= nil then
@@ -2082,6 +2148,9 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	activeSetIndex, activePatchIndex = 0, 0
 	cursorIndex, scrollOffset = 0, 0
 	listRows = {}
+	mvolReadPending = false
+	slFrameCounter = 0
+	mvolLastActivityIdleTick = -1000000
 	invalidate_all()
 
 	if applicationName ~= nil and applicationName ~= '' then

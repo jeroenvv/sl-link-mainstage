@@ -1090,6 +1090,15 @@ bundled with the query, itself suspected undeliverable per the bundling pattern 
 if the user goes completely idle immediately afterward. Not fixed here; flagged for anyone chasing an
 unexplained APP-list drop following a heavy multi-encoder sweep.
 
+**Reverted (2026-09-10).** Confirmed on hardware: pairing every Master Volume write with a READ (see
+[the section below](#master-volume-drop-detection-read-rate-limiting-and-the-mid-gesture-guard-2026-09-10))
+is what actually made the device answer - not this unpairing. Once the READ was added, the unpairing
+became actively harmful: during an A-encoder sweep most flushes ARE Master Volume messages, so dropping
+the query on each one crowded out the keepalive and the SL88 dropped the app after ~5s. `flush_pending`
+now always appends the
+query when `includeQuery` is true, Master Volume included, and the `request_quick_rearm()` call this
+change added is gone with it - the paired query is itself the re-arm mechanism.
+
 ---
 
 ## Reading instance tags from a log: dead incarnations, not concurrent instances (2026-09-10)
@@ -1151,3 +1160,163 @@ starting `instanceID`s, and (b) a finalize -> re-init cycle whose next Identific
 APPROVED on the first try with no REJECTED at all - repeated across several cycles - where today's
 bug would instead show a `03 6D`/`03 6D` collision and at least one REJECTED before the retry clears
 it.
+
+---
+
+## Master Volume drop detection, read rate limiting, and the mid-gesture guard (2026-09-10)
+
+Sending a Master Volume READ alongside every WRITE (`queue_master_volume_read('mvolRead')` in the
+`EID_A` handler) is what makes the SL88 answer - confirmed on hardware: READ replies started arriving
+(`<- MASTER VOLUME 67`) and the volume actually moved. This run also surfaced three problems, fixed
+together:
+
+**1. Query/Master-Volume pairing reverted** - see
+[Master Volume writes go out unpaired](#master-volume-writes-go-out-unpaired-2026-09-10)'s own
+"Reverted" note. The READ was the fix, not the unpairing; the unpairing became actively harmful once
+combined with it.
+
+**2. Active session drop detection.** Once the SL88 drops an app from its list, nothing previously
+noticed - the script kept believing it was `STATE_ACTIVE` and transmitted into the void forever.
+`controller_timer_trigger` now accumulates `timerArmedInterval` into `activeMsSinceQueryReply` on every
+tick while `STATE_ACTIVE`; any Identification Query reply resets it to zero
+(`handle_sl_frame`'s `ID_QUERY` branch). If it reaches `ACTIVE_QUERY_DROP_MS` (`2 * KEEPALIVE_MS`,
+6s) with no reply seen, the tick falls to `STATE_IDLE`, which the existing branch immediately below
+turns into a fresh `start_identification()` - reusing that path rather than calling it twice in the
+same tick.
+
+Accumulating *time* (via `timerArmedInterval`) rather than counting raw ticks matters because tick
+pacing is not constant: while a repaint or an encoder sweep drains, `rearm_timer()` picks
+`FLUSH_SOON_MS` (35ms) instead of `KEEPALIVE_MS` (3s) - see [the session
+clock](#the-session-clock-and-the-one-shot-timer). A tick-count threshold would either fire almost
+instantly during a fast sweep (false positive) or take far too long during idle keepalive pacing. In
+practice this is not even a risk during a *healthy* sweep: every tick's flush carries its own query
+(fix 1 above), so a connected keyboard answers almost immediately (~2ms round trip) and the
+accumulator resets before the next tick regardless of how fast ticks are arriving. Two consecutive
+full misses (6s) is not reachable by jitter alone; it means the keyboard has gone genuinely silent.
+
+Threshold reasoning: the SL88 drops a silent host after ~5s. One missed reply could be a single lost
+packet, so the detector waits for a second consecutive miss - `2 * KEEPALIVE_MS` = 6s - before
+concluding it's a real drop. This is the same margin-over-5s idea `LOGOUT_SILENT_TICKS` already uses
+(3 ticks, ~9s) but shorter, since here the goal is fast recovery from an already-confirmed problem
+rather than deliberately waiting out the drop.
+
+**3. Master Volume READ rate limiting.** Every `EID_A` tick used to queue both a write AND a read; with
+one message per flush the read queue was permanently backlogged, making the control feel sluggish.
+`mvolReadPending` now gates it: an `EID_A` tick only queues a new read if none is outstanding, or if
+`MVOL_READ_TIMEOUT_FRAMES` (10) SL frames have passed since the outstanding one was sent with no reply
+(a lost reply must not wedge the guard shut forever). The reply clears the flag
+(`handle_sl_frame`'s `IT_MASTER_VOLUME`/`MVOL_READ` branch). Counted in SL frames
+(`slFrameCounter`, incremented once per `handle_sl_frame` call) rather than ticks, for the same
+pacing-independence reason as fix 2.
+
+**4. Mid-gesture guard against a stale READ reply.** Hardware log showed masterVolume oscillating
+during a sweep (`07 01 42, 07 01 41, 07 01 42, 07 01 41`): a READ reply answering an OLDER request
+was landing after the `EID_A` handler had already applied a NEWER local delta, and clobbering it back
+down. `masterVolumeRead` (the device-reported value the popup displays) must keep updating from every
+reply regardless - that's the point of the READ - but `masterVolume` (the value being written) must
+not.
+
+Fix: `mvolLastGestureFrame` records `slFrameCounter` at the last `EID_A` tick. A `MVOL_READ` reply only
+overwrites `masterVolume` if `slFrameCounter - mvolLastGestureFrame > MVOL_GESTURE_WINDOW_FRAMES` (5) -
+i.e. at least 5 SL frames of quiet since the last local delta. "Mid-gesture" is defined purely as this
+short window since the last `EID_A` tick, deliberately simple: it doesn't try to match a reply to the
+specific request it answers, it just distrusts ANY reply landing soon after a local delta, which is
+exactly the situation that produced the oscillation. The window needs to survive a few more encoder
+ticks and their own (still in-flight) read replies arriving interleaved and out of order during
+continuous rotation, while opening quickly once the user actually stops so the display can resync -
+5 frames was chosen as a small multiple of that, not measured on hardware; retune here if a future
+capture shows it too short (residual oscillation) or too long (sluggish resync after stopping).
+
+**Fix 2 removed the same day.** A build containing the drop detector left MainStage feeling frozen,
+with audio pops, while completely idle - no user interaction at all. The re-identify loop (drop to
+`STATE_IDLE` -> `start_identification()` -> possible IDENTIFICATION REJECTED -> wait/retry/bump) is
+the suspected mechanism - the hardware log showed `re-identify retry 1/2` and `2/2` firing - but this
+is suspected, not proven: the debug capture for that run was lost when MainStage was restarted
+manually. `ACTIVE_QUERY_DROP_MS` and `activeMsSinceQueryReply` were removed entirely; fixes 1, 3, and
+4 above are unaffected. Consequence: the app no longer recovers on its own if the SL88 drops it from
+its APP list.
+
+---
+
+## Master Volume popup: seed from READ, track the write value (2026-09-10)
+
+Fix 4 above (the mid-gesture guard) kept `masterVolume` itself from oscillating, but the A popup
+displayed `masterVolumeRead` directly - the device's own last READ reply, not the value actually
+being written. On hardware this looked jumpy and unsmooth: the number on screen only moved when a
+reply happened to land, so its update rate depended on round-trip timing rather than the encoder.
+
+**Change:** the popup now shows `masterVolume` - the value being sent - on every tick, not
+`masterVolumeRead`. `masterVolumeRead` still updates from every READ reply as before, but now only
+feeds one thing: reseeding `masterVolume` at the *start* of a new gesture, so a turn still begins
+from the device's real value rather than a possibly-stale local guess. This also makes fix 4's own
+guard unnecessary - it existed only to keep a READ reply from clobbering `masterVolume` mid-gesture,
+and now READ replies never touch `masterVolume` at all, at any time. `mvolLastGestureFrame`/
+`MVOL_GESTURE_WINDOW_FRAMES` are removed.
+
+**Gesture boundary.** The script has no clock, so "start of a new gesture" is approximated the same
+way the popup's own idle-dismissal already is: `idleTicks`, incremented once per timer tick while
+nothing is draining, paced at `POPUP_TICK_MS` (~1s) whenever the A popup is active and idle (see
+`rearm_timer`'s `popupActive` branch and `check_popup_dismiss`). `mvolLastActivityIdleTick` records
+`idleTicks` at the last `EID_A` tick; a new tick counts as a new gesture once
+`idleTicks - mvolLastActivityIdleTick >= MVOL_GESTURE_IDLE_TICKS` (1). This reuses an existing,
+already-hardware-paced clock rather than adding a second one - the same reasoning `POPUP_DISMISS_IDLE_TICKS`
+already relies on. Real-time accuracy: while idle it lands close to 1s (one `POPUP_TICK_MS` period
+plus whatever small drain delay preceded it, typically tens of ms); it is not a raw tick or frame
+count that would otherwise run fast during an active sweep, since `idleTicks` deliberately does not
+advance while `has_pending()` is true.
+
+**No-reply-yet fallback.** If a gesture starts before any READ reply has ever arrived
+(`masterVolumeRead == nil` - plausible, since the READ queued at login is asynchronous),
+`masterVolume` keeps its current value instead of seeding to nil: `masterVolume = masterVolumeRead or
+masterVolume`. In practice this is the default 100 or whatever a previous gesture already
+accumulated.
+
+**Corrected (2026-09-10) - this fallback was the bug, see below.** It let the first tick WRITE the
+invented default.
+
+---
+
+## Never write an unconfirmed Master Volume (2026-09-10)
+
+Hardware log: the login-time Master Volume READ was never answered, but the very first A-encoder tick
+still wrote `masterVolume` (the hardcoded default, 100) to the device, jumping the audio board to full
+volume:
+
+```
+-> MASTER VOLUME READ  (sent at login - never answered)
+-> MASTER VOLUME WRITE ... 07 01 64      <- 0x64 = 100
+<- MASTER VOLUME 100
+```
+
+The trailing READ reply reported 100 only because the write had just put it there - not because 100
+was ever the device's real value. Confirmed on this hardware: the login-time READ goes unanswered,
+while READs issued during an EID_A gesture (`queue_master_volume_read('mvolRead')`) do get replies -
+so `masterVolumeRead` reliably becomes known within a tick or two of the user actually touching the
+encoder, just not before.
+
+**Fix.** The EID_A handler now branches on `masterVolumeRead == nil`: while unknown, it sends NO
+write at all (only keeps polling, same rate limit as before) and the popup shows the `--` placeholder
+(`popupValue = masterVolumeRead and masterVolume or nil`) rather than a guessed number. The
+[no-reply-yet fallback](#no-reply-yet-fallback) above - keep accumulating from the local guess - is
+removed; the old default value in `masterVolume` is never allowed to reach the wire while unconfirmed.
+
+**Suppressed deltas are discarded, not replayed.** Ticks while unknown update nothing - not even a
+local accumulator - so once `masterVolumeRead` arrives there is nothing queued up to apply. A new
+`mvolNeedsSeed` flag (true until the first known-value tick) forces that tick to seed `masterVolume`
+from `masterVolumeRead` regardless of `MVOL_GESTURE_IDLE_TICKS`, then clears; normal write behaviour
+resumes from there. Rejected alternative: apply the accumulated suppressed delta on top of the fresh
+device value once known. Discarding is safer - a delta computed against an invented starting point is
+itself meaningless, and the user simply turns the encoder again once the number appears.
+
+`MVOL_GESTURE_IDLE_TICKS` (the gesture re-seed boundary, still 1) and `POPUP_DISMISS_IDLE_TICKS` (the
+popup's own idle-dismiss threshold) are separate constants compared independently against `idleTicks`
+in unrelated call sites - this fix touches neither.
+
+---
+
+## Popup dismiss doubled to 2s (2026-09-10)
+
+`POPUP_DISMISS_IDLE_TICKS` raised from 1 to 2 (at `POPUP_TICK_MS` ~1s each, so ~1s -> ~2s) - the popup
+was disappearing too quickly to read. `MVOL_GESTURE_IDLE_TICKS` (the Master Volume gesture re-seed
+boundary) is a separate constant, confirmed correct at 1 and left unchanged - see [Never write an
+unconfirmed Master Volume](#never-write-an-unconfirmed-master-volume-2026-09-10) above.
