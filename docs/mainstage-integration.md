@@ -185,6 +185,9 @@ route instead.
 
 What's open, drawn from what's already tracked in this file and in `docs/config-lua-history.md`:
 
+- **Master Volume does not work, and the next step is a MIDI proxy** to capture Numa Player's
+  outbound bytes — every hypothesis reachable from our own side has been eliminated
+  (see "the login-state hypothesis is retired", 2026-09-10).
 - **Two hardware paths remain unproven** (see "Refactor verification" above): Zoom LONG press (the
   force-full-repaint path in `handle_zoom_button`), and the re-identification wait path
   (`STATE_REIDENTIFY_WAIT`, `handle_identification_rejected`), which needs a deliberate DeviceID
@@ -663,3 +666,62 @@ an in-script instance byte stays valid and needs no change.
 
 **Still owed upstream:** Andrea asked whether the documentation reads as misleading on DeviceID and on
 host/device-vs-hardware nomenclature, and offered to look at a full SysEx capture.
+
+## Master Volume: the login-state hypothesis is retired (2026-09-10)
+
+Andrea's answer left one suspect standing — that the `07 01` writes had been sent while the keyboard
+did not consider us logged in. Tested directly today. **It was not the cause.**
+
+**A real bug was in the way first.** `enter_active_session()` early-returned when already ACTIVE, and
+on hardware the session reaches ACTIVE via the Identification-Query self-heal path *before* the user
+selects the app. So the volume READ only ever went out in the un-logged-in state, and a later genuine
+Login Confirmation could not re-send it. Fixed: `queue_master_volume_read()` is factored out, and
+`handle_login()` — which runs only on a real login frame — forces a read when the self-heal path had
+already promoted the session. Harness test 35 asserts both halves (a genuine login queues exactly one
+read; a self-heal reaffirmation queues none) and was mutation-tested in both directions.
+
+**The run, with the fix in place.** All of Andrea's stated preconditions held simultaneously and were
+each visible in the log: identified (`03 6D`), keepalive running (one Identification Query per tick,
+replies arriving), and genuinely logged in — `F0 00 20 1A 16 03 6D 00 01 F7`, a System Login
+Confirmation, at which point `handle_login()` ran and queued the read:
+
+```
+<- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 00 01 F7
+<- LOGIN - session active
+-> MASTER VOLUME READ: F0 00 20 1A 16 03 6D 07 00 F7
+```
+
+The queue drained to 0, and across 20+ subsequent inbound frames **no `0x07` frame arrived**. In an
+earlier phase of the same run, ~15 well-formed `07 01 <vol>` writes went out in the logged-in state
+(`07 01 1B` down to `07 01 0D`) and Jeroen confirmed the output level did not move.
+
+**The observation path is sound this time** — the standing worry from
+`verify-observability-before-negatives`. Inbound SL Link frames are demonstrably visible: the login
+confirmation and every Identification-Query reply were logged through the same path a `07` reply would
+take. The one residual gap is outbound: `FLUSH` lines record byte counts, not bytes, and the 10-byte
+read is indistinguishable from the 10-byte keepalive, so "the read was sent" rests on queue-depth
+accounting rather than on seeing those bytes leave.
+
+**Ruled out today, on hardware:** login state (above); audio board missing or idle — `SL AUDIO`
+(STUDIOLOGIC) is present in Core Audio *and* is MainStage's configured output with speakers confirmed
+working, so a working write would have been audible.
+
+**What the Numa capture means now.** Re-read against Andrea's answer, the 2026-09-06 capture says more
+than it first appeared: 81 encoder-A ticks each produced a `07 00 <VOL> <MUTE>` reply ~3ms later. If
+that frame is a read *reply*, then Numa Player issues a **read on every tick** and writes afterwards —
+read-modify-write per tick, not a host that owns the value and pushes it. Jeroen independently proposed
+exactly this. It cannot be built here yet: it depends on the read being answered, which is the thing
+that does not happen.
+
+**The only route left is unchanged, and now it is the whole task:** capture Numa Player's *outbound*
+bytes. `sniff-all-sl-ports.swift` watches CoreMIDI sources and structurally cannot see a host→device
+send, so this needs a MIDI proxy — a virtual destination Numa Player is pointed at, which logs and
+forwards to the real `LINK` — or Snoize MIDI Monitor's spy driver. Every hypothesis reachable from our
+own side has now been tested and eliminated; what distinguishes Numa Player's session from ours is
+visible only in what it sends.
+
+**Owed upstream:** today's result is new information for
+<https://github.com/fatarsrl/sl-link/issues/2> — a read issued with a confirmed Login Confirmation in
+hand still goes unanswered. Andrea offered to look at a full SysEx capture; the proxy above would
+produce one.
+
