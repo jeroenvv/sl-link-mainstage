@@ -667,7 +667,13 @@ an in-script instance byte stays valid and needs no change.
 **Still owed upstream:** Andrea asked whether the documentation reads as misleading on DeviceID and on
 host/device-vs-hardware nomenclature, and offered to look at a full SysEx capture.
 
-## Master Volume: the login-state hypothesis is retired (2026-09-10)
+## Master Volume: the login-state hypothesis is retired (2026-09-10) — WRONG, SEE CORRECTION BELOW
+
+> **This section's conclusion was later disproved on the same day.** Login *is* required for Master
+> Volume; see "Master Volume needs a live login — earlier retirement was wrong (2026-09-10)" at the end
+> of this file. The run recorded below did hold a Login Confirmation and still failed, which remains
+> unexplained and is now attributed to MainStage's two script instances holding different DeviceIDs.
+> The rest of this section's observations stand; only its verdict does not.
 
 Andrea's answer left one suspect standing — that the `07 01` writes had been sent while the keyboard
 did not consider us logged in. Tested directly today. **It was not the cause.**
@@ -757,3 +763,38 @@ indistinguishable from the 10-byte keepalive. **Next experiment:** log the actua
 messages at flush time, run MainStage, and see whether `07 00` appears on the wire at all.
 
 
+
+
+## Master Volume needs a live login — earlier retirement was wrong (2026-09-10)
+
+Established with `Scripts/probe-mastervolume.swift` and, critically, a control run. Supersedes the
+verdict of "the login-state hypothesis is retired" above.
+
+**The result.** With the probe selected on the SL88's APP list, so a real System Login Confirmation
+arrives: reads answered 6/6, writes confirmed by read-back 4/4, negative control PASS. Run again with
+no selection and after a Logout Request has cleared the previous one: 0/6 and 0/4. The maintainer's
+stated precondition was correct.
+
+**How the wrong conclusion was reached, and it is worth remembering.** A probe run that reported
+"logged in: no" got 6/6 anyway, which looked like proof that login was irrelevant. It was not: that run
+reused DeviceID `6D` seconds after a run that *had* been logged in, so the keyboard still held `6D` as
+its selected app. The probe's own login detector, which only watches for a `00 01` frame during that
+run, could not see an inherited selection. **The state was carried between runs, and nothing reset it.**
+Four hypotheses were killed by controls today — bundled Identification Query, DeviceID contention, app
+name, and a supposed cooldown — and this one was very nearly *accepted* for want of one.
+
+Practical rule for anyone testing Master Volume: a run is only meaningful if the probe was explicitly
+selected on the keyboard during that run, or was deliberately not selected AND the previous run's
+selection was cleared. Rapid successive runs on the same DeviceID inherit state.
+
+**What remains unexplained.** MainStage's own session received a genuine `<- LOGIN - session active`
+and its Master Volume reads still went unanswered. So login is necessary but does not by itself account
+for the MainStage failure. Prime suspect: MainStage loads the script once per matched USB-MIDI
+interface, and with the identification fix in place those instances now take *different* DeviceIDs —
+`03 6D` and `03 6E` were both live and visible to the probe in the same run. Both register under the
+name "MainStage", but only one can be the entry the user actually selects, so A-encoder writes issued by
+the unselected instance would be ignored exactly as observed, while the selected instance's healthy
+login appears in the same shared stdout and makes the session look fine.
+
+**Next check:** whether the SL88's APP list shows two "MainStage" entries, and whether selecting the
+other one makes the A encoder work.
