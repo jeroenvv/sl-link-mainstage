@@ -725,3 +725,35 @@ visible only in what it sends.
 hand still goes unanswered. Andrea offered to look at a full SysEx capture; the proxy above would
 produce one.
 
+## Master Volume works on hardware — from a standalone probe (2026-09-10)
+
+`Scripts/probe-mastervolume.swift` drives its own SL Link session with no MainStage involved, and
+**Master Volume works completely**: reads answered 6/6, and `07 01 <vol>` writes at 20, 60, 90 and 45
+each confirmed by a read-back returning exactly that value. The `07 00 <vol>` shape correctly did
+*not* write (value unchanged) — it is only ever a reply, as Andrea said. A Login Confirmation was
+received during the run.
+
+**So the message form `config.lua` already sends is correct**, and the device honours it. Everything
+previously concluded about Master Volume being rejected was measurement error.
+
+**The probe's first run lied, and the lesson is the familiar one.** CoreMIDI delivered every SL Link
+frame **split across two packets** (`F0 00 20 1A 16 03` then `2B 07 00 3C 00 F7`). The probe decoded
+whole packets only, so both halves failed the header check, every frame logged as "not an SL Link
+frame", the `0x07` capture never matched, and the Login Confirmation detector never fired — producing
+a verdict table reading 0/11 replies and "logged in: no" when the device had in fact answered every
+read with the right value and the user had selected the app. The raw RX lines contained the answer the
+whole time. Fixed by buffering from `0xF0` to `0xF7` across packets before decoding. This is
+`verify-observability-before-negatives` a third time: the negative was in the decoder, not on the wire.
+
+**What is now unexplained is narrower and sharper:** the probe and `config.lua` send the same Master
+Volume bytes over an identically-shaped session, and only the probe is answered. Differences checked
+and eliminated: message shape (identical), login state (both logged in), keepalive type (`config.lua`
+sends the same `00 00` System Device Notification, line 2114, not only the Identification Query).
+
+**Leading hypothesis: the read never actually leaves MainStage.** The device answers a read in ~2ms,
+6/6, so a sent read that drew no reply is hard to credit. `config.lua`'s evidence that it was sent is
+only queue-depth accounting — `FLUSH` lines log byte *counts*, and the 10-byte read is
+indistinguishable from the 10-byte keepalive. **Next experiment:** log the actual bytes of protocol
+messages at flush time, run MainStage, and see whether `07 00` appears on the wire at all.
+
+
