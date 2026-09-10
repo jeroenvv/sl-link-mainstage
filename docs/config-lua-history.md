@@ -966,3 +966,67 @@ the declaration and the branch, alongside five other unused symbols (`invalidate
 construction, it never fired. Left here as a reminder that a flag with no writer is worth grepping for
 before trusting what a comment claims a code path does: `screenDirty`'s own comment ("Used to keep the
 display self-healing") described intent, not actual behaviour, for the entire time it existed.
+
+---
+
+## Identification approval and rejection are lost in MainStage's init window (2026-09-10)
+
+Established on hardware with byte-level flush logging plus an independent CoreMIDI source sniffer,
+while chasing why Master Volume works from a standalone probe but not from the script.
+
+**The observation.** MainStage's documented init → finalize → init churn sends *two* Identification
+Requests, both as `03 6D`, because a re-init resets `instanceID` to `SL_INSTANCE_START` and
+`controller_finalize` deliberately sends no Logout Request (see
+[`controller_finalize` sends no Logout Request](#controller_finalize-sends-no-logout-request)). The
+SL88 answered both — the sniffer recorded `7F 01 ...` (APPROVED) for the first and
+`7F 02 00 ...` (REJECTED, reason 0 = id taken/reserved) for the second:
+
+```
+28 frames from the device, of which:
+ 1×  6D 7F 01 01 01 02 01 F7     IDENTIFICATION APPROVED
+ 1×  6D 7F 02 00 01 01 02 01 F7  IDENTIFICATION REJECTED (reason 0)
+25×  6D 7F 03 01 F7              Identification Query replies
+ 1×  6D 00 01 F7                 Login Confirmation
+```
+
+**Neither the approval nor the rejection appears in `/tmp/lua.log`.** `controller_midi_in` logs every
+inbound frame beginning `0xF0`, and it logged only the query replies and the login confirmation. The
+frames reached the Mac and did not reach the script: they arrive in the window after MainStage has
+wired up `outport` (the requests demonstrably went out) but before it begins delivering
+`controller_midi_in`.
+
+**The consequence is that the re-identification machinery is unreachable.**
+`handle_identification_rejected` is only ever called from the `7F 02` branch, so
+`STATE_REIDENTIFY_WAIT`, the derivation behind `REIDENTIFY_WAIT_MS = 6000`, and
+`MAX_SAME_ID_RETRIES` are all dead in practice — not wrong, just never entered. This also explains the
+long-standing note that `handle_login()` frequently never runs: the approval is lost the same way, and
+the session limps into `STATE_ACTIVE` through the `ID_QUERY` self-heal branch instead. Both behaviours
+had been attributed to the SL88 "remembering the host across runs"; the real cause is a delivery gap on
+the MainStage side.
+
+**Why this breaks Master Volume.** The live script believes it is identified as `03 6D`, while the
+SL88's registration for `03 6D` belongs to the first, now-finalized incarnation. The device keeps
+answering Identification Queries and sends a Login Confirmation for that id, but refuses Master Volume
+for it. Evidence that the id itself is fine: `Scripts/probe-mastervolume.swift` run with `--id2 6D`,
+solo with MainStage quit, got 6/6 reads answered and 4/4 writes confirmed by read-back. The same bytes
+from MainStage, with the contested registration, are ignored — the device never sends a `0x07` frame at
+all, confirmed by the sniffer, so this is a refusal at the device and not a decode gap on our side.
+
+**Rejected fix: send a Logout Request from `controller_finalize`.** Already tried and reverted for an
+independent reason recorded above — every spurious teardown then deletes the app from the SL88's APP
+list.
+
+**Chosen fix: stop treating an Identification Query reply as proof of identification.** The script
+re-sends the Identification Request until it sees an explicit `7F 01` approval. The point is not the
+resend by itself but that a resend lands *after* MainStage's inbound path is live, so whichever answer
+comes back is actually delivered — an approval promotes the session honestly, and a rejection finally
+reaches `handle_identification_rejected` and runs the recovery that was designed for it.
+
+**Fallback floor: revert to query-reply promotion once the resend budget is spent.** If
+`MAX_IDENTIFY_RESENDS` resends all go unanswered by an explicit `7F 01`, the fix above leaves the
+session stuck in `STATE_IDENTIFYING` with no keepalive going out — a silent, permanent failure of the
+whole integration. A dead session is worse than one missing Master Volume, so `identifyFallback` sets
+once the budget is exhausted and, from then on, restores the exact pre-fix behaviour: the timer branch
+resumes `send_keepalive()` and an `ID_QUERY` reply promotes a `STATE_IDENTIFYING` session via
+`enter_active_session()`. The `[sllink] identification never approved - falling back to query-reply
+promotion` log line is how to tell, from a hardware capture, which path a given run actually took.
