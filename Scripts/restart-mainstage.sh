@@ -4,8 +4,8 @@
 #
 # Why this exists: testing a MainStage device script means relaunching MainStage
 # after every edit, and MainStage frequently asks whether to save the concert on
-# quit. That dialog must be answered "Don't Save" - test runs must never modify
-# the user's concert - and, just as importantly, an unanswered dialog silently
+# quit. That dialog must be answered one way or the other - see --save below for
+# which, and which this project uses - and, just as importantly, an unanswered dialog silently
 # blocks the quit, so the relaunch never happens and the next test looks like it
 # failed for unrelated reasons.
 #
@@ -17,8 +17,9 @@
 #
 # Add --save BEFORE the mode to answer the prompt with Save instead:
 #   Scripts/restart-mainstage.sh --save --debug
-# The DEFAULT is deliberately Don't Save - a test run must never quietly modify
-# the concert. Only pass --save when the user has explicitly asked for it.
+# The script's default is Don't Save, but the project's standing instruction is to
+# pass --save on every test restart - losing hand-made MIDI-Learn assignments costs
+# far more than saving does. See .claude/skills/test-mainstage-script/SKILL.md.
 
 set -uo pipefail
 

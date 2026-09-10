@@ -49,7 +49,7 @@ defaults write com.apple.mainstage3 LUA_DEBUG -bool true
 swiftc -o /tmp/sniffer Scripts/sniff-all-sl-ports.swift
 rm -f /tmp/lua.log /tmp/sniff.log
 nohup /tmp/sniffer 900 > /tmp/sniff.log 2>&1 & disown
-./Scripts/restart-mainstage.sh --debug         # quits (answering Don't Save), relaunches, stdout -> /tmp/lua.log
+./Scripts/restart-mainstage.sh --save --debug  # quits (answering Save), relaunches, stdout -> /tmp/lua.log
 ```
 
 **Verify the restart actually happened before doing anything else with the result.**
@@ -113,20 +113,21 @@ Design every hardware test around a signal you have already proven you can see.
   not mean the user quit.
 - `settriggertimer` is a one-shot that will **not** re-arm from inside `controller_timer_trigger` —
   only from `controller_midi_in`.
-- Quitting MainStage raises a save prompt that must be answered **Don't Save**; unanswered, it silently
-  blocks the quit and the next test fails for an unrelated-looking reason. `restart-mainstage.sh`
-  handles this — use it rather than a bare `osascript ... to quit`. If it needs clearing by hand,
+- Quitting MainStage raises a save prompt that must be answered; unanswered, it silently
+  blocks the quit and the next test fails for an unrelated-looking reason. **Answer it with Save**
+  (`restart-mainstage.sh --save`) and do not stop to ask Jeroen or wait for him to save by hand —
+  he set this default after a run where discarding would have lost re-done MIDI-Learn assignments.
+  Use the script rather than a bare `osascript ... to quit`. If it needs clearing by hand,
   identify the sheet's buttons first:
   ```bash
   osascript -e 'tell application "System Events" to tell process "MainStage" to get name of every button of every sheet of every window'
   ```
   then click the answer:
   ```bash
-  osascript -e 'tell application "System Events" to tell process "MainStage" to click button "Don’t Save" of sheet 1 of window 1'
+  osascript -e 'tell application "System Events" to tell process "MainStage" to click button "Save" of sheet 1 of window 1'
   ```
-  `Don’t Save` uses a CURLY apostrophe (U+2019) — a straight `'` will not match the button name. The
-  standing default is Don't Save, but **ask Jeroen first** if he may have made concert changes he
-  wants kept — this happened once: deleted MIDI-Learn assignments would otherwise have been discarded.
+  `Don’t Save` uses a CURLY apostrophe (U+2019) — a straight `'` will not match the button name;
+  `Save` has no such trap.
 - Script matching runs on CoreMIDI device-add events; a full quit + relaunch is enough to force a
   rescan (no unplug/replug needed when the SL88 is already connected).
 
