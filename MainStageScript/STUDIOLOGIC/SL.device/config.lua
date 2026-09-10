@@ -292,6 +292,13 @@ REIDENTIFY_WAIT_MS = 6000
 -- rejecting us every time) doesn't wait forever.
 MAX_SAME_ID_RETRIES = 2
 
+-- Identification Request resends per identifying attempt, one per KEEPALIVE_MS tick, so a request
+-- sent before MainStage's inbound path is live gets a later resend that actually gets its reply
+-- delivered. 3 spans ~9s beyond the initial send - well past the SL88's ~5s host timeout - without
+-- resending forever. See
+-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+MAX_IDENTIFY_RESENDS = 3
+
 APP_NAME = 'MainStage'
 
 -- Must be kept in step with the repo-root VERSION file; Tests/lua/harness.lua asserts the two
@@ -362,6 +369,15 @@ timerArmedInterval = KEEPALIVE_MS
 -- MAX_SAME_ID_RETRIES whenever a FRESH instanceID is adopted (controller_initialize, and the bump
 -- fallback itself) or an identification succeeds; decremented on every same-id retry.
 reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
+
+-- Resends left for the CURRENT identifying attempt - see start_identification() (which resets this)
+-- and controller_timer_trigger's STATE_IDENTIFYING branch (which spends it).
+identifyResendsLeft = MAX_IDENTIFY_RESENDS
+
+-- True once the resend budget above is spent with no explicit APPROVED ever seen - the fallback
+-- floor that reverts to pre-fix query-reply promotion rather than leaving the session silent
+-- forever. See docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+identifyFallback = false
 
 -- The one-display-message-per-tick pacing gate (rule 5 in the banner above). Set TRUE once per
 -- timer tick, by controller_timer_trigger. flush_pending() may dequeue and emit a display message
@@ -534,11 +550,10 @@ flushCounter = 0
 -- Emits whole messages up to the budget. `includeQuery` appends an Identification Query and
 -- reserves room for it inside the budget: its reply is the only thing that re-arms the one-shot
 -- timer (see the SESSION CLOCK note above controller_midi_in), so a flush carrying no query can
--- stall the session clock.
+-- stall the session clock. Exception: a Master Volume write goes out unpaired - see
+-- docs/config-lua-history.md#master-volume-writes-go-out-unpaired-2026-09-10.
 function flush_pending(includeQuery)
 	local out = {}
-	local query = includeQuery and msg_identification_query() or nil
-	local reserve = query and #query or 0
 	-- A queued message may tag itself with an .outport field to send on a port other than SL_PORT
 	-- (nothing currently does - the Phase 2 CC batch goes out through flush_pending_cc, not this path,
 	-- and is outport-less by design). General escape hatch: an ordinary queued message leaves .outport
@@ -563,10 +578,13 @@ function flush_pending(includeQuery)
 	-- never reorder relative to each other - only a protocol message can jump ahead of ones still
 	-- waiting on displayFlushReady. Still at most one queued message per flush, still paired with the
 	-- query below.
+	--
+	-- Peeked here (before the query is built) so a Master Volume message can drop the query and its
+	-- budget reservation both.
+	local index, m = nil, nil
 	if #pendingMessages > 0 then
 		local head = pendingMessages[1]
 		local headIsDisplay = (head[8] == IT_DISPLAY)
-		local index, m = nil, nil
 		if not headIsDisplay or displayFlushReady then
 			index, m = 1, head
 		else
@@ -577,34 +595,42 @@ function flush_pending(includeQuery)
 				end
 			end
 		end
+	end
 
-		if m ~= nil and #m + reserve <= FLUSH_BUDGET then
-			local isDisplay = (m[8] == IT_DISPLAY)
-			table.remove(pendingMessages, index)
-			for i = 1, #m do out[#out + 1] = m[i] end
-			if m.outport then outPort = m.outport end
-			if isDisplay then
-				displayFlushReady = false
-				-- CLEAR SCREEN SETTLE GUARD: see displaySettleTicks' declaration. A Clear Screen going out
-				-- earns the next draw MODE_SWITCH_SETTLE_TICKS extra ticks of quiet on top of the ordinary
-				-- one-per-tick pacing.
-				if m[9] == DISP_CLEAR_SCREEN then displaySettleTicks = MODE_SWITCH_SETTLE_TICKS end
-			end
-			flushCounter = flushCounter + 1
-			-- `tick=` ties this FLUSH to controller_timer_trigger's tick print, so a captured log reads as
-			-- 'tick N emitted region R, depth D' - flushes can also happen off-tick (inbound-frame flushes
-			-- in controller_midi_in, controller_select_patch); a FLUSH whose tick= repeats the previous
-			-- FLUSH's is exactly one of those.
-			-- Protocol messages (regionId nil) get their bytes dumped too - they're rare enough not to
-			-- flood the log, and distinguishing e.g. a keepalive from a Master Volume read needs the bytes.
-			local msgSuffix = m.regionId == nil and (' msg=' .. dump_bytes(m)) or ''
-			print('[sllink] FLUSH #' .. flushCounter ..
-				' tick=' .. timerTicks ..
-				' regionId=' .. tostring(m.regionId or 'none') ..
-				' bytes=' .. #m ..
-				' queueDepthAfter=' .. #pendingMessages ..
-				msgSuffix)
+	local isMasterVolume = m ~= nil and m[8] == IT_MASTER_VOLUME
+	local query = (includeQuery and not isMasterVolume) and msg_identification_query() or nil
+	local reserve = query and #query or 0
+
+	if m ~= nil and #m + reserve <= FLUSH_BUDGET then
+		local isDisplay = (m[8] == IT_DISPLAY)
+		table.remove(pendingMessages, index)
+		for i = 1, #m do out[#out + 1] = m[i] end
+		if m.outport then outPort = m.outport end
+		if isDisplay then
+			displayFlushReady = false
+			-- CLEAR SCREEN SETTLE GUARD: see displaySettleTicks' declaration. A Clear Screen going out
+			-- earns the next draw MODE_SWITCH_SETTLE_TICKS extra ticks of quiet on top of the ordinary
+			-- one-per-tick pacing.
+			if m[9] == DISP_CLEAR_SCREEN then displaySettleTicks = MODE_SWITCH_SETTLE_TICKS end
+		elseif isMasterVolume and includeQuery then
+			-- No query went out this flush to re-arm the clock - see this function's own comment
+			-- above and docs/config-lua-history.md#master-volume-writes-go-out-unpaired-2026-09-10.
+			request_quick_rearm()
 		end
+		flushCounter = flushCounter + 1
+		-- `tick=` ties this FLUSH to controller_timer_trigger's tick print, so a captured log reads as
+		-- 'tick N emitted region R, depth D' - flushes can also happen off-tick (inbound-frame flushes
+		-- in controller_midi_in, controller_select_patch); a FLUSH whose tick= repeats the previous
+		-- FLUSH's is exactly one of those.
+		-- Protocol messages (regionId nil) get their bytes dumped too - they're rare enough not to
+		-- flood the log, and distinguishing e.g. a keepalive from a Master Volume read needs the bytes.
+		local msgSuffix = m.regionId == nil and (' msg=' .. dump_bytes(m)) or ''
+		print('[sllink] FLUSH #' .. flushCounter ..
+			' tick=' .. timerTicks ..
+			' regionId=' .. tostring(m.regionId or 'none') ..
+			' bytes=' .. #m ..
+			' queueDepthAfter=' .. #pendingMessages ..
+			msgSuffix)
 	end
 
 	if query then
@@ -1660,6 +1686,8 @@ end
 
 function start_identification()
 	state = STATE_IDENTIFYING
+	identifyResendsLeft = MAX_IDENTIFY_RESENDS
+	identifyFallback = false
 	queue_message(msg_identification_request())
 	print('[sllink] -> Identification Request as (' ..
 		string.format('%02X %02X', SL_HOST_ID, instanceID) .. ') on outport=' .. SL_PORT)
@@ -1849,9 +1877,12 @@ function handle_sl_frame(e)
 				state = STATE_IDLE
 				start_identification()
 			else
-				-- Identified. Treat this as 'the session is up' regardless of whether we ever saw
-				-- APPROVED/LOGIN, and make sure the screen actually reflects the current patch.
-				if state == STATE_IDENTIFYING or state == STATE_LISTED then
+				-- Identified. A query reply is not proof of APPROVAL though - only promote from LISTED
+				-- (already approved, just reaffirming); an unapproved STATE_IDENTIFYING session keeps
+				-- resending the Identification Request instead, so a real APPROVED/REJECTED reply lands.
+				-- identifyFallback is the floor for when that never happens - see
+				-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+				if state == STATE_LISTED or (state == STATE_IDENTIFYING and identifyFallback) then
 					enter_active_session()
 				end
 				if patchName ~= '' and not has_pending() then
@@ -2097,6 +2128,25 @@ function controller_timer_trigger()
 		logoutTicksLeft = logoutTicksLeft - 1
 		if logoutTicksLeft <= 0 then
 			start_identification()
+		end
+	elseif state == STATE_IDENTIFYING then
+		-- Not yet APPROVED. Resend rather than send_keepalive() - there is no APP-list entry to keep
+		-- alive yet - so a later resend's reply lands after MainStage's inbound path is live. See
+		-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+		if identifyResendsLeft > 0 then
+			identifyResendsLeft = identifyResendsLeft - 1
+			print('[sllink] -> re-sending Identification Request (' .. identifyResendsLeft .. ' left)')
+			queue_message(msg_identification_request())
+		else
+			-- Budget spent, still no APPROVED: fall back to the pre-fix query-reply promotion rather
+			-- than going silent forever (a dead session is worse than one missing Master Volume).
+			if not identifyFallback then
+				identifyFallback = true
+				print('[sllink] identification never approved - falling back to query-reply promotion')
+			end
+			if not has_keepalive_queued() then
+				send_keepalive()
+			end
 		end
 	else
 		-- MUST send the keepalive UNCONDITIONALLY on every keepalive-cadence tick, even while display

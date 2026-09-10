@@ -1315,8 +1315,10 @@ do
 		return reads
 	end
 
-	-- (a) ID_QUERY reply path: STATE_IDENTIFYING -> STATE_ACTIVE queues exactly one read.
-	state = STATE_IDENTIFYING
+	-- (a) ID_QUERY reply path: STATE_LISTED (already APPROVED) -> STATE_ACTIVE queues exactly one
+	-- read. STATE_IDENTIFYING must NOT be promoted this way - see
+	-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+	state = STATE_LISTED
 	pendingMessages = {}
 	local out = controller_midi_in(qreply(), 'LINK')
 	local reads = mvol_reads_in(out and out.midi)
@@ -1490,6 +1492,231 @@ do
 	end
 
 	state, pendingMessages = savedState, savedPending
+end
+
+-- MARK: - 36. Identification resend while identifying, and the ID_QUERY self-heal no longer fakes
+-- an approval - see
+-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+do
+	local savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending =
+		state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending
+
+	local function approved_frame()
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_IDENTIFICATION, ID_APPROVED,
+			0x01, 0x01, 0x02, 0x01, 0xF7)
+	end
+
+	local function rejected_frame(reason)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_IDENTIFICATION, ID_REJECTED,
+			reason, 0x01, 0x01, 0x02, 0x01, 0xF7)
+	end
+
+	local function id_requests_in(bytes)
+		local n = 0
+		for _, m in ipairs(split_messages(bytes or {})) do
+			if item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_REQUEST then n = n + 1 end
+		end
+		return n
+	end
+
+	local function keepalives_in(bytes)
+		local n = 0
+		for _, m in ipairs(split_messages(bytes or {})) do
+			if item_type_of(m) == IT_SYSTEM and func_of(m) == SYS_DEVICE_NOTIFICATION then n = n + 1 end
+		end
+		return n
+	end
+
+	-- (a) Still identifying, not yet approved: a keepalive-cadence tick re-sends the Identification
+	-- Request rather than a Device Notification, and spends the bounded resend budget.
+	state = STATE_IDENTIFYING
+	identifyResendsLeft = MAX_IDENTIFY_RESENDS
+	pendingMessages = {}
+	local out = controller_timer_trigger()
+	check('STATE_IDENTIFYING timer tick re-sends the Identification Request',
+		id_requests_in(out and out.midi) == 1)
+	check('the resend spends identifyResendsLeft', identifyResendsLeft == MAX_IDENTIFY_RESENDS - 1)
+
+	-- (a2) Bounded: once the budget is spent, further ticks stop resending rather than spamming. The
+	-- fallback floor engages instead of going silent - see
+	-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+	identifyResendsLeft = 0
+	identifyFallback = false
+	pendingMessages = {}
+	out = controller_timer_trigger()
+	check('no further resend once identifyResendsLeft is exhausted', id_requests_in(out and out.midi) == 0)
+	check('exhausting the resend budget engages identifyFallback', identifyFallback == true)
+	check('the fallback sends a keepalive rather than staying silent',
+		keepalives_in(out and out.midi) == 1)
+
+	-- (b) An explicit 7F 01 APPROVED reply moves out of STATE_IDENTIFYING (to STATE_LISTED) and stops
+	-- the resend - the branch that resends only fires while state == STATE_IDENTIFYING.
+	state = STATE_IDENTIFYING
+	identifyResendsLeft = MAX_IDENTIFY_RESENDS
+	pendingMessages = {}
+	controller_midi_in(approved_frame(), 'LINK')
+	check('7F 01 APPROVED leaves STATE_IDENTIFYING', state == STATE_LISTED)
+	pendingMessages = {}
+	out = controller_timer_trigger()
+	check('no identify-resend fires once APPROVED (state == STATE_LISTED)',
+		id_requests_in(out and out.midi) == 0)
+	-- Once approved, the ordinary ID_QUERY self-heal (still legitimate from STATE_LISTED - see test
+	-- 32) is what actually promotes to STATE_ACTIVE, matching the real hardware sequence.
+	pendingMessages = {}
+	controller_midi_in(qreply(), 'LINK')
+	check('an ID_QUERY reply after APPROVED promotes STATE_LISTED to STATE_ACTIVE', state == STATE_ACTIVE)
+
+	-- (c) An ID_QUERY reply ALONE - no APPROVED ever seen, and the resend budget not yet exhausted -
+	-- must NOT promote an unapproved STATE_IDENTIFYING session to STATE_ACTIVE. This is the exact bug:
+	-- the query reply is not proof of approval. identifyFallback must be false here or this would
+	-- pass for the wrong reason (the fallback floor, tested separately below).
+	state = STATE_IDENTIFYING
+	identifyFallback = false
+	pendingMessages = {}
+	controller_midi_in(qreply(), 'LINK')
+	check('an ID_QUERY reply alone does not promote an unapproved session before the fallback engages',
+		state == STATE_IDENTIFYING)
+
+	-- (c2) Once the fallback floor has engaged (resend budget exhausted, still no APPROVED), an
+	-- ID_QUERY reply DOES promote - reverting to the pre-fix self-heal so the session cannot go
+	-- permanently silent. See
+	-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+	state = STATE_IDENTIFYING
+	identifyFallback = true
+	pendingMessages = {}
+	controller_midi_in(qreply(), 'LINK')
+	check('an ID_QUERY reply promotes STATE_IDENTIFYING to STATE_ACTIVE once identifyFallback is set',
+		state == STATE_ACTIVE)
+
+	-- (d) A 7F 02 REJECTED reply still enters STATE_REIDENTIFY_WAIT and retries the SAME instanceID -
+	-- never bumping on a first rejection (see handle_identification_rejected's comment).
+	state = STATE_IDENTIFYING
+	local sameInstance = instanceID
+	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
+	pendingMessages = {}
+	timerPending = false
+	armed = nil
+	controller_midi_in(rejected_frame(0x00), 'LINK')
+	check('7F 02 REJECTED enters STATE_REIDENTIFY_WAIT', state == STATE_REIDENTIFY_WAIT)
+	check('a first rejection retries the SAME instanceID, no bump', instanceID == sameInstance)
+	check('a first rejection decrements reidentifyRetriesLeft',
+		reidentifyRetriesLeft == MAX_SAME_ID_RETRIES - 1)
+	check('rearm_timer armed the REIDENTIFY_WAIT_MS one-shot', armed == REIDENTIFY_WAIT_MS)
+
+	-- The wait elapsing fires controller_timer_trigger, which must retry - still the SAME id, not a
+	-- bumped one.
+	pendingMessages = {}
+	out = controller_timer_trigger()
+	check('the reidentify-wait retry re-sends as the SAME instanceID', instanceID == sameInstance)
+	check('the reidentify-wait retry queues an Identification Request',
+		id_requests_in(out and out.midi) == 1)
+
+	state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending =
+		savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending
+end
+
+-- MARK: - 37. flush_pending omits the query for a Master Volume write, but still appends it for
+-- display traffic - see docs/config-lua-history.md#master-volume-writes-go-out-unpaired-2026-09-10.
+do
+	local savedPending, savedFlushReady = pendingMessages, displayFlushReady
+	local query = msg_identification_query()
+
+	-- (a) A Master Volume write goes out ALONE.
+	pendingMessages = {}
+	queue_message(msg_master_volume_write(77), 'mvol')
+	local out = flush_pending(true)
+	check('a Master Volume flush returns output', out ~= nil and out.midi ~= nil)
+	if out then
+		local msgs = split_messages(out.midi)
+		check('a Master Volume flush carries exactly one message', #msgs == 1)
+		check('...and it is the Master Volume write, not the query',
+			#msgs == 1 and item_type_of(msgs[1]) == IT_MASTER_VOLUME)
+	end
+
+	-- (b) A display message must still carry the query - the existing invariant (section 2), unbroken
+	-- by narrowing flush_pending's query rule to Master Volume specifically.
+	pendingMessages = {}
+	displayFlushReady = true
+	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:mvol-query-regression')
+	out = flush_pending(true)
+	check('a display flush still returns output', out ~= nil and out.midi ~= nil)
+	if out then
+		local msgs = split_messages(out.midi)
+		check('a display flush still carries two messages (display + query)', #msgs == 2)
+		check('...ending with the Identification Query',
+			#msgs == 2 and hex(msgs[#msgs]) == hex(query))
+	end
+
+	pendingMessages, displayFlushReady = savedPending, savedFlushReady
+end
+
+-- MARK: - 38. An unpaired Master Volume flush still drives the session clock, via
+-- request_quick_rearm() - see docs/config-lua-history.md#master-volume-writes-go-out-unpaired-2026-09-10.
+do
+	local savedState, savedPending, savedTimerPending, savedTimerArmedInterval, savedArmed =
+		state, pendingMessages, timerPending, timerArmedInterval, armed
+
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	queue_message(msg_master_volume_write(50), 'mvol')
+
+	-- Simulate the common case: an outstanding one-shot already armed at the long KEEPALIVE_MS
+	-- interval, same as a quiet session would have before this write was queued.
+	timerPending = true
+	timerArmedInterval = KEEPALIVE_MS
+	armed = nil
+
+	flush_pending(true)
+
+	check(
+		'a Master Volume flush shortens an outstanding KEEPALIVE_MS one-shot to FLUSH_SOON_MS',
+		armed == FLUSH_SOON_MS
+	)
+	check('...and timerArmedInterval reflects the shortened interval', timerArmedInterval == FLUSH_SOON_MS)
+
+	state, pendingMessages, timerPending, timerArmedInterval, armed =
+		savedState, savedPending, savedTimerPending, savedTimerArmedInterval, savedArmed
+end
+
+-- MARK: - 39. A fast A-encoder sweep cannot starve the clock or pile up Master Volume writes
+--
+-- Each tick is itself an inbound SL frame, and controller_midi_in calls rearm_timer()
+-- unconditionally on every one (rule 6) independent of whether that tick's own flush carried a
+-- query; the 'mvol' regionId also coalesces every tick to a single queued write (section 27), so
+-- the queue never grows. show_master_volume_popup is stubbed out - its own display traffic is a
+-- separate concern (section 27/28) that would otherwise obscure this section's own assertions.
+do
+	local savedState, savedPending, savedTimerPending, savedTimerArmedInterval, savedArmed,
+		savedMasterVolume =
+		state, pendingMessages, timerPending, timerArmedInterval, armed, masterVolume
+
+	local originalShowMVPopup = show_master_volume_popup
+	show_master_volume_popup = function() end
+
+	local function encoder_frame(tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
+	end
+
+	state = STATE_ACTIVE
+	masterVolume = 50
+	pendingMessages = {}
+	timerPending = false
+
+	for _ = 1, 20 do
+		controller_midi_in(encoder_frame(0x41), 'LINK') -- delta +1 each tick
+	end
+
+	check('20 rapid A-encoder ticks leave no queued Master Volume backlog', #pendingMessages == 0)
+	check('masterVolume reflects all 20 ticks (50 + 20)', masterVolume == 70)
+	check('the clock is armed by the time the sweep ends (rearm_timer ran every tick)', timerPending == true)
+
+	show_master_volume_popup = originalShowMVPopup
+	state, pendingMessages, timerPending, timerArmedInterval, armed, masterVolume =
+		savedState, savedPending, savedTimerPending, savedTimerArmedInterval, savedArmed, savedMasterVolume
 end
 
 -- MARK: - Summary
