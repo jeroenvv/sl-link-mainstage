@@ -73,7 +73,12 @@ SL_HEADER = { 0xF0, 0x00, 0x20, 0x1A, 0x16 }
 SL_END = 0xF7
 
 SL_HOST_ID = 0x03 -- SLLinkHeader.defaultHostID
-SL_INSTANCE_START = 0x6D -- first instance byte tried; bumped on rejection
+
+-- Legal range for the instance byte (a MIDI data byte, so also < 0x80): both the per-instance
+-- starting value (derive_instance_start) and the rejection bump (handle_identification_rejected)
+-- must stay inside it.
+SL_INSTANCE_MIN = 0x10
+SL_INSTANCE_MAX = 0x7E
 
 -- Item types
 IT_SYSTEM = 0x00
@@ -276,11 +281,13 @@ SIZE_SMALL, SIZE_MEDIUM, SIZE_BIG = 0x00, 0x01, 0x02
 -- The keyboard drops a host that goes quiet for ~5s; the app uses 3s.
 KEEPALIVE_MS = 3000
 
--- MainStage tears the script down and re-initialises it mid-session, which resets instanceID to
--- SL_INSTANCE_START - but the SL88 still holds the PREVIOUS incarnation's registration under that
--- id, since controller_finalize never sends a Logout Request (see that function). Bumping the
--- instance byte immediately on rejection would 'solve' it by registering as a DIFFERENT app,
--- silently losing the user's APP-list selection - do not do that here. Wait comfortably longer than
+-- MainStage tears the script down and re-initialises it mid-session, which re-derives instanceID via
+-- derive_instance_start(instanceTag) (see docs/config-lua-history.md, "Per-instance starting id").
+-- controller_finalize now sends a Logout Request to release the old id (see that function), but
+-- delivery isn't guaranteed, so this wait/retry stays as the fallback for a stale registration
+-- surviving anyway. Bumping the instance byte immediately on rejection would 'solve' it by
+-- registering as a DIFFERENT app, silently losing the user's APP-list selection - do not do that
+-- here. Wait comfortably longer than
 -- the keyboard's ~5s host timeout so the stale registration expires, then retry the SAME id. NEVER
 -- shorten this below that margin - rearm_timer()/request_quick_rearm() both special-case
 -- STATE_REIDENTIFY_WAIT so nothing overwrites it early. See
@@ -323,7 +330,40 @@ state = STATE_IDLE
 -- KEEPALIVE_MS (~3s) per tick this comfortably clears the SL88's ~5s no-keepalive drop timeout.
 LOGOUT_SILENT_TICKS = 3
 logoutTicksLeft = 0
-instanceID = SL_INSTANCE_START
+
+-- Two script instances (one per matched USB-MIDI interface) share one stdout; this tag lets log
+-- lines tell them apart, and (below) seeds each instance's own starting instanceID. Mixes several
+-- per-state values (object addresses, heap size) rather than one - lowers collision odds, does not
+-- rule them out. See docs/config-lua-history.md.
+local function addr_num(v)
+	local hex = tostring(v):match('(%x+)$') or '0'
+	return tonumber(hex:sub(-8), 16) or 0
+end
+
+function compute_instance_tag(a, b, c, d, memKB)
+	local mixed = a + b * 31 + c * 97 + d * 193 + math.floor((memKB or 0) * 1000)
+	return string.format('%06x', mixed % 0x1000000)
+end
+
+local coroutineAddr = 0
+if coroutine and coroutine.create then
+	coroutineAddr = addr_num(coroutine.create(function() end))
+end
+
+instanceTag = compute_instance_tag(addr_num({}), addr_num({}), addr_num(function() end),
+	coroutineAddr, collectgarbage('count'))
+
+-- Seeds this instance's starting instanceID from instanceTag so two concurrently-loaded instances,
+-- or a re-initialised incarnation vs. its own still-registered ghost, don't both start at the same
+-- id - see docs/config-lua-history.md, "Per-instance starting id". Collision odds are lowered, not
+-- eliminated (instanceTag isn't collision-proof either); handle_identification_rejected's
+-- retry/bump path is the backstop if two instances still land on the same id.
+function derive_instance_start(tag)
+	local n = tonumber(tag, 16) or 0
+	return SL_INSTANCE_MIN + (n % (SL_INSTANCE_MAX - SL_INSTANCE_MIN + 1))
+end
+
+instanceID = derive_instance_start(instanceTag)
 pendingMessages = {}
 
 -- Phase 2 CC dispatch state - see the CC_MAP block above and queue_cc()/ flush_pending_cc() below.
@@ -466,6 +506,12 @@ lastPaintTick = -1
 -- regresses.
 REPAINT_EVERY_IDLE_TICKS = 10
 idleTicks = 0
+
+-- Every '[sllink] ...' print goes through here so each line carries instanceTag/instanceID - see
+-- the instanceTag comment near its definition, above (Session state section).
+function slog(msg)
+	print('[sllink ' .. instanceTag .. '/' .. string.format('%02X', instanceID) .. '] ' .. msg)
+end
 
 -- MARK: - Outbound plumbing
 --
@@ -625,7 +671,7 @@ function flush_pending(includeQuery)
 		-- Protocol messages (regionId nil) get their bytes dumped too - they're rare enough not to
 		-- flood the log, and distinguishing e.g. a keepalive from a Master Volume read needs the bytes.
 		local msgSuffix = m.regionId == nil and (' msg=' .. dump_bytes(m)) or ''
-		print('[sllink] FLUSH #' .. flushCounter ..
+		slog('FLUSH #' .. flushCounter ..
 			' tick=' .. timerTicks ..
 			' regionId=' .. tostring(m.regionId or 'none') ..
 			' bytes=' .. #m ..
@@ -722,7 +768,7 @@ function flush_pending_cc()
 		end
 	end
 	pendingCCOrder = remaining
-	print('[sllink] CC batch: ' .. emitted .. ' CC(s) [' .. table.concat(emittedCCs, ', ') .. '], ' .. #out .. ' bytes' ..
+	slog('CC batch: ' .. emitted .. ' CC(s) [' .. table.concat(emittedCCs, ', ') .. '], ' .. #out .. ' bytes' ..
 		(#remaining > 0 and (', ' .. #remaining .. ' deferred to next round') or ''))
 	return { midi = out }
 end
@@ -845,7 +891,7 @@ function msg_write_text(text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, b
 	append_rgb(m, fr, fg, fb)
 	append_rgb(m, br, bg, bb)
 	if text ~= nil and #text > TEXT_STRING_CAP then
-		print('[sllink] msg_write_text: clamping "' .. text .. '" (' .. #text ..
+		slog('msg_write_text: clamping "' .. text .. '" (' .. #text ..
 			' chars) to ' .. TEXT_STRING_CAP .. ' chars - transport limit (see' ..
 			' TEXT_STRING_CAP), not a visual-truncation change; Max Width still' ..
 			' does its own "..." truncation on screen.')
@@ -1529,7 +1575,7 @@ function update_screen()
 	end
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
-	print('[sllink] update queued (' .. #pendingMessages .. ' msgs) mode=' .. displayMode ..
+	slog('update queued (' .. #pendingMessages .. ' msgs) mode=' .. displayMode ..
 		' "' .. patchName .. '"')
 end
 
@@ -1626,7 +1672,7 @@ function paint_screen()
 
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
-	print('[sllink] paint queued (' .. #pendingMessages .. ' msgs) mode=' .. displayMode ..
+	slog('paint queued (' .. #pendingMessages .. ' msgs) mode=' .. displayMode ..
 		' "' .. patchName .. '"')
 end
 
@@ -1678,7 +1724,7 @@ function set_display_mode(mode)
 	-- Always has real content queued here (Clear Screen plus a guaranteed-non-empty repaint, since
 	-- invalidate_all() above forces every region to resend) - see request_quick_rearm's comment.
 	request_quick_rearm()
-	print('[sllink] display mode -> ' .. mode)
+	slog('display mode -> ' .. mode)
 end
 
 
@@ -1689,7 +1735,7 @@ function start_identification()
 	identifyResendsLeft = MAX_IDENTIFY_RESENDS
 	identifyFallback = false
 	queue_message(msg_identification_request())
-	print('[sllink] -> Identification Request as (' ..
+	slog('-> Identification Request as (' ..
 		string.format('%02X %02X', SL_HOST_ID, instanceID) .. ') on outport=' .. SL_PORT)
 end
 
@@ -1699,7 +1745,7 @@ function handle_identification_approved()
 	-- rejection (a fresh re-init down the line) should get the full retry budget again, not whatever
 	-- was left over.
 	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
-	print('[sllink] <- IDENTIFICATION APPROVED as ' ..
+	slog('<- IDENTIFICATION APPROVED as ' ..
 		string.format('%02X %02X', SL_HOST_ID, instanceID) ..
 		' - now in the SL88 APP list; select it there to activate')
 end
@@ -1710,7 +1756,7 @@ end
 -- only fall back to bumping the instance byte after MAX_SAME_ID_RETRIES failed retries. See
 -- docs/config-lua-history.md#identification-and-instance-id-collisions.
 function handle_identification_rejected(reason)
-	print('[sllink] <- IDENTIFICATION REJECTED (reason ' ..
+	slog('<- IDENTIFICATION REJECTED (reason ' ..
 		string.format('%02X', reason or 0) .. ') for instance ' ..
 		string.format('%02X', instanceID))
 
@@ -1730,16 +1776,16 @@ function handle_identification_rejected(reason)
 		-- STATE_REIDENTIFY_WAIT guard, which is belt-and-suspenders for the same reason - this value
 		-- alone already keeps its `timerArmedInterval == KEEPALIVE_MS` check from matching).
 		timerArmedInterval = REIDENTIFY_WAIT_MS
-		print('[sllink] re-identify retry ' ..
+		slog('re-identify retry ' ..
 			(MAX_SAME_ID_RETRIES - reidentifyRetriesLeft) .. '/' .. MAX_SAME_ID_RETRIES ..
 			' as (' .. string.format('%02X %02X', SL_HOST_ID, instanceID) .. ')')
 		return
 	end
 
 	instanceID = instanceID + 1
-	if instanceID > 0x7E then instanceID = 0x10 end
+	if instanceID > SL_INSTANCE_MAX then instanceID = SL_INSTANCE_MIN end
 	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
-	print('[sllink] bumping instance to ' ..
+	slog('bumping instance to ' ..
 		string.format('%02X %02X', SL_HOST_ID, instanceID) .. ' after ' ..
 		MAX_SAME_ID_RETRIES .. ' failed retries')
 	start_identification()
@@ -1749,7 +1795,7 @@ end
 -- value. Split out so handle_login can force one even when enter_active_session() is a no-op.
 function queue_master_volume_read()
 	local mvolReadMsg = msg_master_volume_read()
-	print('[sllink] -> MASTER VOLUME READ: ' .. dump_bytes(mvolReadMsg))
+	slog('-> MASTER VOLUME READ: ' .. dump_bytes(mvolReadMsg))
 	queue_message(mvolReadMsg)
 end
 
@@ -1765,7 +1811,7 @@ function enter_active_session()
 end
 
 function handle_login()
-	print('[sllink] <- LOGIN - session active')
+	slog('<- LOGIN - session active')
 	-- Fresh/re-confirmed session: make sure everything is resent rather than trusting our memo, which
 	-- may record draws sent before the keyboard had actually identified/confirmed us.
 	invalidate_all()
@@ -1780,11 +1826,11 @@ end
 
 function handle_standby()
 	state = STATE_STANDBY
-	print('[sllink] <- STANDBY')
+	slog('<- STANDBY')
 end
 
 function handle_restart()
-	print('[sllink] <- RESTART - repainting (SL88 retains no screen state)')
+	slog('<- RESTART - repainting (SL88 retains no screen state)')
 	invalidate_all() -- the SLMK2 forgets everything across Standby (see docs/implementing-sl-link.md); without this
 		-- every id's memo would wrongly think its last content is still on screen and skip resending it.
 	paint_screen()
@@ -1792,7 +1838,7 @@ function handle_restart()
 end
 
 function handle_logout_request()
-	print('[sllink] <- LOGOUT REQUEST - confirming')
+	slog('<- LOGOUT REQUEST - confirming')
 	queue_message(msg_system(SYS_LOGOUT_CONFIRMATION))
 	state = STATE_IDLE
 end
@@ -1806,7 +1852,7 @@ end
 -- whatever is still queued - dismiss_popup() itself repaints the previous screen, so the drop must
 -- come AFTER it, not before, or that repaint refills the queue we just emptied.
 function request_logout()
-	print('[sllink] -> LOGOUT REQUEST (Cancel button SHORT)')
+	slog('-> LOGOUT REQUEST (Cancel button SHORT)')
 	queue_message(msg_system(SYS_LOGOUT_REQUEST))
 	state = STATE_LOGGED_OUT
 	logoutTicksLeft = LOGOUT_SILENT_TICKS
@@ -1817,7 +1863,7 @@ end
 -- Cancel button, LONG: the keyboard never replies to our Logout Request anyway (see this file's
 -- header), so skip it and go straight to silence.
 function force_logout()
-	print('[sllink] -> FORCE LOGOUT (Cancel button LONG, no Logout Request sent)')
+	slog('-> FORCE LOGOUT (Cancel button LONG, no Logout Request sent)')
 	state = STATE_LOGGED_OUT
 	logoutTicksLeft = LOGOUT_SILENT_TICKS
 	if popupActive then dismiss_popup() end
@@ -1825,7 +1871,7 @@ function force_logout()
 end
 
 function handle_logout_confirmation()
-	print('[sllink] <- LOGOUT CONFIRMATION')
+	slog('<- LOGOUT CONFIRMATION')
 	state = STATE_IDLE
 end
 
@@ -1873,7 +1919,7 @@ function handle_sl_frame(e)
 			-- LOGIN CONFIRMATION, which the keyboard only sends on a *fresh* login and skips entirely if it
 			-- still remembers us.
 			if e[9] == 0x00 then
-				print('[sllink] <- query: not identified; re-identifying')
+				slog('<- query: not identified; re-identifying')
 				state = STATE_IDLE
 				start_identification()
 			else
@@ -1916,7 +1962,7 @@ function handle_sl_frame(e)
 		local vol = e[9]
 		if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
 		masterVolume = vol
-		print('[sllink] <- MASTER VOLUME ' .. masterVolume)
+		slog('<- MASTER VOLUME ' .. masterVolume)
 	elseif itemType == IT_BUTTON then
 		local bid = func
 		local pressKind = e[9]
@@ -1935,7 +1981,7 @@ function handle_sl_frame(e)
 		else
 			local kind = (pressKind == PRESS_SHORT and 'SHORT') or (pressKind == PRESS_LONG and 'LONG')
 				or tostring(pressKind)
-			print('[sllink] <- BUTTON bid=' .. string.format('0x%02X', bid)
+			slog('<- BUTTON bid=' .. string.format('0x%02X', bid)
 				.. ' event=' .. kind .. ' (unhandled) frame=' .. dump_event(e))
 		end
 	elseif itemType == IT_ENCODER then
@@ -1948,7 +1994,7 @@ function handle_sl_frame(e)
 			-- Own regionId so a fast twist's many ticks coalesce to one queued write, not several -
 			-- see queue_message's PER-REGION COALESCING comment.
 			local mvolWriteMsg = msg_master_volume_write(masterVolume)
-			print('[sllink] -> MASTER VOLUME WRITE: ' .. dump_bytes(mvolWriteMsg))
+			slog('-> MASTER VOLUME WRITE: ' .. dump_bytes(mvolWriteMsg))
 			queue_message(mvolWriteMsg, 'mvol')
 			show_master_volume_popup()
 		else
@@ -1965,13 +2011,13 @@ function handle_sl_frame(e)
 				end
 				show_popup(eid)
 			else
-				print('[sllink] <- ENCODER eid=' .. string.format('0x%02X', eid)
+				slog('<- ENCODER eid=' .. string.format('0x%02X', eid)
 					.. ' tick=' .. string.format('0x%02X', e[9])
 					.. ' delta=' .. tostring(delta) .. ' (unhandled) frame=' .. dump_event(e))
 			end
 		end
 	else
-		print('[sllink] <- unhandled itemType=' .. string.format('0x%02X', itemType)
+		slog('<- unhandled itemType=' .. string.format('0x%02X', itemType)
 			.. ' frame=' .. dump_event(e))
 	end
 end
@@ -1993,18 +2039,18 @@ end
 -- included, via paint_screen's 3-way dispatch.
 function handle_zoom_button(pressKind)
 	if pressKind == PRESS_LONG then
-		print('[sllink] <- BUTTON zoom LONG - forcing full repaint of mode=' .. displayMode)
+		slog('<- BUTTON zoom LONG - forcing full repaint of mode=' .. displayMode)
 		invalidate_all()
 		paint_screen()
 		-- invalidate_all() above guarantees this repaint queues real content - see request_quick_rearm's
 		-- comment.
 		request_quick_rearm()
 	elseif displayMode == 'popup' then
-		print('[sllink] <- BUTTON zoom SHORT - dismissing popup (mode=popup)')
+		slog('<- BUTTON zoom SHORT - dismissing popup (mode=popup)')
 		dismiss_popup()
 	else
 		local newMode = (displayMode == 'zoom') and 'list' or 'zoom'
-		print('[sllink] <- BUTTON zoom SHORT - toggling display mode -> ' .. newMode)
+		slog('<- BUTTON zoom SHORT - toggling display mode -> ' .. newMode)
 		set_display_mode(newMode)
 	end
 end
@@ -2020,7 +2066,7 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	timerPending = true
 	timerArmedInterval = KEEPALIVE_MS
 	state = STATE_IDLE
-	instanceID = SL_INSTANCE_START
+	instanceID = derive_instance_start(instanceTag)
 	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
 	pendingMessages = {}
 	pendingCC = {}
@@ -2042,30 +2088,28 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 		APP_NAME = applicationName
 	end
 
-	print('[sllink] controller_initialize (app="' .. tostring(applicationName) .. '", version=' .. SCRIPT_VERSION .. ')')
+	slog('controller_initialize (app="' .. tostring(applicationName) .. '", version=' .. SCRIPT_VERSION .. ')')
 	-- MIDI_LSB/MSB are strings, not numbers
-	print('[sllink] injected globals: MIDI_CtrChange=' .. tostring(MIDI_CtrChange) ..
+	slog('injected globals: MIDI_CtrChange=' .. tostring(MIDI_CtrChange) ..
 		' MIDI_LSB=' .. tostring(MIDI_LSB) .. ' MIDI_MSB=' .. tostring(MIDI_MSB) ..
 		' MIDI_Wildcard=' .. tostring(MIDI_Wildcard))
 	start_identification()
 	return flush_pending()
 end
 
--- MUST NOT send a Logout Request. MainStage tears this script down and re-initialises it repeatedly
--- (init -> finalize -> init -> ... within seconds) as a SINGLE script instance - confirmed on
--- hardware, not the per-USB-MIDI-interface multi-instance scenario documented for this keyboard. A
--- different MainStage/macOS version or USB mode could still produce multiple instances, so the
--- guards against that stay regardless. See
--- docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28. A Logout Request here
--- actively removes the app from the SL88's APP list on every one of those spurious teardowns.
--- Staying quiet lets the entry survive a churn; if the script really is going away for good, the
--- keyboard's own ~5s keepalive timeout removes it anyway. See
--- docs/config-lua-history.md#controller_finalize-sends-no-logout-request.
+-- Sends a Logout Request so the SL88 releases this instanceID before the next incarnation
+-- identifies, instead of colliding with a ghost registration - see
+-- docs/config-lua-history.md#controller_finalize-sends-no-logout-request for why this was reverted
+-- once and why it's being retried now. Built directly (not via queue_message/flush_pending) so
+-- clearing pendingMessages below can't defeat it - a return value here is the only send mechanism
+-- controller_finalize has (see the Launchkey MK3 reference in docs/mainstage-device-scripts.md §10).
 function controller_finalize()
-	print('[sllink] controller_finalize (no logout sent - see note)')
+	local logout = msg_system(SYS_LOGOUT_REQUEST)
+	slog('-> LOGOUT REQUEST from controller_finalize (00 03 LOGOUT CONFIRMATION from the device ' ..
+		'confirms it was actually transmitted)')
 	pendingMessages = {}
 	state = STATE_IDLE
-	return nil
+	return { midi = logout, outport = SL_PORT }
 end
 
 -- Periodic. Re-arms itself so it keeps firing for as long as the device stays selected. This is the
@@ -2103,7 +2147,7 @@ function controller_timer_trigger()
 	-- `tick=`/`pending=`/`draining=` here let a captured hardware log be read as 'N drain ticks
 	-- elapsed while M messages went out' - pair against the `tick=` field flush_pending's own FLUSH
 	-- print carries.
-	print('[sllink] timer tick #' .. timerTicks .. ' (idle ' .. idleTicks .. ') state=' .. state ..
+	slog('timer tick #' .. timerTicks .. ' (idle ' .. idleTicks .. ') state=' .. state ..
 		' pending=' .. #pendingMessages .. ' draining=' .. tostring(draining))
 
 	-- Announce unconditionally once an Identification Request has been sent, regardless of what we've
@@ -2135,14 +2179,14 @@ function controller_timer_trigger()
 		-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
 		if identifyResendsLeft > 0 then
 			identifyResendsLeft = identifyResendsLeft - 1
-			print('[sllink] -> re-sending Identification Request (' .. identifyResendsLeft .. ' left)')
+			slog('-> re-sending Identification Request (' .. identifyResendsLeft .. ' left)')
 			queue_message(msg_identification_request())
 		else
 			-- Budget spent, still no APPROVED: fall back to the pre-fix query-reply promotion rather
 			-- than going silent forever (a dead session is worse than one missing Master Volume).
 			if not identifyFallback then
 				identifyFallback = true
-				print('[sllink] identification never approved - falling back to query-reply promotion')
+				slog('identification never approved - falling back to query-reply promotion')
 			end
 			if not has_keepalive_queued() then
 				send_keepalive()
@@ -2243,7 +2287,7 @@ function rearm_timer()
 		-- Watchdog: MainStage never delivered the outstanding one-shot, so nothing was ever going to
 		-- clear timerPending. Re-arm anyway - see
 		-- docs/config-lua-history.md#timer-watchdog-a-lost-one-shot-latches-timerpending-forever-2026-09-07.
-		print('[sllink] timer watchdog: one-shot lost after ' .. framesSinceTick .. ' frames - re-arming')
+		slog('timer watchdog: one-shot lost after ' .. framesSinceTick .. ' frames - re-arming')
 		framesSinceTick = 0
 	end
 	if state == STATE_LOGGED_OUT then
@@ -2285,7 +2329,7 @@ function request_quick_rearm()
 	if timerPending and (timerArmedInterval == KEEPALIVE_MS or timerArmedInterval == POPUP_TICK_MS) then
 		settriggertimer(FLUSH_SOON_MS)
 		timerArmedInterval = FLUSH_SOON_MS
-		print('[sllink] quick-rearm -> FLUSH_SOON_MS')
+		slog('quick-rearm -> FLUSH_SOON_MS')
 	end
 end
 
@@ -2293,7 +2337,7 @@ function controller_midi_in(midiEvent, portName)
 	framesSinceTick = framesSinceTick + 1
 
 	if midiEvent[0] == 0xF0 then
-		print('[sllink] <- SYSEX on port=' .. tostring(portName) .. ': ' .. dump_event(midiEvent))
+		slog('<- SYSEX on port=' .. tostring(portName) .. ': ' .. dump_event(midiEvent))
 	end
 
 	if is_our_sl_frame(midiEvent) then
@@ -2394,7 +2438,7 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 	-- touching displayed state rather than painting a blank/bogus name or letting the patchlist loop
 	-- below run against nothing.
 	if patchlist == nil or (type(patchlist) == 'table' and next(patchlist) == nil) then
-		print('[sllink] controller_select_patch: patchlist not yet available - keeping last' ..
+		slog('controller_select_patch: patchlist not yet available - keeping last' ..
 			' displayed patch "' .. patchName .. '"')
 		return nil
 	end
@@ -2447,7 +2491,7 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 
 	-- currentConcert/setName logged alongside the existing fields so a blank concert line on the SL88
 	-- screen can be told apart from a draw failure.
-	print('[sllink] controller_select_patch: "' .. patchName .. '" (' .. #listRows .. ' rows total)' ..
+	slog('controller_select_patch: "' .. patchName .. '" (' .. #listRows .. ' rows total)' ..
 		' concert="' .. currentConcert .. '" set="' .. setName .. '"' ..
 		' activeSetIndex=' .. tostring(activeSetIndex) .. ' activePatchIndex=' .. tostring(activePatchIndex) ..
 		' instance=' .. string.format('%02X', instanceID))

@@ -51,6 +51,12 @@ local function hex(t)
 	return table.concat(s, ' ')
 end
 
+-- instanceID is now derived per-instance (from instanceTag) rather than a fixed SL_INSTANCE_START,
+-- so golden vectors can no longer bake in a literal '6D' - this reads the live value. instanceID is
+-- never reassigned across this whole run (see test 36's own save/restore), so it's safe to inline
+-- into expected hex strings anywhere in this file.
+local function id2() return string.format('%02X', instanceID) end
+
 -- The reply to our own Identification Query - what drives the session
 -- clock (see config.lua's SESSION CLOCK note). Reads instanceID live so it
 -- stays correct even if a test upstream has bumped it.
@@ -107,7 +113,8 @@ end
 -- MARK: - 1. Golden byte vectors for every msg_* builder
 --
 -- Derived from the spec's message tables (docs/implementing-sl-link.md, the upstream spec pinned
--- at 4c0824d) at id1=SL_HOST_ID (0x03), id2=SL_INSTANCE_START (0x6D). Originally cross-checked by
+-- at 4c0824d) at id1=SL_HOST_ID (0x03), id2=instanceID (derived per-instance - see id2() above, and
+-- derive_instance_start in config.lua). Originally cross-checked by
 -- hand against this project's own Swift SLLinkEncoder.swift too - see Scripts/run-lua-tests.sh's
 -- header for that history and for the archive/swift-app recipe if a byte-for-byte second opinion
 -- is ever wanted again. Do NOT "fix" one of these to match whatever config.lua currently emits - a
@@ -117,40 +124,40 @@ end
 checkHex(
 	'msg_identification_request',
 	msg_identification_request(),
-	'F0 00 20 1A 16 03 6D 7F 00 4D 61 69 6E 53 74 61 67 65 00 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 7F 00 4D 61 69 6E 53 74 61 67 65 00 F7'
 )
 
 checkHex(
 	'msg_identification_query',
 	msg_identification_query(),
-	'F0 00 20 1A 16 03 6D 7F 03 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 7F 03 F7'
 )
 
 checkHex(
 	'msg_system(SYS_DEVICE_NOTIFICATION)',
 	msg_system(SYS_DEVICE_NOTIFICATION),
-	'F0 00 20 1A 16 03 6D 00 00 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 00 00 F7'
 )
 
 checkHex(
 	'msg_clear_screen(255, 128, 1)',
 	msg_clear_screen(255, 128, 1),
-	'F0 00 20 1A 16 03 6D 04 01 7F 40 00 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 04 01 7F 40 00 F7'
 )
 
 checkHex(
 	'msg_write_text("Hi!", ...)',
 	msg_write_text('Hi!', 5, 6, 100, ALIGN_CENTER, SIZE_BIG, 255, 0, 0, 0, 255, 0),
-	'F0 00 20 1A 16 03 6D 04 00 00 05 00 06 00 64 01 02 7F 00 00 00 7F 00 48 69 21 00 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 04 00 00 05 00 06 00 64 01 02 7F 00 00 00 7F 00 48 69 21 00 F7'
 )
 
 checkHex(
 	'msg_draw_rect(10, 20, 30, 40, 200, 100, 50)',
 	msg_draw_rect(10, 20, 30, 40, 200, 100, 50),
-	'F0 00 20 1A 16 03 6D 04 02 00 0A 00 14 00 1E 00 28 64 32 19 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 04 02 00 0A 00 14 00 1E 00 28 64 32 19 F7'
 )
 
--- Derived from the spec's Plot Bitmap message table (id1: 0x03, id2: 0x6D, x: 100, y: 50,
+-- Derived from the spec's Plot Bitmap message table (id1: 0x03, id2: instanceID, x: 100, y: 50,
 -- groupIndex: 0x00, iconIndex: 0x05, foreground RGB: 255, 140, 0, background RGB: 0, 0, 0).
 -- Originally cross-checked against SLLinkEncoder.displayPlotBitmap via the swiftc recipe now
 -- documented for a checkout of archive/swift-app in .claude/skills/lua-harness/SKILL.md.
@@ -158,7 +165,7 @@ checkHex(
 checkHex(
 	'msg_plot_bitmap(100, 50, BMP_GROUP_KNOB, 5, 255, 140, 0, 0, 0, 0)',
 	msg_plot_bitmap(100, 50, BMP_GROUP_KNOB, 5, 255, 140, 0, 0, 0, 0),
-	'F0 00 20 1A 16 03 6D 04 03 00 64 00 32 00 05 7F 46 00 00 00 00 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 04 03 00 64 00 32 00 05 7F 46 00 00 00 00 F7'
 )
 
 -- MARK: - 2. Flush budget
@@ -565,16 +572,23 @@ do
 	end
 end
 
--- MARK: - 15. controller_finalize returns nil and queues no Logout Request
+-- MARK: - 15. controller_finalize sends a Logout Request and still tears down
 --
--- A script can only send by RETURNING MIDI from a callback (see config.lua's
--- MainStage-host notes) - so a nil return is itself the guarantee that no
--- Logout Request (or anything else) goes out from this callback.
+-- Was: asserted a nil return (no Logout Request at all) - see
+-- docs/config-lua-history.md#controller_finalize-sends-no-logout-request for why that was reverted
+-- to and is now reverted again. A callback can only send by RETURNING MIDI (see config.lua's
+-- MainStage-host notes), so the returned table itself is the only place to check this from.
 do
 	state = STATE_ACTIVE
-	pendingMessages = {}
+	pendingMessages = { msg_draw_rect(0, 0, 10, 10, 0, 0, 0) }
 	local result = controller_finalize()
-	check('controller_finalize returns nil (no MIDI, so no Logout Request can go out)', result == nil)
+	check('controller_finalize returns a Logout Request', result ~= nil and result.midi ~= nil)
+	if result then
+		checkHex('controller_finalize Logout Request bytes', result.midi, hex(msg_system(SYS_LOGOUT_REQUEST)))
+		check('controller_finalize sets outport to SL_PORT', result.outport == SL_PORT)
+	end
+	check('controller_finalize still clears pendingMessages', #pendingMessages == 0)
+	check('controller_finalize still sets state to STATE_IDLE', state == STATE_IDLE)
 end
 
 -- MARK: - 16. append_text clamps bytes outside 0x20-0x80 to a space
@@ -1007,7 +1021,7 @@ do
 	checkHex(
 		'Cancel button SHORT queues exactly a Logout Request',
 		pendingMessages[1],
-		'F0 00 20 1A 16 03 6D 00 02 F7'
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 00 02 F7'
 	)
 	check('Cancel button SHORT ends in STATE_LOGGED_OUT', state == STATE_LOGGED_OUT)
 
@@ -1071,7 +1085,7 @@ do
 	checkHex(
 		'EID_A +1 tick queues the exact Master Volume write vector (MVOL_WRITE, no MUTE byte)',
 		mvol_messages()[1],
-		'F0 00 20 1A 16 03 6D 07 01 33 F7'
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 33 F7'
 	)
 
 	-- Clamp at 100: starting at 100, a further +5 must not exceed it.
@@ -1082,7 +1096,7 @@ do
 	checkHex(
 		'clamped write at 100 carries VOL=100 (0x64), not 105, no MUTE byte',
 		mvol_messages()[1],
-		'F0 00 20 1A 16 03 6D 07 01 64 F7'
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 64 F7'
 	)
 
 	-- Clamp at 0: starting at 0, a further -5 must not go negative.
@@ -1093,7 +1107,7 @@ do
 	checkHex(
 		'clamped write at 0 carries VOL=0, not negative, no MUTE byte',
 		mvol_messages()[1],
-		'F0 00 20 1A 16 03 6D 07 01 00 F7'
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 00 F7'
 	)
 
 	-- Several A ticks before a flush must coalesce to ONE queued write carrying the latest value -
@@ -1109,7 +1123,7 @@ do
 	checkHex(
 		'...and its bytes reflect VOL=53 (0x35), no MUTE byte',
 		mvol_messages()[1],
-		'F0 00 20 1A 16 03 6D 07 01 35 F7'
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 35 F7'
 	)
 
 	popupActive, displayMode = savedPopupActive, savedDisplayMode
@@ -1209,7 +1223,7 @@ do
 		checkHex(
 			'handle_login()\'s Master Volume read carries the exact expected bytes',
 			reads[1],
-			'F0 00 20 1A 16 03 6D 07 00 F7'
+			'F0 00 20 1A 16 03 ' .. id2() .. ' 07 00 F7'
 		)
 	end
 
@@ -1327,7 +1341,7 @@ do
 		checkHex(
 			'ID_QUERY reply\'s Master Volume read carries the exact expected bytes',
 			reads[1],
-			'F0 00 20 1A 16 03 6D 07 00 F7'
+			'F0 00 20 1A 16 03 ' .. id2() .. ' 07 00 F7'
 		)
 	end
 	check('ID_QUERY reply into STATE_ACTIVE actually sets state', state == STATE_ACTIVE)
@@ -1349,7 +1363,7 @@ do
 		checkHex(
 			'handle_restart()\'s Master Volume read carries the exact expected bytes',
 			reads[1],
-			'F0 00 20 1A 16 03 6D 07 00 F7'
+			'F0 00 20 1A 16 03 ' .. id2() .. ' 07 00 F7'
 		)
 	end
 
@@ -1487,7 +1501,7 @@ do
 		checkHex(
 			'that Master Volume read carries the exact expected bytes',
 			reads[1],
-			'F0 00 20 1A 16 03 6D 07 00 F7'
+			'F0 00 20 1A 16 03 ' .. id2() .. ' 07 00 F7'
 		)
 	end
 
@@ -1717,6 +1731,112 @@ do
 	show_master_volume_popup = originalShowMVPopup
 	state, pendingMessages, timerPending, timerArmedInterval, armed, masterVolume =
 		savedState, savedPending, savedTimerPending, savedTimerArmedInterval, savedArmed, savedMasterVolume
+end
+
+-- MARK: - 40. Per-instance log tag
+--
+-- MainStage runs one script instance per matched USB-MIDI interface, all sharing one stdout - see
+-- the instanceTag/compute_instance_tag comment in config.lua. Checks the [sllink tag/id] prefix
+-- format on this single loaded instance, then exercises compute_instance_tag directly with distinct
+-- simulated per-state inputs. An earlier version of this test instead spawned two `lua` processes
+-- and compared their real tags, which failed intermittently: separate fresh Lua states frequently
+-- allocate at the same address, so that comparison depended on allocator luck rather than the code.
+do
+	check('instanceTag is a 6-character lowercase hex string',
+		instanceTag ~= nil and instanceTag:match('^%x%x%x%x%x%x$') ~= nil)
+
+	local captured = nil
+	local originalPrint = print
+	print = function(msg) captured = msg end
+	slog('probe')
+	print = originalPrint
+
+	check('slog output matches the documented [sllink tag/id] prefix format',
+		captured == '[sllink ' .. instanceTag .. '/' .. string.format('%02X', instanceID) .. '] probe')
+
+	check('compute_instance_tag output is always a 6-character lowercase hex string',
+		compute_instance_tag(0, 0, 0, 0, 0):match('^%x%x%x%x%x%x$') ~= nil)
+
+	check('compute_instance_tag is deterministic for identical inputs',
+		compute_instance_tag(0x1000, 0x2000, 0x3000, 0x4000, 12.5) ==
+		compute_instance_tag(0x1000, 0x2000, 0x3000, 0x4000, 12.5))
+
+	check('compute_instance_tag mixes each input: two simulated states differing in only one value get different tags',
+		compute_instance_tag(0x1000, 0x2000, 0x3000, 0x4000, 12.5) ~=
+			compute_instance_tag(0x1001, 0x2000, 0x3000, 0x4000, 12.5)
+		and compute_instance_tag(0x1000, 0x2000, 0x3000, 0x4000, 12.5) ~=
+			compute_instance_tag(0x1000, 0x2000, 0x3000, 0x4000, 13.5))
+end
+
+-- MARK: - 41. Per-instance starting instanceID (derive_instance_start)
+--
+-- Each instance used to start at the literal SL_INSTANCE_START (0x6D); now it derives its starting
+-- instanceID from its own instanceTag instead (see docs/config-lua-history.md, "Per-instance
+-- starting id"). Exercises derive_instance_start directly with simulated tag inputs - the same
+-- allocator-independent pattern section 40 already uses for compute_instance_tag - rather than
+-- comparing two real cross-process instanceTags/instanceIDs.
+do
+	local sampleTags = { '000000', '000001', '00007e', '00007f', '0000ff', '123456', 'abcdef', 'ffffff', '800000' }
+	local allInRange, all7Bit = true, true
+	for _, tag in ipairs(sampleTags) do
+		local id = derive_instance_start(tag)
+		if id < SL_INSTANCE_MIN or id > SL_INSTANCE_MAX then allInRange = false end
+		if id >= 0x80 then all7Bit = false end
+	end
+	check('derive_instance_start stays within [SL_INSTANCE_MIN, SL_INSTANCE_MAX] for a variety of tags',
+		allInRange)
+	check('derive_instance_start always returns a 7-bit value (< 0x80)', all7Bit)
+
+	check('derive_instance_start is deterministic for the same tag',
+		derive_instance_start('123456') == derive_instance_start('123456'))
+
+	check('two different tags can yield different starting bytes',
+		derive_instance_start('000001') ~= derive_instance_start('000002'))
+
+	-- Ties the module-level assignment (instanceID = derive_instance_start(instanceTag), evaluated
+	-- once at load) to the same range guarantee, not just the function checked in isolation above.
+	check('the live instanceID this run actually started at is within the legal range',
+		instanceID >= SL_INSTANCE_MIN and instanceID <= SL_INSTANCE_MAX)
+end
+
+-- MARK: - 42. Rejection still retries the SAME id before bumping, and the bump wraps in range
+--
+-- Complements section 36 (which covers the first same-id retry against a live rejected frame): this
+-- calls handle_identification_rejected directly to also reach the exhausted-budget bump, confirming
+-- it still wraps correctly using the new SL_INSTANCE_MIN/MAX constants. Preserves the existing
+-- ordering exactly - see handle_identification_rejected's own comment and
+-- docs/config-lua-history.md, "Identification and instance-ID collisions".
+do
+	local savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending =
+		state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending
+
+	-- (a) With retries still available, a rejection retries the SAME id - no bump.
+	state = STATE_IDENTIFYING
+	instanceID = SL_INSTANCE_MIN + 5
+	local sameId = instanceID
+	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
+	pendingMessages = {}
+	handle_identification_rejected(0x00)
+	check('a rejection with retries left keeps the SAME instanceID', instanceID == sameId)
+	check('...and decrements reidentifyRetriesLeft', reidentifyRetriesLeft == MAX_SAME_ID_RETRIES - 1)
+
+	-- (b) Once the retry budget is exhausted, the NEXT rejection bumps - and wraps SL_INSTANCE_MAX
+	-- back to SL_INSTANCE_MIN rather than escaping the legal/7-bit range.
+	state = STATE_IDENTIFYING
+	instanceID = SL_INSTANCE_MAX
+	reidentifyRetriesLeft = 0
+	pendingMessages = {}
+	handle_identification_rejected(0x00)
+	check('exhausting the retry budget bumps instanceID (no longer the same id)', instanceID ~= SL_INSTANCE_MAX)
+	check('the bump wraps SL_INSTANCE_MAX back to SL_INSTANCE_MIN', instanceID == SL_INSTANCE_MIN)
+	check('the bump resets reidentifyRetriesLeft for the new id', reidentifyRetriesLeft == MAX_SAME_ID_RETRIES)
+
+	state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending =
+		savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending
 end
 
 -- MARK: - Summary
