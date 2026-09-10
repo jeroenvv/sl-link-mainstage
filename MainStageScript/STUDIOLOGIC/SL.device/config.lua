@@ -595,11 +595,15 @@ function flush_pending(includeQuery)
 			-- 'tick N emitted region R, depth D' - flushes can also happen off-tick (inbound-frame flushes
 			-- in controller_midi_in, controller_select_patch); a FLUSH whose tick= repeats the previous
 			-- FLUSH's is exactly one of those.
+			-- Protocol messages (regionId nil) get their bytes dumped too - they're rare enough not to
+			-- flood the log, and distinguishing e.g. a keepalive from a Master Volume read needs the bytes.
+			local msgSuffix = m.regionId == nil and (' msg=' .. dump_bytes(m)) or ''
 			print('[sllink] FLUSH #' .. flushCounter ..
 				' tick=' .. timerTicks ..
 				' regionId=' .. tostring(m.regionId or 'none') ..
 				' bytes=' .. #m ..
-				' queueDepthAfter=' .. #pendingMessages)
+				' queueDepthAfter=' .. #pendingMessages ..
+				msgSuffix)
 		end
 	end
 
