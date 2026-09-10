@@ -371,10 +371,12 @@ unconditionally — the watchdog must never shorten that wait (see `handle_ident
 
 MainStage tears the script down and re-initialises it repeatedly (observed: init → finalize → init →
 ... within seconds, partly because the script is loaded once per matched USB-MIDI interface). A
-MainStage-driven re-init resets `instanceID` back to `SL_INSTANCE_START` — but the SL88 still holds the
-*previous* incarnation's registration under that same id, because `controller_finalize` has no return
-path with which to send a Logout Request (see
-[`controller_finalize` sends no Logout Request](#controller_finalize-sends-no-logout-request)).
+MainStage-driven re-init resets `instanceID` back to `SL_INSTANCE_START` — and, historically, the SL88
+kept holding the *previous* incarnation's registration under that same id regardless, because
+`controller_finalize` sent no Logout Request. See
+[`controller_finalize` sends no Logout Request](#controller_finalize-sends-no-logout-request) for the
+current status — as of 2026-09-10 it sends one again, on the hypothesis that this collision source is
+now fixed at the root rather than merely worked around by the wait/retry below.
 
 The naive fix — bump the instance byte immediately on rejection — "solves" the rejection by registering
 as a *different* app, which silently loses the user's APP-list selection: this was the actual cause of
@@ -396,11 +398,31 @@ timeout has actually elapsed.
 
 ### `controller_finalize` sends no Logout Request
 
-An earlier version of `controller_finalize` sent a Logout Request. Because MainStage tears the script
-down and re-initialises it repeatedly, every one of those spurious teardowns actively removed the app
-from the SL88's APP list — guaranteeing the "showed up briefly, then disappeared" symptom on its own,
-independent of the timer bugs above. Staying quiet lets the APP-list entry survive a churn; if the
-script really is going away for good, the keyboard's own ~5s keepalive timeout removes it anyway.
+**Status (2026-09-10): superseded — it sends one again.** As of this date,
+`controller_finalize` sends a Logout Request again — see
+`msg_system(SYS_LOGOUT_REQUEST)` returned from that function. Confirmed on hardware the same day: real
+identification traffic showed one incarnation APPROVED and its ghost's successor REJECTED, with the
+rejected one doing all the real work under an id it didn't own — a direct, reproduced instance of the
+collision this history section describes. This section's original claim that finalize "has no return
+path with which to send a Logout Request" was simply wrong: the Launchkey MK3 reference script (see
+`docs/mainstage-device-scripts.md` §10) returns MIDI from its own `controller_finalize` to leave DAW
+mode, and works. The fix here follows the same mechanism.
+
+**Original finding, and why the revert below no longer necessarily applies.** An earlier version of
+`controller_finalize` sent a Logout Request. Because MainStage tears the script down and re-initialises
+it repeatedly, every one of those spurious teardowns actively removed the app from the SL88's APP list
+— guaranteeing the "showed up briefly, then disappeared" symptom on its own, independent of the timer
+bugs above. Staying quiet let the APP-list entry survive a churn; if the script really was going away
+for good, the keyboard's own ~5s keepalive timeout removed it anyway.
+
+That revert happened while the session machinery was still broken: the keepalive was dying (see the
+timer watchdog and rule-6 fixes above) and identification approvals were being lost in MainStage's init
+window (see
+[Identification approval and rejection are lost in MainStage's init window](#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10)),
+so once a spurious teardown's logout removed the APP-list entry, nothing was left running to
+re-establish it. Both of those are now fixed. Whether the original failure mode still reproduces is a
+hypothesis, not a given — watch for the "showed up briefly, then disappeared" symptom specifically on
+the next hardware run of this change, and revert again if it does.
 
 ### Single instance confirmed on hardware (2026-08-28)
 
@@ -1012,9 +1034,12 @@ solo with MainStage quit, got 6/6 reads answered and 4/4 writes confirmed by rea
 from MainStage, with the contested registration, are ignored — the device never sends a `0x07` frame at
 all, confirmed by the sniffer, so this is a refusal at the device and not a decode gap on our side.
 
-**Rejected fix: send a Logout Request from `controller_finalize`.** Already tried and reverted for an
-independent reason recorded above — every spurious teardown then deletes the app from the SL88's APP
-list.
+**Rejected fix (at the time): send a Logout Request from `controller_finalize`.** Already tried and
+reverted for an independent reason recorded above — every spurious teardown then deletes the app from
+the SL88's APP list. Retried 2026-09-10 now that the delivery-gap fix above and the timer watchdog have
+landed — see
+[`controller_finalize` sends no Logout Request](#controller_finalize-sends-no-logout-request) for
+current status.
 
 **Chosen fix: stop treating an Identification Query reply as proof of identification.** The script
 re-sends the Identification Request until it sees an explicit `7F 01` approval. The point is not the
@@ -1064,3 +1089,65 @@ no query either. This interaction predates this change - today it would ship the
 bundled with the query, itself suspected undeliverable per the bundling pattern above - and only matters
 if the user goes completely idle immediately afterward. Not fixed here; flagged for anyone chasing an
 unexplained APP-list drop following a heavy multi-encoder sweep.
+
+---
+
+## Reading instance tags from a log: dead incarnations, not concurrent instances (2026-09-10)
+
+Jeroen's observation while diagnosing the finalize/Logout Request issue above: a MainStage controller
+restart mid-test-session produces more than one instance tag in `/tmp/lua.log`, same as a genuine
+multi-instance scenario would. A tag count alone can't tell the two apart - a restarted controller's
+old tag is simply dead, not a second instance running concurrently with the first. Corroborate with
+`controller_initialize`/`controller_finalize` call counts and tick-number continuity (see
+[Single instance confirmed on hardware](#single-instance-confirmed-on-hardware-2026-08-28) for the
+method) before reading a log's tag count as a live instance count.
+
+**The tag itself is not collision-proof either.** `instanceTag` (`compute_instance_tag` in
+`config.lua`) mixes several object addresses and `collectgarbage('count')` because a single table
+address collided across separately-loaded Lua states often enough to make the harness test flaky.
+Mixing sources lowers the odds but cannot guarantee uniqueness - MainStage's sandbox has no clock and
+no seedable RNG, so two instances that reach the tag line via an identical allocation history could in
+principle still mix to the same value. Treat two identical tags in a log as weak evidence, not proof,
+that they're the same instance; corroborate as above.
+
+---
+
+## Per-instance starting id (2026-09-10)
+
+A hardware run caught two script instances both APPROVED as the same id, `03 6D` - distinguishable
+only by `instanceTag` in the log, indistinguishable to the SL88 itself: one DeviceID, two independent
+senders, both keepaliving it. Root cause: `SL_INSTANCE_START` was one fixed constant (`0x6D`), used
+both for a fresh instance's very first attempt and for the value `controller_initialize` resets
+`instanceID` to on every MainStage-driven re-init - every incarnation, concurrent or sequential,
+started identification from the exact same byte. A re-initialised incarnation racing its own
+still-registered ghost is the same failure by the same cause.
+
+**Change:** `instanceID`'s starting value is now `derive_instance_start(instanceTag)` - `instanceTag`
+mapped into `[SL_INSTANCE_MIN, SL_INSTANCE_MAX]` (`0x10`-`0x7E`, the same range
+`handle_identification_rejected`'s bump already wrapped within) by `n % (MAX - MIN + 1)`, offset by
+`MIN`. Both use sites (the module-level initial assignment and `controller_initialize`'s reset) call
+it, so a fresh incarnation - a genuinely new Lua state, per the "dead incarnations" finding above -
+gets a new `instanceTag` and therefore ordinarily a different starting id than its predecessor's
+ghost, and two concurrently-loaded instances ordinarily don't start identification from the same byte
+either.
+
+**Residual risk, not eliminated.** `instanceTag` was already established above as lowering collision
+odds without ruling them out; mapping it through a mod-111 reduction narrows the id space further and
+so cannot do better than the tag itself. `handle_identification_rejected`'s existing wait/retry/bump
+path - retry the SAME id after `REIDENTIFY_WAIT_MS`, only bump after `MAX_SAME_ID_RETRIES` failed
+retries - is unchanged and remains the backstop for the case two instances still land on the same
+derived id.
+
+**Logout Request becomes effective, not just transmitted - unconfirmed on hardware.**
+`controller_finalize`'s Logout Request (see the finalize entry above) was observed transmitted and
+confirmed (`00 03`) on the wire yet ineffective, because another live instance sharing the *same*
+DeviceID kept the registration alive with its own keepalives. With each instance now ordinarily
+holding a distinct DeviceID, nothing should be left to keep a finalized instance's registration alive
+after its Logout Request lands - so the request should now actually kill the registration, not merely
+be acknowledged. This is a claim about the SL88's registration table, which the offline harness cannot
+observe (it stubs `settriggertimer`/MIDI plumbing, not the keyboard); it needs a hardware run. Confirm
+by: (a) two concurrently-loaded instances' log lines showing different `instanceTag`s AND different
+starting `instanceID`s, and (b) a finalize -> re-init cycle whose next Identification Request is
+APPROVED on the first try with no REJECTED at all - repeated across several cycles - where today's
+bug would instead show a `03 6D`/`03 6D` collision and at least one REJECTED before the retry clears
+it.
