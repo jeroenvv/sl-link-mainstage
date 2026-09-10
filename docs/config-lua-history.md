@@ -1030,3 +1030,37 @@ once the budget is exhausted and, from then on, restores the exact pre-fix behav
 resumes `send_keepalive()` and an `ID_QUERY` reply promotes a `STATE_IDENTIFYING` session via
 `enter_active_session()`. The `[sllink] identification never approved - falling back to query-reply
 promotion` log line is how to tell, from a hardware capture, which path a given run actually took.
+
+---
+
+## Master Volume writes go out unpaired (2026-09-10)
+
+`Scripts/probe-mastervolume.swift` gets every Master Volume read/write answered, sending each message
+alone. `flush_pending` never does that - it bundles the queued message with a trailing Identification
+Query into one array (see [the display/query flush shape](#the-display-query-flush-shape)), so a Master
+Volume write leaving `config.lua` is always paired with the query, unlike the probe's. The same
+"bundling drops a display message" failure mode is already established for Clear Screen (see
+[the double Clear Screen](#the-double-clear-screen)); worth eliminating for Master Volume too even
+though the identification-window fix above may already have been the real cause of the original symptom.
+
+**Change:** `flush_pending` omits the query when the message it is about to emit is `IT_MASTER_VOLUME`,
+so a write goes out alone, matching the probe.
+
+**Why the clock is safe.** Master Volume writes are queued under a single `'mvol'` regionId
+(`queue_message`'s per-region coalescing - see EID_A's handler), so at most one is ever waiting; a fast
+encoder sweep produces a replacement write per tick, not a growing backlog. Every encoder tick is
+itself an inbound SL frame, and `controller_midi_in` calls `rearm_timer()` unconditionally on every
+inbound frame (rule 6) - not just on query replies - so the sweep's own traffic keeps the clock running
+independent of the query. `flush_pending` also calls `request_quick_rearm()` whenever it drops the
+query for a Master Volume write: effective when `flush_pending` runs from `controller_midi_in`'s call
+chain (confirmed working, see [Quick-rearm](#quick-rearm-2026-08-21)), a harmless no-op when it runs
+from inside `controller_timer_trigger`, whose own `settriggertimer` call is already established as a
+no-op from that context.
+
+**Residual edge case, not newly introduced.** If a CC batch backlog (`CC_BATCH_CAP` overflow) leaves a
+Master Volume write stranded in `pendingMessages` until `controller_timer_trigger`'s own flush dequeues
+it, that flush has no fallback re-arm (same limitation as the double Clear Screen finding) and now sends
+no query either. This interaction predates this change - today it would ship the same stranded write
+bundled with the query, itself suspected undeliverable per the bundling pattern above - and only matters
+if the user goes completely idle immediately afterward. Not fixed here; flagged for anyone chasing an
+unexplained APP-list drop following a heavy multi-encoder sweep.
