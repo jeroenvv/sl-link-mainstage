@@ -1713,15 +1713,23 @@ function handle_identification_rejected(reason)
 	start_identification()
 end
 
--- Shared entry point for every transition into STATE_ACTIVE (login confirmation/recall, restart,
--- and the ID_QUERY self-heal path - see handle_sl_frame). Idempotent: does nothing if already
--- active, so a reaffirmation never requeues the volume read.
-function enter_active_session()
-	if state == STATE_ACTIVE then return end
-	state = STATE_ACTIVE
-	local mvolReadMsg = msg_master_volume_read() -- sync masterVolume with the hardware's current value
+-- Builds, logs and queues a Master Volume READ to sync masterVolume with the hardware's current
+-- value. Split out so handle_login can force one even when enter_active_session() is a no-op.
+function queue_master_volume_read()
+	local mvolReadMsg = msg_master_volume_read()
 	print('[sllink] -> MASTER VOLUME READ: ' .. dump_bytes(mvolReadMsg))
 	queue_message(mvolReadMsg)
+end
+
+-- Shared entry point for every transition into STATE_ACTIVE (login confirmation/recall, restart,
+-- and the ID_QUERY self-heal path - see handle_sl_frame). Idempotent: returns false and does
+-- nothing if already active, so a self-heal reaffirmation never requeues the volume read. Returns
+-- true if it performed the transition (and so already queued the read).
+function enter_active_session()
+	if state == STATE_ACTIVE then return false end
+	state = STATE_ACTIVE
+	queue_master_volume_read()
+	return true
 end
 
 function handle_login()
@@ -1730,7 +1738,12 @@ function handle_login()
 	-- may record draws sent before the keyboard had actually identified/confirmed us.
 	invalidate_all()
 	paint_screen()
-	enter_active_session()
+	-- A genuine login confirmation must resync volume even if the self-heal path already made us
+	-- ACTIVE (the hardware only honours Master Volume once actually logged in) - avoid double-queuing
+	-- when enter_active_session() itself just did it.
+	if not enter_active_session() then
+		queue_master_volume_read()
+	end
 end
 
 function handle_standby()

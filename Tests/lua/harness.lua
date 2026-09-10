@@ -1441,6 +1441,57 @@ do
 		savedState, savedTimerPending, savedFramesSinceTick, savedArmed, savedPending, savedPopupActive
 end
 
+-- MARK: - 35. A genuine login confirmation still resyncs Master Volume when the self-heal path
+-- already made the session ACTIVE; a self-heal reaffirmation alone still queues nothing.
+--
+-- Reproduces the hardware bug: ID_QUERY self-heal reaches STATE_ACTIVE before the user selects the
+-- app, so the keyboard ignores that READ; the real SYS_LOGIN_CONFIRMATION arrives later while state
+-- is already STATE_ACTIVE, and enter_active_session()'s idempotency guard used to swallow it.
+-- Inspects pendingMessages directly rather than a flush's .midi output: handle_login() queues its
+-- repaint (display messages) BEFORE the volume read, and flush_pending sends only one queued
+-- message per call, so a single controller_midi_in round-trip would return the display message
+-- and leave the read still queued rather than proving it absent.
+do
+	local savedState, savedPending = state, pendingMessages
+
+	local function mvol_reads()
+		local reads = {}
+		for i = 1, #pendingMessages do
+			local m = pendingMessages[i]
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then
+				reads[#reads + 1] = m
+			end
+		end
+		return reads
+	end
+
+	-- Self-heal reaffirming an already-ACTIVE session (enter_active_session()'s own idempotency
+	-- guard, exercised end-to-end via ID_QUERY in test 32) must still queue no read.
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	enter_active_session()
+	check('enter_active_session() reaffirming an already-ACTIVE session queues no read',
+		#mvol_reads() == 0)
+
+	-- A genuine login confirmation arriving while the self-heal path already made the session
+	-- ACTIVE - exactly the hardware sequence - must still queue exactly one read.
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	handle_login()
+	local reads = mvol_reads()
+	check('a genuine login confirmation while already ACTIVE queues exactly one Master Volume read',
+		#reads == 1)
+	if #reads == 1 then
+		checkHex(
+			'that Master Volume read carries the exact expected bytes',
+			reads[1],
+			'F0 00 20 1A 16 03 6D 07 00 F7'
+		)
+	end
+
+	state, pendingMessages = savedState, savedPending
+end
+
 -- MARK: - Summary
 
 realPrint('')
