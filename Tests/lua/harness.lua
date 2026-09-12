@@ -579,21 +579,15 @@ do
 	end
 end
 
--- MARK: - 15. controller_finalize sends a Logout Request and still tears down
+-- MARK: - 15. controller_finalize sends nothing and still tears down
 --
--- Was: asserted a nil return (no Logout Request at all) - see
--- docs/config-lua-history.md#controller_finalize-sends-no-logout-request for why that was reverted
--- to and is now reverted again. A callback can only send by RETURNING MIDI (see config.lua's
--- MainStage-host notes), so the returned table itself is the only place to check this from.
+-- See docs/config-lua-history.md#controller_finalize-sends-no-logout-request - sending a Logout
+-- Request here logged the app out of the SL88's APP list on every spurious MainStage teardown.
 do
 	state = STATE_ACTIVE
 	pendingMessages = { msg_draw_rect(0, 0, 10, 10, 0, 0, 0) }
 	local result = controller_finalize()
-	check('controller_finalize returns a Logout Request', result ~= nil and result.midi ~= nil)
-	if result then
-		checkHex('controller_finalize Logout Request bytes', result.midi, hex(msg_system(SYS_LOGOUT_REQUEST)))
-		check('controller_finalize sets outport to SL_PORT', result.outport == SL_PORT)
-	end
+	check('controller_finalize returns nil (sends nothing)', result == nil)
 	check('controller_finalize still clears pendingMessages', #pendingMessages == 0)
 	check('controller_finalize still sets state to STATE_IDLE', state == STATE_IDLE)
 end

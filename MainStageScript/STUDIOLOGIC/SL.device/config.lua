@@ -2166,19 +2166,13 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	return flush_pending()
 end
 
--- Sends a Logout Request so the SL88 releases this instanceID before the next incarnation
--- identifies, instead of colliding with a ghost registration - see
--- docs/config-lua-history.md#controller_finalize-sends-no-logout-request for why this was reverted
--- once and why it's being retried now. Built directly (not via queue_message/flush_pending) so
--- clearing pendingMessages below can't defeat it - a return value here is the only send mechanism
--- controller_finalize has (see the Launchkey MK3 reference in docs/mainstage-device-scripts.md §10).
+-- Sends nothing - see docs/config-lua-history.md#controller_finalize-sends-no-logout-request.
+-- MainStage tears the script down and re-initialises it constantly; a Logout Request here logs the
+-- app out of the SL88's APP list on every spurious teardown.
 function controller_finalize()
-	local logout = msg_system(SYS_LOGOUT_REQUEST)
-	slog('-> LOGOUT REQUEST from controller_finalize (00 03 LOGOUT CONFIRMATION from the device ' ..
-		'confirms it was actually transmitted)')
 	pendingMessages = {}
 	state = STATE_IDLE
-	return { midi = logout, outport = SL_PORT }
+	return nil
 end
 
 -- Periodic. Re-arms itself so it keeps firing for as long as the device stays selected. This is the

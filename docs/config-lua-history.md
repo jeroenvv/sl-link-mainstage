@@ -398,7 +398,19 @@ timeout has actually elapsed.
 
 ### `controller_finalize` sends no Logout Request
 
-**Status (2026-09-10): superseded — it sends one again.** As of this date,
+**Status (2026-09-10): reverted again, same day.** Retried sending the Logout Request (below) on the
+hypothesis that per-instance DeviceIDs (see
+[Per-instance starting id](#per-instance-starting-id-2026-09-10)) had fixed the root cause. On hardware
+this made things worse: an instance was seen APPROVED and then immediately logging
+`-> LOGOUT REQUEST from controller_finalize`, the app never appeared in the SL88's APP list, and the
+Master Volume popup stuck on `--` with a dead encoder downstream of the session never registering
+properly. Per-instance ids made the old failure mode worse, not better: a re-init used to reclaim the
+same id, so the APP-list entry effectively returned after a spurious teardown; now each incarnation
+derives a different id, so it never does. The *mechanism* is proven regardless — the device answered
+`00 03` LOGOUT CONFIRMATION, disproving the original "no return path" claim below — it's the effect on
+the APP list that fails. `controller_finalize` is back to sending nothing (see the function itself).
+
+**Prior status (2026-09-10, superseded by the above): sends one again.** As of this date,
 `controller_finalize` sends a Logout Request again — see
 `msg_system(SYS_LOGOUT_REQUEST)` returned from that function. Confirmed on hardware the same day: real
 identification traffic showed one incarnation APPROVED and its ghost's successor REJECTED, with the
