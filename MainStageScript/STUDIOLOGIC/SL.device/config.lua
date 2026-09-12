@@ -387,6 +387,8 @@ masterVolumeRead = nil -- last VOL from an actual READ reply (07 00); nil until 
 -- True until the first READ reply lands, forcing the EID_A handler to reseed masterVolume from
 -- masterVolumeRead on that first known-value tick regardless of MVOL_GESTURE_IDLE_TICKS - see
 -- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
+-- Belt-and-suspenders: the mvolLastActivityIdleTick sentinel below already forces that same tick's
+-- reseed on its own, so this flag's as-loaded default (true vs false) has no observable effect.
 mvolNeedsSeed = true
 
 -- Rate-limits the Master Volume read queued alongside each EID_A tick (see the EID_A handler): only
@@ -2009,10 +2011,11 @@ function handle_sl_frame(e)
 			-- or stale reply can never perturb a value already being sent. See
 			-- docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10.
 			masterVolumeRead = vol
+			slog('<- MASTER VOLUME READ reply vol=' .. vol .. ' (masterVolume=' .. masterVolume .. ')')
 		else
 			masterVolume = vol
+			slog('<- MASTER VOLUME WRITE echo vol=' .. vol)
 		end
-		slog('<- MASTER VOLUME ' .. masterVolume)
 	elseif itemType == IT_BUTTON then
 		local bid = func
 		local pressKind = e[9]
