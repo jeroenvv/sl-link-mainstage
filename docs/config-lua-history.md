@@ -1459,3 +1459,39 @@ unchanged in between, and asserts the erase and its overlapping ids resend both 
 label + knob + value + sacrificial redraw); the full first `EID_A` tick (popup entry plus the Master
 Volume write and read) goes from 11 to 12. Harness section 53's ceiling is raised accordingly - a
 deliberate, one-message increase, not a silently-widened bound.
+
+---
+
+## Master Volume write-backs do not all reach the device (2026-09-12) — OPEN
+
+Reported from hardware after the local-tracking and popup-erase fixes: the popup itself is smooth and
+shows the right value, but **the sound card's actual volume does not change smoothly** — it steps
+unevenly, as though only some of the writes land.
+
+**What is established:** the popup tracks `masterVolume` continuously and correctly, and `masterVolume`
+changes by one delta per encoder tick. So the gap is between what the script *intends* to send and what
+the device *acts on* — not a display or accumulation bug.
+
+**Leading suspects, none tested:**
+
+1. **Per-region coalescing drops intermediate values.** Master Volume writes are queued under the
+   `'mvol'` region id, which replaces-in-place. During a fast twist, many ticks coalesce into a single
+   queued write carrying only the newest value, and every intermediate value is discarded by design.
+   That is correct for keeping the queue bounded, but it means the device sees a coarse sequence of
+   jumps rather than every step — which would sound exactly like "not smooth".
+2. **One message per flush is too slow for the tick rate.** At `FLUSH_SOON_MS` (35ms) the drain rate is
+   ~28 messages/sec, shared with the popup's own redraws. A brisk encoder sweep generates ticks faster
+   than that, so writes are necessarily thinned.
+3. **The device may rate-limit or ignore closely-spaced writes.** Untested, and distinguishable from
+   (1) and (2) only by comparing what the sniffer sees leave against what the volume does.
+
+**Note the tension with the session-safety work:** coalescing and the one-per-flush budget are what
+stopped the queue saturating and getting the app dropped from the APP list. Any fix that sends *more*
+writes must not reintroduce that. The interesting direction is probably sending *fewer but better-timed*
+writes — e.g. a fixed-rate write of the latest value (~10/sec) rather than one per tick — so the device
+gets an even cadence instead of a burst-then-gap.
+
+**Related open question from the same day:** the READ reply is pinned at a constant (71 observed) and
+does not track writes, so it cannot be used to confirm what the device actually received. Until that is
+understood, there is no in-band way to verify which writes landed — the sniffer plus Jeroen's ear are
+the only observation path.

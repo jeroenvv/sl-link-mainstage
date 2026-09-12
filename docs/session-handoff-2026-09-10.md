@@ -115,3 +115,62 @@ MainStage involved, reassembles SysEx split across CoreMIDI packets, runs a scri
 sequence, prints a verdict table, and draws each step on the SL88's own screen. It is what proved
 Master Volume works. Run it solo with MainStage quit; a run only means something if the probe was
 explicitly selected on the keyboard during that run, because state carries between rapid runs.
+
+---
+
+# Update — 2026-09-12
+
+Second session. The branch is now **stabilised and green at 245/245**, and Master Volume works well
+enough to use, with one open defect.
+
+## Landed since the first handoff
+
+- The half-applied `controller_finalize` revert is finished and committed; the app stays in the APP list.
+- Three stale claims in `docs/mainstage-integration.md` corrected (Master Volume "does not work"; the
+  "no return path" claim; the same-id retry listed as untested).
+- A logging defect fixed: a READ reply logged the local send-value instead of the received one, which
+  would have made the safety-guard evidence unreadable.
+- Five boundary gaps closed in the harness, each found by independent verification and each confirmed to
+  fail on the mutation it guards.
+- Master Volume: the never-write-until-confirmed guard was **removed** — see below. The value is now
+  tracked locally from `MVOL_SEED_DEFAULT` (60), and popup entry always erases its full region.
+
+## What the hardware taught us, and it overturned two assumptions
+
+1. **The device only answers a READ while writes are in flight.** The "never write an unconfirmed value"
+   guard could therefore never confirm: on hardware it left the encoder dead, polled forever, saturated
+   the queue and got the app dropped. Safety has to come from *what* we write first (60), not from
+   refusing to write.
+2. **The READ reply does not report the device's output level.** It sat at a constant 71 through a sweep
+   of writes 65→70→72 that audibly changed the volume. Seeding gestures from it dragged the value back on
+   every pause. What it actually reports is unknown.
+
+## The one open defect — for next session
+
+**Not all write-backs reach the device: the sound card's volume steps unevenly.** Full analysis and the
+three untested suspects are in `docs/config-lua-history.md`, section "Master Volume write-backs do not
+all reach the device (2026-09-12)". Short version: per-region coalescing plus the one-message-per-flush
+budget necessarily thin a fast sweep, and any fix must not reintroduce the queue saturation that drops
+the app.
+
+## Where the plan stands
+
+Phases 1, 2 and 4 of the landing plan are done (green suite, verification pass, docs reconciled).
+**Phase 3 (hardware acceptance) is partly done** — the finalize revert, per-instance ids, identification,
+popup and Master Volume were all exercised; a full regression sweep (patch changes, zoom, CC mapping via
+MIDI Message Monitor, standby/restart) was not. **Phase 5 (CHANGELOG + PR) is not started.**
+
+The branch is still unpushed. `CHANGELOG.md`'s `[Unreleased]` still predates both sessions' work.
+
+**On the version:** the release workflow will bump to 2.0.0 on merge, but for the wrong reason — the only
+`!` commit in range (`e4ad0fa feat!:`) was itself reverted by `4b0cf4c`. Add a real `BREAKING CHANGE:`
+trailer describing the relative-encoder switch before merging, so the major bump rests on something true.
+
+## Housekeeping
+
+`LUA_DEBUG` is on and a sniffer is running:
+
+```
+defaults write com.apple.mainstage3 LUA_DEBUG -bool false
+pkill -f /tmp/sniffer
+```
