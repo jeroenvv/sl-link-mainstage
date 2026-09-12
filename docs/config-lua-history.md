@@ -1390,7 +1390,7 @@ to properly restore whatever mode the popup was covering.
 
 ---
 
-## Master Volume READ reply does not track writes (2026-09-12)
+## Master Volume READ reply does not track writes (2026-09-12) — OVERSTATED, SEE CORRECTION BELOW
 
 Hardware log, consecutive lines from a live session:
 
@@ -1525,3 +1525,41 @@ resolves to the same byte. Both parse correctly, so a decode off-by-one is not t
 
 Run the probe solo with MainStage quit, and remember that a run only means anything if the probe was
 explicitly selected on the keyboard during it: state carries between rapid successive runs.
+
+
+---
+
+## Correction: the read reply is sparse and stale, not constant (2026-09-12)
+
+The earlier section claiming the READ reply is "pinned at 71 and does not track writes" was **wrong, and
+wrong because of how it was measured** — it generalised from a `tail -12` window of one run that happened
+to sit in a run of identical values. A full-log check of the following run shows otherwise.
+
+**What the complete log actually shows:**
+
+- **Frames arrive whole.** Every inbound frame is a complete 11- or 12-byte `F0 … F7`. There are no
+  truncated fragments, so the CoreMIDI packet-splitting that broke the standalone probe earlier is NOT
+  happening in MainStage's Lua host. (Jeroen raised this as a hypothesis; it is ruled out.)
+- **Reply values vary widely** across a run: 15, 23, 29, 52, 64, 71, 96, 98.
+- **Replies are rare and badly stale.** Only a handful arrive across thousands of lines, and one reports
+  `vol=29` while `masterVolume` is 67.
+- **Writes are NOT being coalesced away.** Consecutive writes go out with no gaps —
+  `36 37 38 39 3A 3B 3C 3D 3E 3F 40 41 42 43 44 45` on the way up (54→69) and every step back down again.
+
+**This inverts the diagnosis of the uneven-stepping defect.** The leading suspect was per-region
+coalescing discarding intermediate values; the log disproves it. The script emits a clean, complete,
+dense stream and the device's audible response is still uneven, while its read replies lag far behind.
+That points at the **device** not keeping up with densely-spaced writes, not at our queue dropping them.
+
+**Consequence for the fix direction:** sending writes *more* reliably cannot help — they are already all
+being sent. The promising direction is the opposite: write *less often* at an even cadence (e.g. the
+latest value ~10 times a second instead of once per encoder tick) and give the device time to act on
+each one. That also costs less queue pressure, so it does not fight the session-safety work.
+
+**Still open:** what the READ reply actually reports, given it lags this far behind. It may be a value
+sampled well before our recent writes, which would make it useless as a live reading but harmless as the
+in-flight companion that makes writes work at all.
+
+**Method note.** Two findings in one day were overstated from narrow log windows — this one, and an
+earlier "vacuous assertion" call that turned out to be a mutation landing in a comment. Check a whole
+capture, or the complete set of distinct values, before writing a characterisation into this file.
