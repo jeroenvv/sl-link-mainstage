@@ -2290,6 +2290,100 @@ do
 		savedIdleTicks, savedDrawn, savedPending
 end
 
+-- MARK: - 49. STATE_REIDENTIFY_WAIT's ID_QUERY reply never promotes on a stale identifyFallback
+--
+-- handle_identification_rejected never clears identifyFallback, so a rejected session can sit in
+-- STATE_REIDENTIFY_WAIT with it still true from an earlier STATE_IDENTIFYING fallback engagement.
+-- Promotion to STATE_ACTIVE must still require STATE_LISTED or STATE_IDENTIFYING, not the flag alone.
+do
+	local savedState, savedPending, savedIdentifyFallback, savedArmed, savedTimerPending =
+		state, pendingMessages, identifyFallback, armed, timerPending
+
+	state = STATE_REIDENTIFY_WAIT
+	identifyFallback = true
+	pendingMessages = {}
+	controller_midi_in(qreply(), 'LINK')
+	check('an ID_QUERY reply during STATE_REIDENTIFY_WAIT does not promote to STATE_ACTIVE even with a stale identifyFallback',
+		state == STATE_REIDENTIFY_WAIT)
+
+	state, pendingMessages, identifyFallback, armed, timerPending =
+		savedState, savedPending, savedIdentifyFallback, savedArmed, savedTimerPending
+end
+
+-- MARK: - 50. derive_instance_start's modulus makes SL_INSTANCE_MAX actually reachable
+--
+-- The modulus range width is SL_INSTANCE_MAX - SL_INSTANCE_MIN + 1; dropping the +1 silently makes
+-- SL_INSTANCE_MAX unreachable while every other derive_instance_start check still passes. Sweeping
+-- every residue of the range width confirms the top end is actually produced.
+do
+	local rangeWidth = SL_INSTANCE_MAX - SL_INSTANCE_MIN + 1
+	local maxSeen = SL_INSTANCE_MIN
+	for n = 0, rangeWidth - 1 do
+		local id = derive_instance_start(string.format('%06x', n))
+		if id > maxSeen then maxSeen = id end
+	end
+	check('derive_instance_start reaches SL_INSTANCE_MAX over a full residue sweep', maxSeen == SL_INSTANCE_MAX)
+end
+
+-- MARK: - 51. Bump-wrap boundary: SL_INSTANCE_MAX - 1 bumps to SL_INSTANCE_MAX without wrapping
+--
+-- Mirrors test 42(b), which covers the wrap FROM SL_INSTANCE_MAX; mutating instanceID > SL_INSTANCE_MAX
+-- to >= passes 235/235 without this case, which must land exactly on the max and not wrap early.
+do
+	local savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending =
+		state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending
+
+	state = STATE_IDENTIFYING
+	instanceID = SL_INSTANCE_MAX - 1
+	reidentifyRetriesLeft = 0
+	pendingMessages = {}
+	handle_identification_rejected(0x00)
+	check('bumping from SL_INSTANCE_MAX - 1 lands on exactly SL_INSTANCE_MAX', instanceID == SL_INSTANCE_MAX)
+	check('...and does not wrap to SL_INSTANCE_MIN', instanceID ~= SL_INSTANCE_MIN)
+
+	state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending =
+		savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending
+end
+
+-- MARK: - 52. Master Volume READ pending timeout: exact boundary still counts as pending
+--
+-- poll_master_volume's guard is `... > MVOL_READ_TIMEOUT_FRAMES`; mutating > to >= passes 235/235
+-- because test 44(d) only exercises one frame PAST the timeout. Sitting exactly on the boundary must
+-- still be treated as pending (no new read queued).
+do
+	local savedPending, savedMvolReadPending, savedSlFrameCounter, savedMvolReadPendingFrame =
+		pendingMessages, mvolReadPending, slFrameCounter, mvolReadPendingFrame
+
+	local function encoder_frame(tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
+	end
+	local function mvol_read_messages()
+		local out = {}
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == 'mvolRead' then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+
+	pendingMessages = {}
+	mvolReadPending = true
+	slFrameCounter = 100
+	-- handle_sl_frame increments slFrameCounter by 1 before poll_master_volume reads it, so back-solve
+	-- mvolReadPendingFrame so that later subtraction lands exactly on MVOL_READ_TIMEOUT_FRAMES.
+	mvolReadPendingFrame = (slFrameCounter + 1) - MVOL_READ_TIMEOUT_FRAMES
+	handle_sl_frame(encoder_frame(0x41))
+	check('exactly MVOL_READ_TIMEOUT_FRAMES elapsed still counts as pending: no new read queued',
+		#mvol_read_messages() == 0)
+	check('...and mvolReadPending stays true', mvolReadPending == true)
+
+	pendingMessages, mvolReadPending, slFrameCounter, mvolReadPendingFrame =
+		savedPending, savedMvolReadPending, savedSlFrameCounter, savedMvolReadPendingFrame
+end
+
 -- MARK: - Summary
 
 realPrint('')
