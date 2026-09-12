@@ -1495,3 +1495,33 @@ gets an even cadence instead of a burst-then-gap.
 does not track writes, so it cannot be used to confirm what the device actually received. Until that is
 understood, there is no in-band way to verify which writes landed — the sniffer plus Jeroen's ear are
 the only observation path.
+
+### Next step: confirm the read-back against the probe (planned 2026-09-12)
+
+Jeroen's instruction for the next round: **use the Swift probe to establish whether the read-back is
+genuinely faulty**, rather than continuing to reason about it from the script's own log.
+
+This is sharper than it first appears, because the probe has already produced the *opposite* result on
+the same hardware. `Scripts/probe-mastervolume.swift`'s scripted sequence wrote 20, 60, 90 and 45, and
+each read-back returned exactly that value — 4/4, with the `07 00 <vol>` shape correctly failing as a
+negative control. Yet the script, on the same keyboard, logs a constant `vol=71` across a sweep of
+writes 65→70→72 that audibly changed the volume. Both cannot be describing the same device behaviour.
+
+**Already ruled out — byte position.** `midiEvent` is 0-indexed in MainStage's Lua host, the frame is
+`F0 00 20 1A 16 <id1> <id2> 07 00 <VOL> <MUTE> F7`, so `e[9]` is VOL; the probe's `payload.first`
+resolves to the same byte. Both parse correctly, so a decode off-by-one is not the explanation.
+
+**What the probe run should establish:**
+
+1. Does the read-back still track writes from the probe today, reproducing the earlier 4/4 result? If it
+   does, the divergence is real and specific to the script's session.
+2. If it does, what differs? Candidates not yet eliminated: the write cadence (the probe pauses ~500ms
+   between steps, the script writes on every encoder tick and coalesces), and whether a read issued
+   while several writes are still queued returns a pre-write value.
+3. Cadence is the most testable: add a mode to the probe that writes at the script's rate rather than
+   with pauses, and see whether the read-back goes constant. That would tie the constant reply and the
+   uneven volume stepping to a single cause — the device not keeping up with burst writes — which is
+   also the leading suspect for "not all write-backs arrive".
+
+Run the probe solo with MainStage quit, and remember that a run only means anything if the probe was
+explicitly selected on the keyboard during it: state carries between rapid successive runs.
