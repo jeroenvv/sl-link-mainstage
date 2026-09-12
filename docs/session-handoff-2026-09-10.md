@@ -1,0 +1,117 @@
+# Handoff — Master Volume session, 2026-09-10
+
+Written at the end of a long hardware session, stopped on budget. This is the state of
+`feature/host-api-actions` and what to pick up. Nothing here is speculation about what to do next
+beyond what is explicitly labelled as such.
+
+## The headline
+
+**Master Volume works from MainStage.** The device requires a READ issued alongside the WRITE; a write
+on its own is ignored. Jeroen proposed this early ("first send a read to get the current value, then
+apply the change and send back"); it was deferred behind a verification chain and only tried hours
+later, at which point it worked immediately. Confirmed on hardware: writes take effect and read replies
+arrive (`<- MASTER VOLUME 67`).
+
+Note the asymmetry, which is not understood: **reads issued during an encoder gesture are answered;
+the read issued at login is not.** That was true in every run.
+
+## THE IMMEDIATE PROBLEM — the rig is currently broken
+
+The installed script logs the app out of the SL88's APP list. Symptom Jeroen saw: the app does not
+appear, and the Master Volume popup is stuck on `--` with the volume unresponsive. Both are the same
+cause.
+
+**Cause.** `controller_finalize` was changed to send a Logout Request. MainStage tears the script down
+and re-initialises it constantly, so every spurious teardown logs the app out. Hardware log shows an
+instance APPROVED and then immediately `-> LOGOUT REQUEST from controller_finalize`. Per-instance
+DeviceIDs made it worse: a re-init used to reclaim the same id so the entry effectively came back;
+now each incarnation takes a different id, so it never does. Downstream, the session is never properly
+registered, Master Volume reads go unanswered, `masterVolumeRead` stays nil, and the safety guard
+(correctly) refuses to write an unconfirmed value — hence `--` and a dead encoder.
+
+This is exactly the "showed up briefly, then disappeared" symptom that caused the original revert of
+logout-on-finalize, documented in `config-lua-history.md`. It did not reproduce in the first test of
+the change because that run happened to keep the approved instance alive.
+
+**What remains valid:** `controller_finalize` genuinely *can* send — the device answered with `00 03`
+LOGOUT CONFIRMATION, disproving the old "no return path" claim. The mechanism works; its effect on the
+APP list is what fails.
+
+## STATE OF THE WORKING TREE — read before doing anything
+
+`config.lua` is **modified and uncommitted**, and the suite is **red: 234/235**, failing
+`controller_finalize returns a Logout Request`.
+
+An agent began reverting logout-on-finalize and was cut off mid-task. It applied the `config.lua` half
+(`controller_finalize` now clears `pendingMessages`, sets `STATE_IDLE`, returns nil) but did not update
+the harness test or the docs.
+
+**To finish it:** update the harness test that asserts finalize returns a Logout Request so it asserts
+the reverted behaviour, keeping the assertions that finalize still clears `pendingMessages` and sets
+`STATE_IDLE`. Then add a short note to `config-lua-history.md` recording that logout-on-finalize was
+tried on hardware and reverted the same day for the APP-list reason above. Then reinstall and restart
+MainStage — the currently installed build is the broken one.
+
+## Verified on hardware this session
+
+- Identification APPROVED and REJECTED frames now reach the script. They were previously lost in the
+  window after MainStage wires `outport` but before it delivers `controller_midi_in`, which made
+  `handle_identification_rejected`, `STATE_REIDENTIFY_WAIT`, `REIDENTIFY_WAIT_MS` and
+  `MAX_SAME_ID_RETRIES` unreachable for the project's entire life. Fixed by re-sending the
+  Identification Request until an explicit approval arrives, with a fallback floor.
+- Per-instance DeviceIDs and per-instance log tags. Two instances had been approved as `03 6D`
+  simultaneously; tagging every log line is what made that visible.
+- The 2 s popup dismissal (`POPUP_DISMISS_IDLE_TICKS = 2`) — Jeroen confirmed "popup displaytime is ok".
+- Popup seeds from the device value at gesture start, then tracks the value being sent.
+
+## Not tested on hardware
+
+The final build's safety guard — never write a Master Volume value that has not been confirmed by a
+READ reply. It exists because the first encoder tick previously applied a delta to an invented default
+of 100 and **wrote 100 to the device**, i.e. one click could jump the audio board to full output. The
+hazard is confirmed on the wire (`-> ... 07 01 64`); the fix for it is not yet confirmed working.
+
+## Open, unexplained
+
+- **Why the login-time READ is unanswered while gesture READs are answered.**
+- **A MainStage freeze with audio pops while completely idle**, seen once. Suspected to be a drop
+  detector added and removed the same day (it fell to `STATE_IDLE` after 6 s without a query reply,
+  which could drive a re-identify loop). **Suspected, not proven** — the debug capture for that run was
+  lost when MainStage was restarted by hand. If the freeze recurs without the detector, the cause is
+  elsewhere. Consequence of its removal: the app cannot recover on its own if the keyboard drops it.
+- **IDENTIFICATION REJECTED reason `00` is not understood.** A freshly derived, never-used id was still
+  rejected twice before approval, so it cannot simply mean "that id is taken".
+
+## Test-quality caveat
+
+Roughly 50 assertions were added this session. Most were mutation-tested by the same agent that wrote
+them and self-reported. The one independent verification pass that ran immediately found a **vacuous
+assertion** — an off-by-one on the gesture boundary (`>=` vs `>`) passed the entire suite, because no
+case sat on the boundary value. That gap is now closed and the fix independently confirmed.
+
+A verification pass over the session's other new assertions is worth running before this branch merges.
+The policy going forward (Jeroen's instruction): implementation agents write code and tests but do not
+mutation-test; a separate agent with limited context does the verification, and is not given the
+implementation prompt or the author's report.
+
+Also noted by that pass: the harness has no `pcall` isolation, so a mutation causing a Lua error aborts
+the whole run at that line and can mask whether later assertions would also have caught the bug.
+
+## Housekeeping
+
+`LUA_DEBUG` is still enabled and a sniffer may still be running. Both cost performance:
+
+```
+defaults write com.apple.mainstage3 LUA_DEBUG -bool false
+pkill -f /tmp/sniffer
+```
+
+Kept logs: `/tmp/lua-mvol-login-read-keep.log`, `/tmp/lua-flushbytes-keep.log`, `/tmp/lua-restart1.log`.
+
+## Tooling added
+
+`Scripts/probe-mastervolume.swift` — a standalone SL Link probe that drives its own session with no
+MainStage involved, reassembles SysEx split across CoreMIDI packets, runs a scripted read/write
+sequence, prints a verdict table, and draws each step on the SL88's own screen. It is what proved
+Master Volume works. Run it solo with MainStage quit; a run only means something if the probe was
+explicitly selected on the keyboard during that run, because state carries between rapid runs.
