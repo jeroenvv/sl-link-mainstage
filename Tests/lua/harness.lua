@@ -35,12 +35,11 @@ end
 local configPath = arg[1] or 'MainStageScript/STUDIOLOGIC/SL.device/config.lua'
 dofile(configPath)
 
--- Baseline "device value already known" state for the rest of the suite - most sections exercise
--- steady-state EID_A behaviour, not the pre-first-reply transient. Section 47 tests that transient
--- directly and manages masterVolumeRead/mvolNeedsSeed itself (save/restore) - see
--- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
+-- Baseline "a READ reply has landed at least once" state for the rest of the suite. masterVolumeRead
+-- no longer feeds masterVolume at all (see
+-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12), so this is
+-- just a plausible logging value - sections that care about it manage it themselves (save/restore).
 masterVolumeRead = 50
-mvolNeedsSeed = false
 
 -- MARK: - Helpers (SKILL.md)
 
@@ -1070,18 +1069,14 @@ do
 		return out
 	end
 
-	local savedPopupActive, savedDisplayMode, savedMvolLastActivityIdleTick, savedMasterVolumeRead =
-		popupActive, displayMode, mvolLastActivityIdleTick, masterVolumeRead
+	local savedPopupActive, savedDisplayMode, savedMasterVolumeRead =
+		popupActive, displayMode, masterVolumeRead
 	-- Pre-seat the popup as already showing (the 'repeat call' branch) so show_master_volume_popup
 	-- doesn't run the full mode-switch machinery on every sub-test below - kept separate from what
 	-- this section actually tests (the Master Volume write itself).
 	popupActive = true
 	popupPreviousMode = 'zoom'
 	displayMode = 'popup'
-	-- Pin the gesture-start check to "already mid-gesture" (idleTicks unchanged since the last A
-	-- tick) so these sub-tests exercise plain accumulation/clamping/coalescing, not the
-	-- gesture-start reseed - that has its own dedicated section below.
-	mvolLastActivityIdleTick = idleTicks
 
 	pendingMessages = {}
 	masterVolume = 50
@@ -1167,8 +1162,8 @@ do
 		#mvol_read_messages() == 0
 	)
 
-	popupActive, displayMode, mvolLastActivityIdleTick =
-		savedPopupActive, savedDisplayMode, savedMvolLastActivityIdleTick
+	popupActive, displayMode =
+		savedPopupActive, savedDisplayMode
 
 	-- Inbound Master Volume reply updates masterVolume - tolerant of the trailing MUTE byte being
 	-- present or absent (docs/implementing-sl-link.md §7: trailing bytes are optional more often than
@@ -1910,7 +1905,9 @@ end
 -- Reply timing made the displayed number jumpy on hardware (see
 -- docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10) - the popup
 -- now always shows masterVolume, the locally accumulated to-be-sent value, and never masterVolumeRead
--- directly. masterVolumeRead only seeds masterVolume at a gesture's start (section 46).
+-- directly. masterVolumeRead no longer feeds masterVolume at all, not even at a gesture's start -
+-- see docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12 and
+-- section 46.
 do
 	local savedMasterVolume, savedMasterVolumeRead, savedPopupValue, savedPopupMax, savedPopupActive,
 		savedDisplayMode, savedPopupPreviousMode, savedArmed, savedTimerPending, savedTimerArmedInterval =
@@ -1978,16 +1975,13 @@ end
 -- MVOL_READ_TIMEOUT_FRAMES so the guard cannot wedge itself shut forever.
 do
 	local savedPending, savedMvolReadPending, savedSlFrameCounter, savedMvolReadPendingFrame,
-		savedPopupActive, savedDisplayMode, savedMasterVolumeRead, savedMvolLastActivityIdleTick =
+		savedPopupActive, savedDisplayMode, savedMasterVolumeRead =
 		pendingMessages, mvolReadPending, slFrameCounter, mvolReadPendingFrame,
-		popupActive, displayMode, masterVolumeRead, mvolLastActivityIdleTick
+		popupActive, displayMode, masterVolumeRead
 
 	popupActive = true
 	popupPreviousMode = 'zoom'
 	displayMode = 'popup'
-	-- Not testing the gesture-start reseed here (section 46 covers it) - pin every tick below to
-	-- "already mid-gesture" so it can't perturb masterVolume mid-section.
-	mvolLastActivityIdleTick = idleTicks
 
 	local function encoder_frame(tickByte)
 		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
@@ -2034,9 +2028,9 @@ do
 		#mvol_read_messages() == 1)
 
 	pendingMessages, mvolReadPending, slFrameCounter, mvolReadPendingFrame,
-		popupActive, displayMode, masterVolumeRead, mvolLastActivityIdleTick =
+		popupActive, displayMode, masterVolumeRead =
 		savedPending, savedMvolReadPending, savedSlFrameCounter, savedMvolReadPendingFrame,
-		savedPopupActive, savedDisplayMode, savedMasterVolumeRead, savedMvolLastActivityIdleTick
+		savedPopupActive, savedDisplayMode, savedMasterVolumeRead
 end
 
 -- MARK: - 45. A Master Volume READ reply never overwrites masterVolume, only masterVolumeRead
@@ -2045,7 +2039,9 @@ end
 -- MVOL_GESTURE_WINDOW_FRAMES had passed since the last EID_A tick (see
 -- docs/config-lua-history.md#master-volume-drop-detection-read-rate-limiting-and-the-mid-gesture-guard-2026-09-10).
 -- Now the popup shows masterVolume directly (section 43), so a READ reply landing at ANY time -
--- mid-gesture or long after - must never perturb it; only a fresh gesture's start does (section 46).
+-- mid-gesture or long after - must never perturb it. Section 46 goes further: not even a fresh
+-- gesture's start reseeds from it any more - see
+-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
 -- masterVolumeRead keeps updating from every reply regardless.
 do
 	local savedMasterVolume, savedMasterVolumeRead, savedSlFrameCounter,
@@ -2078,8 +2074,8 @@ do
 	check('...but still updates the device-reported masterVolumeRead', masterVolumeRead == 40)
 
 	-- (c) A READ reply landing long after (no gesture activity in between) STILL does not overwrite
-	-- masterVolume - only masterVolumeRead. Old design re-trusted the reply here; new design never
-	-- does, since a fresh gesture reseeds explicitly instead (section 46).
+	-- masterVolume - only masterVolumeRead. Old design re-trusted the reply here; current design never
+	-- does, at any time - see section 46.
 	slFrameCounter = slFrameCounter + 1000
 	handle_sl_frame(read_reply_frame(35))
 	check('a READ reply long after the last EID_A tick still does NOT overwrite masterVolume',
@@ -2092,16 +2088,18 @@ do
 		savedMvolReadPending, savedMvolReadPendingFrame, savedPopupActive, savedDisplayMode
 end
 
--- MARK: - 46. EID_A gesture-start reseeds masterVolume from masterVolumeRead
+-- MARK: - 46. EID_A never reseeds masterVolume from masterVolumeRead - tracked locally only
 --
--- A gesture starts on the first A tick seeing >= MVOL_GESTURE_IDLE_TICKS idle ticks since the last
--- one (~1s each - same idleTicks/POPUP_TICK_MS cadence as the popup's own idle dismissal, section
--- 29/44's popupLastActivityIdleTick). See mvolLastActivityIdleTick's declaration and
--- docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10.
+-- Hardware log: a Master Volume READ reply answered a fixed 71 across a whole sweep of writes that
+-- took audible effect (65 -> 70 -> 72), so the reply cannot be the device's current output level -
+-- see docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
+-- masterVolume now changes ONLY by accumulated EID_A deltas, never reseeded from masterVolumeRead at
+-- a gesture start or otherwise - this supersedes section 46's old premise (idle-tick gesture
+-- boundaries no longer exist: MVOL_GESTURE_IDLE_TICKS and mvolLastActivityIdleTick are both removed).
 do
-	local savedMasterVolume, savedMasterVolumeRead, savedIdleTicks, savedMvolLastActivityIdleTick,
+	local savedMasterVolume, savedMasterVolumeRead, savedIdleTicks,
 		savedPopupActive, savedDisplayMode, savedMvolReadPending, savedSlFrameCounter =
-		masterVolume, masterVolumeRead, idleTicks, mvolLastActivityIdleTick,
+		masterVolume, masterVolumeRead, idleTicks,
 		popupActive, displayMode, mvolReadPending, slFrameCounter
 
 	popupActive = true
@@ -2113,73 +2111,51 @@ do
 		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
 	end
 
-	-- (a) Idle boundary crossed (idleTicks has advanced by >= MVOL_GESTURE_IDLE_TICKS since the last
-	-- A tick): the new gesture seeds masterVolume from masterVolumeRead (80), NOT the stale local
-	-- guess (30), before applying the tick's own +1 delta.
+	-- (a) A tick right after a fresh READ reply landed does not snap to the reply's value (80) - it
+	-- only ever adds its own delta to masterVolume (50 + 1 = 51).
 	idleTicks = 10
-	mvolLastActivityIdleTick = 5 -- 10 - 5 = 5 >= MVOL_GESTURE_IDLE_TICKS (1): boundary crossed
-	masterVolume = 30
+	masterVolume = 50
 	masterVolumeRead = 80
 	handle_sl_frame(encoder_frame(0x41)) -- delta +1
-	check('a new gesture seeds masterVolume from masterVolumeRead (80), not the stale guess (30)',
-		masterVolume == 81)
+	check('a tick right after a READ reply does not reseed from it (50 + 1 = 51, not 80 + 1)',
+		masterVolume == 51)
 
-	-- (b) A gesture resumed WITHIN the boundary (idleTicks unchanged since the last A tick) must NOT
-	-- reseed, even though masterVolumeRead has since changed (e.g. a reply landed mid-turn) - it must
-	-- keep accumulating from the value just sent.
-	masterVolumeRead = 5 -- if this wrongly reseeded, the next tick would jump to 5 + 1 = 6
-	handle_sl_frame(encoder_frame(0x41)) -- delta +1, still same idleTicks
-	check('a gesture resumed within the idle boundary does NOT reseed (81 + 1 = 82, not 5 + 1)',
-		masterVolume == 82)
-
-	-- (c) No READ reply has EVER arrived: the tick still seeds and writes, from MVOL_SEED_DEFAULT
-	-- rather than refusing to write - see
-	-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
-	-- Section 47 covers the read/popup side.
-	idleTicks = 20
-	mvolLastActivityIdleTick = 5 -- boundary crossed again
-	masterVolume = 64
-	masterVolumeRead = nil
+	-- (b) Pause (a long idle gap - what used to cross the old gesture boundary) during which a READ
+	-- reply lands with yet another value: resuming still just accumulates onto the last local value.
+	idleTicks = idleTicks + 50
+	masterVolumeRead = 99
 	handle_sl_frame(encoder_frame(0x41)) -- delta +1
-	check('with no READ reply ever received, a new gesture seeds from MVOL_SEED_DEFAULT (60), not the stale guess (64)',
-		masterVolume == MVOL_SEED_DEFAULT + 1)
+	check('resuming after a long idle pause does not reseed (51 + 1 = 52, not 99 + 1)',
+		masterVolume == 52)
 
-	-- (d) Idle diff pinned exactly at MVOL_GESTURE_IDLE_TICKS: this is the boundary >= guarantees and
-	-- a >= -> > mutation breaks silently, since (a)/(c) above only exercise diffs well past it.
-	idleTicks = 100
-	mvolLastActivityIdleTick = idleTicks - MVOL_GESTURE_IDLE_TICKS
-	masterVolume = 30
-	masterVolumeRead = 80
-	handle_sl_frame(encoder_frame(0x41)) -- delta +1
-	check('idle diff exactly == MVOL_GESTURE_IDLE_TICKS reseeds masterVolume from masterVolumeRead',
-		masterVolume == 81)
+	-- (c) A second pause/resume cycle, accumulating a different delta, confirms this holds across
+	-- more than one gap - not just the first.
+	idleTicks = idleTicks + 50
+	masterVolumeRead = 1
+	handle_sl_frame(encoder_frame(0x45)) -- delta +5
+	check('a second pause/resume cycle still only accumulates the delta (52 + 5 = 57, not 1 + 5)',
+		masterVolume == 57)
 
-	-- (e) One tick short of the boundary must NOT reseed - the mirror image of (d).
-	idleTicks = 200
-	mvolLastActivityIdleTick = idleTicks - (MVOL_GESTURE_IDLE_TICKS - 1)
-	masterVolume = 64
-	masterVolumeRead = 5
-	handle_sl_frame(encoder_frame(0x41)) -- delta +1
-	check('idle diff one below MVOL_GESTURE_IDLE_TICKS does NOT reseed (64 + 1, not 5 + 1)',
-		masterVolume == 65)
-
-	masterVolume, masterVolumeRead, idleTicks, mvolLastActivityIdleTick,
+	masterVolume, masterVolumeRead, idleTicks,
 		popupActive, displayMode, mvolReadPending, slFrameCounter =
-		savedMasterVolume, savedMasterVolumeRead, savedIdleTicks, savedMvolLastActivityIdleTick,
+		savedMasterVolume, savedMasterVolumeRead, savedIdleTicks,
 		savedPopupActive, savedDisplayMode, savedMvolReadPending, savedSlFrameCounter
 end
 
--- MARK: - 47. No confirmed device value: EID_A seeds from MVOL_SEED_DEFAULT and writes anyway
+-- MARK: - 47. masterVolumeRead == nil is not a special case: EID_A still writes, reads, and shows
+-- the real accumulated value
 --
--- The device only ever answers a Master Volume READ while writes are also flowing - the login-time
--- READ and a read-only poll both go unanswered on this hardware. Refusing to write until confirmed
--- therefore left the READ forever unanswered and the encoder permanently dead. See
--- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
+-- The superseded "refuse to write while unconfirmed" design left the READ forever unanswered and the
+-- encoder permanently dead (see
+-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12) and
+-- was replaced by seeding-from-read, now itself removed (section 46's anchor). masterVolumeRead ==
+-- nil takes no special branch at all any more: a tick behaves exactly the same as with any other
+-- masterVolumeRead value.
 do
-	local savedMasterVolume, savedMasterVolumeRead, savedIdleTicks, savedMvolLastActivityIdleTick,
+	local savedMasterVolume, savedMasterVolumeRead, savedIdleTicks,
 		savedPending, savedMvolReadPending, savedSlFrameCounter, savedMvolReadPendingFrame,
 		savedPopupActive, savedDisplayMode, savedDrawn =
-		masterVolume, masterVolumeRead, idleTicks, mvolLastActivityIdleTick, pendingMessages,
+		masterVolume, masterVolumeRead, idleTicks, pendingMessages,
 		mvolReadPending, slFrameCounter, mvolReadPendingFrame, popupActive, displayMode, drawn
 
 	local function encoder_frame(tickByte)
@@ -2216,61 +2192,49 @@ do
 	drawn = {}
 	pendingMessages = {}
 	idleTicks = 10
-	mvolLastActivityIdleTick = 5 -- boundary crossed: this tick starts a new gesture
-	masterVolume = 100 -- stale guess from earlier state; must be discarded, not accumulated onto
+	masterVolume = 60
 	masterVolumeRead = nil
 	mvolReadPending = false
 	popupActive = false
 	displayMode = 'zoom'
 
-	-- (a) First tick of a gesture with no confirmed value: seeds masterVolume from MVOL_SEED_DEFAULT
-	-- (60), applies the tick's own delta, and DOES write. The accompanying read still goes out (that
-	-- is what makes the device start answering), and the popup shows the real seeded value, never a
-	-- placeholder.
+	-- (a) No READ reply has ever arrived: the tick still accumulates its delta, DOES write, still
+	-- queues the accompanying read, and the popup shows the real value, never a placeholder.
 	handle_sl_frame(encoder_frame(0x45)) -- delta +5
-	check('first tick with no known value seeds masterVolume from MVOL_SEED_DEFAULT (60 + 5 = 65)',
-		masterVolume == MVOL_SEED_DEFAULT + 5)
+	check('with masterVolumeRead nil, a tick still accumulates its delta (60 + 5 = 65)',
+		masterVolume == 65)
 	check('...and DOES send a Master Volume write', #mvol_write_messages() == 1)
 	check('...still queues the accompanying Master Volume read', #mvol_read_messages() == 1)
-	check('...and the popup shows the real seeded value (65), not a placeholder',
-		popup_value_text() == tostring(MVOL_SEED_DEFAULT + 5))
+	check('...and the popup shows the real accumulated value (65), not a placeholder',
+		popup_value_text() == tostring(65))
 
-	-- (b) The existing read rate limit still applies while unconfirmed.
+	-- (b) The existing read rate limit still applies regardless of masterVolumeRead's state.
 	pendingMessages = {}
 	handle_sl_frame(encoder_frame(0x41))
-	check('unknown value: a read already outstanding queues no further read', #mvol_read_messages() == 0)
+	check('masterVolumeRead nil: a read already outstanding queues no further read', #mvol_read_messages() == 0)
 
-	-- (c) A READ reply lands mid-gesture: masterVolumeRead updates (section 45's invariant), but the
-	-- already-seeded masterVolume is untouched until the next gesture boundary.
+	-- (c) A READ reply lands: masterVolumeRead updates (section 45's invariant), but masterVolume is
+	-- untouched - it was never waiting on this reply for anything but logging.
 	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, 70, 0xF7))
-	check('a READ reply mid-gesture sets masterVolumeRead', masterVolumeRead == 70)
-	check('...but does not overwrite the already-seeded masterVolume (66)', masterVolume == MVOL_SEED_DEFAULT + 6)
+	check('a READ reply sets masterVolumeRead', masterVolumeRead == 70)
+	check('...but does not touch masterVolume (still 66)', masterVolume == 66)
 
-	-- (d) The next gesture (idle boundary crossed again) reseeds from the now-known real device value
-	-- (70), not MVOL_SEED_DEFAULT - the placeholder only ever covers a genuinely unconfirmed gesture.
-	idleTicks = 20
-	mvolLastActivityIdleTick = 5
-	pendingMessages = {}
-	handle_sl_frame(encoder_frame(0x41)) -- delta +1
-	check('once confirmed, the next gesture reseeds from the real device value (70), not MVOL_SEED_DEFAULT',
-		masterVolume == 71)
-
-	masterVolume, masterVolumeRead, idleTicks, mvolLastActivityIdleTick, pendingMessages,
+	masterVolume, masterVolumeRead, idleTicks, pendingMessages,
 		mvolReadPending, slFrameCounter, mvolReadPendingFrame, popupActive, displayMode, drawn =
-		savedMasterVolume, savedMasterVolumeRead, savedIdleTicks, savedMvolLastActivityIdleTick,
-		savedPending, savedMvolReadPending, savedSlFrameCounter, savedMvolReadPendingFrame,
+		savedMasterVolume, savedMasterVolumeRead, savedIdleTicks, savedPending,
+		savedMvolReadPending, savedSlFrameCounter, savedMvolReadPendingFrame,
 		savedPopupActive, savedDisplayMode, savedDrawn
 end
 
--- MARK: - 48. Popup dismissal threshold doubled; the Master Volume gesture boundary is unaffected
+-- MARK: - 48. Popup dismissal threshold: POPUP_DISMISS_IDLE_TICKS
 --
--- POPUP_DISMISS_IDLE_TICKS (idle ticks before the popup auto-dismisses) and MVOL_GESTURE_IDLE_TICKS
--- (idle ticks before an EID_A tick counts as a new gesture) are separate constants compared
--- independently, sharing only the underlying idleTicks counter - changing one must not perturb the
--- other. See docs/config-lua-history.md#popup-dismiss-doubled-to-2s-2026-09-10.
+-- POPUP_DISMISS_IDLE_TICKS (idle ticks before the popup auto-dismisses) is now the only idle-tick
+-- threshold governing popup behaviour - the Master Volume gesture boundary (MVOL_GESTURE_IDLE_TICKS)
+-- was removed along with gesture-based reseeding (section 46). See
+-- docs/config-lua-history.md#popup-dismiss-doubled-to-2s-2026-09-10 and
+-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
 do
 	check('POPUP_DISMISS_IDLE_TICKS is 2 (~2s at POPUP_TICK_MS)', POPUP_DISMISS_IDLE_TICKS == 2)
-	check('MVOL_GESTURE_IDLE_TICKS is unchanged at 1', MVOL_GESTURE_IDLE_TICKS == 1)
 
 	local savedPopupActive, savedDisplayMode, savedPopupPreviousMode, savedPopupLastActivityIdleTick,
 		savedIdleTicks, savedDrawn, savedPending =
@@ -2401,14 +2365,17 @@ end
 -- Hardware run: one gesture's first tick queued 11 messages via set_display_mode('popup')'s double
 -- Clear Screen, and the queue kept backing up during the sweep, starving the Identification Query
 -- until the SL88 dropped the app. enter_popup_mode() (see
--- docs/config-lua-history.md#popup-entry-skips-clear-screen-2026-09-12) drops the burst to 9; this
--- section pins both the first-tick ceiling and that a following tick never grows the queue further,
--- so either regression is caught without needing hardware.
+-- docs/config-lua-history.md#popup-entry-skips-clear-screen-2026-09-12) dropped the burst to 9, and
+-- the full-region erase added since (see
+-- docs/config-lua-history.md#popup-entry-always-erases-its-full-region-first-2026-09-12) puts it
+-- back up to 10 - a deliberate, deliberately-raised ceiling, not a regression. This section pins
+-- both the first-tick ceiling and that a following tick never grows the queue further, so either
+-- regression is caught without needing hardware.
 do
 	local savedPending, savedDrawn, savedMasterVolume, savedMasterVolumeRead, savedPopupActive,
-		savedDisplayMode, savedIdleTicks, savedMvolLastActivityIdleTick, savedMvolReadPending =
+		savedDisplayMode, savedIdleTicks, savedMvolReadPending =
 		pendingMessages, drawn, masterVolume, masterVolumeRead, popupActive, displayMode, idleTicks,
-		mvolLastActivityIdleTick, mvolReadPending
+		mvolReadPending
 
 	local function encoder_frame(tickByte)
 		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
@@ -2422,14 +2389,14 @@ do
 	popupActive = false
 	displayMode = 'zoom'
 	idleTicks = 10
-	mvolLastActivityIdleTick = 5 -- boundary crossed: this tick starts a new gesture and shows the popup
 
-	-- (a) First tick of a gesture: popup entry (bg + 4 border + label + knob + value + sacrificial =
-	-- 9) plus the write and the read = 11 at most. A regression back to set_display_mode's double
-	-- Clear Screen would push this past 11.
+	-- (a) First tick shows a fresh popup: erase + bg + 4 border + label + knob + value + sacrificial
+	-- = 10, plus the write and the read = 12 at most. A regression back to set_display_mode's double
+	-- Clear Screen, or a dropped erase-rect invalidation forcing a repeat resend, would push this
+	-- past 12.
 	handle_sl_frame(encoder_frame(0x41)) -- delta +1
 	local firstTickCount = #pendingMessages
-	check('first tick of a gesture queues at most 11 messages total', firstTickCount <= 11)
+	check('first tick of a gesture queues at most 12 messages total', firstTickCount <= 12)
 
 	-- (b) A second tick that only moves the value coalesces into the SAME queued entries (write,
 	-- read, knob, value all replace in place) rather than growing the queue - this is what makes a
@@ -2439,9 +2406,58 @@ do
 		#pendingMessages <= firstTickCount)
 
 	pendingMessages, drawn, masterVolume, masterVolumeRead, popupActive, displayMode, idleTicks,
-		mvolLastActivityIdleTick, mvolReadPending =
+		mvolReadPending =
 		savedPending, savedDrawn, savedMasterVolume, savedMasterVolumeRead, savedPopupActive,
-		savedDisplayMode, savedIdleTicks, savedMvolLastActivityIdleTick, savedMvolReadPending
+		savedDisplayMode, savedIdleTicks, savedMvolReadPending
+end
+
+-- MARK: - 54. Popup entry always erases its full region first, and never skips it as unchanged
+--
+-- Change 2 (see docs/config-lua-history.md#popup-entry-always-erases-its-full-region-first-2026-09-12):
+-- enter_popup_mode() queues one filled Draw Rectangle over the WHOLE popup rect (border included) as
+-- the very first message, before bg/border/label/knob/value. draw_rect() memoizes by id, so this
+-- must not be silently skipped on a later popup opening just because its own tuple - and the tuples
+-- of everything it overlaps - happen to be unchanged from a previous session.
+do
+	local savedPending, savedDrawn, savedDisplayMode, savedPopupActive =
+		pendingMessages, drawn, displayMode, popupActive
+
+	-- (a) A fresh popup entry: the erase is the FIRST display message queued, with the exact bytes of
+	-- a Draw Rectangle over the whole POPUP_X/Y/W/H rect in POPUP_BG_COLOR.
+	drawn = {}
+	pendingMessages = {}
+	displayMode = 'zoom'
+	popupActive = false
+	enter_popup_mode()
+	check('popup entry queues at least one message', #pendingMessages >= 1)
+	if #pendingMessages >= 1 then
+		check('...and the FIRST one is the popupErase region', pendingMessages[1].regionId == 'popupErase')
+		checkHex('...matching the exact bytes of a Draw Rectangle over the whole popup rect',
+			pendingMessages[1],
+			hex(msg_draw_rect(POPUP_X, POPUP_Y, POPUP_W, POPUP_H,
+				POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])))
+	end
+
+	-- (b) A LATER popup entry, with drawn[] still holding the exact same tuples from (a) (as if
+	-- dismiss_popup()'s own invalidate_all() had not run) - the erase, and everything it overlaps,
+	-- must still resend, not be skipped as "unchanged".
+	pendingMessages = {}
+	enter_popup_mode()
+	check('a later popup entry (memo unchanged from before) still queues the erase first',
+		#pendingMessages >= 1 and pendingMessages[1].regionId == 'popupErase')
+	local bgCount, borderCount = 0, 0
+	for i = 1, #pendingMessages do
+		local id = pendingMessages[i].regionId
+		if id == 'popupBg' then bgCount = bgCount + 1 end
+		if id == 'popupBorderTop' or id == 'popupBorderBottom' or id == 'popupBorderLeft' or id == 'popupBorderRight' then
+			borderCount = borderCount + 1
+		end
+	end
+	check('...and popupBg resends too, not suppressed as unchanged', bgCount == 1)
+	check('...and all 4 border strips resend too, not suppressed as unchanged', borderCount == 4)
+
+	pendingMessages, drawn, displayMode, popupActive =
+		savedPending, savedDrawn, savedDisplayMode, savedPopupActive
 end
 
 -- MARK: - Summary

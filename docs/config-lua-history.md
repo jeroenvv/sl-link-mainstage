@@ -1387,3 +1387,75 @@ first-call branch) sets `displayMode`, drops stale queued display work for the o
 - everything `set_display_mode()` did except the double Clear Screen and `invalidate_all()`. First-tick
 burst: 11 -> 9. `dismiss_popup()` is unchanged - it still needs `set_display_mode()`'s full treatment
 to properly restore whatever mode the popup was covering.
+
+---
+
+## Master Volume READ reply does not track writes (2026-09-12)
+
+Hardware log, consecutive lines from a live session:
+
+```
+<- MASTER VOLUME READ reply vol=71 (masterVolume=66)
+-> MASTER VOLUME WRITE ... 07 01 41   (65)
+<- MASTER VOLUME READ reply vol=71 (masterVolume=65)
+-> MASTER VOLUME WRITE ... 07 01 46   (70)
+<- MASTER VOLUME READ reply vol=71 (masterVolume=72)
+```
+
+The device answered a fixed `vol=71` on every single READ while the writes swept 65 -> 70 -> 72, and
+the user confirmed the audio output audibly changed with each write. So the READ reply is not the
+device's current output level - what it actually reports is unknown and is now an open question.
+[Master Volume popup: seed from READ, track the write value](#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10)
+and [Seed Master Volume at 60 instead of refusing to write](#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12)
+both fed `masterVolume` from this reply at a gesture's start - seeding from a value that doesn't
+track our own writes drags the displayed/written volume back toward 71 whenever the user pauses and
+resumes, which is exactly the reported symptom.
+
+**Fix.** `masterVolume` is now tracked locally only: it starts at `MVOL_SEED_DEFAULT` (60) and
+thereafter changes ONLY by accumulated `EID_A` deltas, clamped to 0-100 - never reseeded from
+`masterVolumeRead`, at a gesture start or any other time. The popup shows this locally tracked value,
+same as before. The READ itself is still sent every `EID_A` tick (rate-limited as before) - it is
+what makes the device answer writes at all on this hardware, and `masterVolumeRead` still updates
+from every reply and stays in the log line, purely as a diagnostic now.
+
+**Removed as dead.** `mvolLastActivityIdleTick` and `MVOL_GESTURE_IDLE_TICKS` existed only to detect
+a gesture's start for the reseed above; with no reseed left, nothing reads either, so both are
+deleted rather than left as unused state.
+
+---
+
+## Popup entry always erases its full region first (2026-09-12)
+
+Same hardware run as the fix above: with Clear Screen skipped on popup entry
+([Popup entry skips Clear Screen](#popup-entry-skips-clear-screen-2026-09-12)), the popup's own
+`popupBg`/border/label/knob/value messages are queued together but drain one per timer tick (the
+project's own display pacing rule). Part of the patch screen stayed visible under the popup while
+that queue was still draining - `popupBg` plus the 4 border strips are only opaque once every one of
+those five messages has actually reached the device, and until then whatever was on screen before is
+still there in the ids that haven't landed yet.
+
+**Fix.** New `draw_popup_erase()`, called first thing in `enter_popup_mode()` (the shared entry path
+for both `show_popup()` and `show_master_volume_popup()`, so every current and future popup gets it
+for free): one filled Draw Rectangle over the WHOLE panel, `POPUP_X`/`POPUP_Y`/`POPUP_W`/`POPUP_H`
+(border included), in `POPUP_BG_COLOR`. Queued as its own message, first, so the panel is fully black
+from the very first message of the burst - nothing underneath can show through the border/label/
+knob/value messages that follow while they drain.
+
+**Memoization interaction.** `draw_rect()` memoizes by id, and the erase rect's own parameters never
+change between openings, so a naive `draw_rect('popupErase', ...)` call would be skipped as
+"unchanged" on the second and every later popup opening - the exact bug this fix exists to prevent,
+just moved one level up. `draw_popup_erase()` clears `drawn['popupErase']` and every id it overlaps
+(`popupBg`, the 4 border ids, `popupLabel`, `popupKnob`, `popupValue`) immediately before drawing, so
+all of them unconditionally resend on every popup entry regardless of prior state - the NON-OVERLAP
+RULE's own documented escape hatch for a caller that can't avoid overlap (see MARK: - Per-region
+memoization in `config.lua`). In the current control flow `dismiss_popup()`'s own
+`set_display_mode()` call already runs `invalidate_all()` on the way out, which would have cleared
+the same ids anyway - but `enter_popup_mode()` no longer depends on that as a side effect of a
+different function; the guarantee is now local and self-enforcing. Test 54 in the Lua harness proves
+this directly: it calls `enter_popup_mode()` twice in a row with `drawn[]` deliberately left
+unchanged in between, and asserts the erase and its overlapping ids resend both times.
+
+**Message budget.** The popup-entry burst goes from 9 to 10 (erase + `popupBg` + 4 border strips +
+label + knob + value + sacrificial redraw); the full first `EID_A` tick (popup entry plus the Master
+Volume write and read) goes from 11 to 12. Harness section 53's ceiling is raised accordingly - a
+deliberate, one-message increase, not a silently-widened bound.

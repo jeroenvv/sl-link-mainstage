@@ -377,17 +377,16 @@ encoderValue = { -- absolute 0-127 tracked value per encoder wired to a CC
 	[EID_JOYSTICK] = 64, [EID_B] = 64,
 }
 
-masterVolume = 100 -- 0-100 percentage: the value being SENT, accumulated by EID_A deltas and reseeded
-	-- from masterVolumeRead (or MVOL_SEED_DEFAULT while unconfirmed) at each gesture start - see the
-	-- EID_A handler and
-	-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
-masterVolumeRead = nil -- last VOL from an actual READ reply (07 00); nil until one arrives - seeds masterVolume, never shown directly
-
--- Safe mid-scale placeholder a gesture seeds from when masterVolumeRead is still unknown: a write
--- must flow before the device answers a READ at all, so refusing to write until confirmed left the
--- read forever unanswered and the encoder dead. See
--- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
+-- Safe mid-scale starting point for masterVolume: not 0, and not 100 where a single click could
+-- slam the audio board to full output. See
+-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
 MVOL_SEED_DEFAULT = 60
+
+masterVolume = MVOL_SEED_DEFAULT -- 0-100 percentage: the value being SENT, changed ONLY by
+	-- accumulated EID_A deltas (clamped 0-100) - never reseeded from masterVolumeRead, which does
+	-- not track our writes on this hardware. See the anchor above.
+masterVolumeRead = nil -- last VOL from an actual READ reply (07 00); diagnostic/logging only now -
+	-- see the anchor above for why it no longer feeds masterVolume.
 
 -- Rate-limits the Master Volume read queued alongside each EID_A tick (see the EID_A handler): only
 -- queue another once the outstanding one has been answered, or MVOL_READ_TIMEOUT_FRAMES SL frames
@@ -399,13 +398,6 @@ MVOL_READ_TIMEOUT_FRAMES = 10
 
 -- Counts calls to handle_sl_frame - feeds the read rate limit above.
 slFrameCounter = 0
-
--- idleTicks value at the last EID_A tick, and how many ~1s idle ticks since then still count as the
--- SAME gesture - same idleTicks/POPUP_TICK_MS cadence check_popup_dismiss() uses for the popup's own
--- ~1s-idle dismissal. -1e6 means "no gesture yet", so the very first tick always seeds. See the
--- EID_A handler and docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10.
-mvolLastActivityIdleTick = -1000000
-MVOL_GESTURE_IDLE_TICKS = 1
 
 -- Gates EVERY settriggertimer call (rule 6 in the banner above): true whenever a one-shot is
 -- currently outstanding. rearm_timer() only calls settriggertimer when this is false, and sets it
@@ -963,10 +955,9 @@ end
 -- that layers draws - e.g. a filled rect under text - will corrupt the screen the moment only the
 -- bottom layer changes and the top layer is skipped as unchanged; the device has no concept of
 -- layers, it paints strictly in message order. A caller that cannot avoid overlap must clear the
--- shared ids' drawn[] entries together so they resend as one unit - every draw_*() call in this
--- file is currently self-clearing (a real, non-zero maxWidth/w/h on every Write Text/Draw Rect/Plot
--- Bitmap), so nothing currently needs that escape hatch. The zoom screen's zset/zname used to be the
--- one exception (maxWidth=0, via the since-removed draw_text_with_erase()) - see
+-- shared ids' drawn[] entries together so they resend as one unit - used by draw_popup_erase()
+-- below, and previously by the zoom screen's zset/zname (maxWidth=0, via the since-removed
+-- draw_text_with_erase()) - see
 -- docs/config-lua-history.md#zoom-screen-centring-moved-to-the-device-2026-08-29.
 
 drawn = {}
@@ -1240,6 +1231,26 @@ function draw_popup_bg()
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
+-- Popup ids the full-region erase below overlaps - the NON-OVERLAP RULE's own escape hatch (see
+-- MARK: - Per-region memoization above): a caller that can't avoid overlap must clear all the
+-- shared ids' drawn[] entries together so they resend as one unit.
+POPUP_ERASE_OVERLAP_IDS = { 'popupBg', 'popupBorderTop', 'popupBorderBottom', 'popupBorderLeft',
+	'popupBorderRight', 'popupLabel', 'popupKnob', 'popupValue' }
+
+-- Default entry behaviour for every popup (called once by enter_popup_mode(), never by a mid-session
+-- repaint): one filled rect over the WHOLE panel (border included), queued first, so the previous
+-- screen can never show through while the border/label/knob/value messages that follow are still
+-- trickling out one per tick - see
+-- docs/config-lua-history.md#popup-entry-always-erases-its-full-region-first-2026-09-12.
+-- Must always resend - draw_rect() memoizes by id, so both this id and everything it overlaps have
+-- their drawn[] entries cleared first, or an otherwise-unchanged popup would skip it.
+function draw_popup_erase()
+	drawn['popupErase'] = nil
+	for _, id in ipairs(POPUP_ERASE_OVERLAP_IDS) do drawn[id] = nil end
+	draw_rect('popupErase', POPUP_X, POPUP_Y, POPUP_W, POPUP_H,
+		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
+end
+
 -- SIZE_MEDIUM + non-zero maxWidth is safe here, unlike the zoom screen's SIZE_BIG text: Max Width
 -- truncation is only confirmed broken at SIZE_BIG (docs/config-lua-history.md#max-width-truncation-
 -- broken-at-size_big), and 'ENC 1 - CC 59'-shaped strings are far shorter than POPUP_CONTENT_W, so
@@ -1332,10 +1343,9 @@ end
 function show_master_volume_popup()
 	popupControlName = 'Main Volume'
 	popupCcNumber = nil
-	-- The value being SENT (masterVolume), not the device's last READ reply - stays smooth during a
-	-- fast turn regardless of reply timing, and is never nil once MVOL_SEED_DEFAULT seeds an unknown
-	-- gesture. See
-	-- docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10.
+	-- The value being SENT (masterVolume), tracked locally only - never reseeded from
+	-- masterVolumeRead, which does not track our writes on this hardware. See
+	-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
 	popupValue = masterVolume
 	popupMax = 100
 	popupLastActivityIdleTick = idleTicks
@@ -1355,8 +1365,7 @@ end
 -- rearm_timer() arms the tick at POPUP_TICK_MS (~1s) instead of the normal KEEPALIVE_MS (~3s), so
 -- POPUP_DISMISS_IDLE_TICKS=2 means 'wait two ~1s ticks'. This reuses the single existing timer
 -- rather than adding a second settriggertimer, which risks the same starved-clock class of bug rule
--- 6 in the banner fixes. Independent of MVOL_GESTURE_IDLE_TICKS (its own constant, compared in the
--- EID_A handler, not here) - see docs/config-lua-history.md#popup-dismiss-doubled-to-2s-2026-09-10.
+-- 6 in the banner fixes. See docs/config-lua-history.md#popup-dismiss-doubled-to-2s-2026-09-10.
 POPUP_DISMISS_IDLE_TICKS = 2
 
 -- Popup is a full-screen mode, so dismissal is just switching BACK to whatever mode was active
@@ -1757,15 +1766,18 @@ function set_display_mode(mode)
 	slog('display mode -> ' .. mode)
 end
 
--- Entering the popup overlay, unlike set_display_mode(), skips Clear Screen and invalidate_all():
--- the popup's own draws (bg + border + label + knob/value) are opaque and non-overlapping, so
--- nothing underneath needs erasing first - see
--- docs/config-lua-history.md#popup-entry-skips-clear-screen-2026-09-12. dismiss_popup() still uses
--- the full set_display_mode() to restore whatever the popup covered.
+-- Entering the popup overlay, unlike set_display_mode(), skips Clear Screen and invalidate_all() -
+-- see docs/config-lua-history.md#popup-entry-skips-clear-screen-2026-09-12 for why (both are the
+-- expensive part; the popup's own content is not). draw_popup_erase() still blanks the whole panel
+-- as its own first message, so nothing already on screen can show through while the border/label/
+-- knob/value messages that follow are still draining one per tick - see
+-- docs/config-lua-history.md#popup-entry-always-erases-its-full-region-first-2026-09-12.
+-- dismiss_popup() still uses the full set_display_mode() to restore whatever the popup covered.
 function enter_popup_mode()
 	displayMode = 'popup'
 	drop_queued_display()
 	local before = queuedDisplayOps
+	draw_popup_erase()
 	paint_popup_screen()
 	if queuedDisplayOps > before then
 		queue_sacrificial_redraw()
@@ -2020,9 +2032,9 @@ function handle_sl_frame(e)
 		if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
 		if func == MVOL_READ then
 			mvolReadPending = false
-			-- Only seeds the NEXT gesture start (EID_A handler) - never masterVolume itself, so a slow
-			-- or stale reply can never perturb a value already being sent. See
-			-- docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10.
+			-- Diagnostic/logging only - never feeds masterVolume. This reply does not track our own
+			-- writes on this hardware, so it cannot be trusted as "the current value" - see
+			-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
 			masterVolumeRead = vol
 			slog('<- MASTER VOLUME READ reply vol=' .. vol .. ' (masterVolume=' .. masterVolume .. ')')
 		else
@@ -2054,16 +2066,10 @@ function handle_sl_frame(e)
 		local eid = func
 		local delta = e[9] - 0x40
 		if eid == EID_A then
-			-- New gesture (>= MVOL_GESTURE_IDLE_TICKS idle ticks, ~1s each, since the last A tick - always
-			-- true on the very first tick ever, since mvolLastActivityIdleTick starts far in the past)
-			-- reseeds from the device's own truth. masterVolumeRead may still be nil (no reply has ever
-			-- landed) - a write must flow before the device answers a READ at all, so seed from
-			-- MVOL_SEED_DEFAULT instead of refusing to write - see
-			-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
-			if idleTicks - mvolLastActivityIdleTick >= MVOL_GESTURE_IDLE_TICKS then
-				masterVolume = masterVolumeRead or MVOL_SEED_DEFAULT
-			end
-			mvolLastActivityIdleTick = idleTicks
+			-- masterVolume starts at MVOL_SEED_DEFAULT and thereafter changes ONLY by accumulated
+			-- deltas - never reseeded from masterVolumeRead, which does not track our writes on this
+			-- hardware (a READ replied a fixed 71 across a whole sweep of writes 65->70->72). See
+			-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
 			local vol = masterVolume + delta
 			if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
 			masterVolume = vol
@@ -2161,7 +2167,6 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	listRows = {}
 	mvolReadPending = false
 	slFrameCounter = 0
-	mvolLastActivityIdleTick = -1000000
 	invalidate_all()
 
 	if applicationName ~= nil and applicationName ~= '' then
