@@ -1924,14 +1924,14 @@ do
 	popupPreviousMode = 'zoom'
 	displayMode = 'popup'
 
-	-- (a) No READ reply ever received: the popup shows the '--' placeholder, never a guessed value -
-	-- writing/showing an invented number risked jumping the audio board on the very first tick. See
-	-- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
+	-- (a) No READ reply ever received: the popup shows masterVolume directly, same as any other
+	-- tick - MVOL_SEED_DEFAULT means there is always a real value being sent, never a placeholder.
+	-- See docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
 	masterVolume = 77
 	masterVolumeRead = nil
 	show_master_volume_popup()
-	check('before any READ reply, the A popup shows the -- placeholder, not a guessed value (77)',
-		popupValue == nil)
+	check('before any READ reply, the A popup still shows masterVolume (77), not a placeholder',
+		popupValue == 77)
 
 	-- (b) A genuine READ reply (func=MVOL_READ) updates masterVolumeRead...
 	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, 33, 0, 0xF7))
@@ -1943,12 +1943,12 @@ do
 	check('after a READ reply, the A popup still shows masterVolume (77), not the reply value (33)',
 		popupValue == 77)
 
-	-- (c) The knob/ring must not render a misleading full or garbage icon for the placeholder -
-	-- chosen to render as icon 0 (empty), same as an actual 0.
+	-- (c) No live caller passes nil any more (MVOL_SEED_DEFAULT replaced the placeholder), but the
+	-- defensive fallback must still render as icon 0 (empty), not a crash or a misleading full ring.
 	check('popup_knob_icon(nil) renders as icon 0 (empty ring), not a crash or a full ring',
 		popup_knob_icon(nil) == 0)
 
-	-- (d) draw_popup_value must literally show '--' for the placeholder, not the string "nil".
+	-- (d) Same defensive coverage for draw_popup_value: '--', never the string "nil".
 	local savedDrawn, savedPending = drawn, pendingMessages
 	drawn, pendingMessages = {}, {}
 	draw_popup_value(nil)
@@ -2132,17 +2132,17 @@ do
 	check('a gesture resumed within the idle boundary does NOT reseed (81 + 1 = 82, not 5 + 1)',
 		masterVolume == 82)
 
-	-- (c) No READ reply has EVER arrived: writing a guessed value risks jumping the audio board to a
-	-- surprising level (confirmed on hardware - see
-	-- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10), so the tick must
-	-- send NO write at all and leave masterVolume untouched. Section 47 covers the read/popup side.
+	-- (c) No READ reply has EVER arrived: the tick still seeds and writes, from MVOL_SEED_DEFAULT
+	-- rather than refusing to write - see
+	-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
+	-- Section 47 covers the read/popup side.
 	idleTicks = 20
 	mvolLastActivityIdleTick = 5 -- boundary crossed again
 	masterVolume = 64
 	masterVolumeRead = nil
 	handle_sl_frame(encoder_frame(0x41)) -- delta +1
-	check('with no READ reply ever received, a new gesture sends no write and masterVolume stays untouched',
-		masterVolume == 64)
+	check('with no READ reply ever received, a new gesture seeds from MVOL_SEED_DEFAULT (60), not the stale guess (64)',
+		masterVolume == MVOL_SEED_DEFAULT + 1)
 
 	-- (d) Idle diff pinned exactly at MVOL_GESTURE_IDLE_TICKS: this is the boundary >= guarantees and
 	-- a >= -> > mutation breaks silently, since (a)/(c) above only exercise diffs well past it.
@@ -2169,16 +2169,18 @@ do
 		savedPopupActive, savedDisplayMode, savedMvolReadPending, savedSlFrameCounter
 end
 
--- MARK: - 47. No confirmed device value: EID_A never writes, still polls, and shows the placeholder
+-- MARK: - 47. No confirmed device value: EID_A seeds from MVOL_SEED_DEFAULT and writes anyway
 --
--- Login-time READ goes unanswered on this hardware (only gesture-triggered reads get replies) -
--- writing a hardcoded default on the very first tick jumped the audio board to it. See
--- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
+-- The device only ever answers a Master Volume READ while writes are also flowing - the login-time
+-- READ and a read-only poll both go unanswered on this hardware. Refusing to write until confirmed
+-- therefore left the READ forever unanswered and the encoder permanently dead. See
+-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
 do
-	local savedMasterVolume, savedMasterVolumeRead, savedMvolNeedsSeed, savedPending, savedMvolReadPending,
-		savedSlFrameCounter, savedMvolReadPendingFrame, savedPopupActive, savedDisplayMode, savedDrawn =
-		masterVolume, masterVolumeRead, mvolNeedsSeed, pendingMessages, mvolReadPending,
-		slFrameCounter, mvolReadPendingFrame, popupActive, displayMode, drawn
+	local savedMasterVolume, savedMasterVolumeRead, savedIdleTicks, savedMvolLastActivityIdleTick,
+		savedPending, savedMvolReadPending, savedSlFrameCounter, savedMvolReadPendingFrame,
+		savedPopupActive, savedDisplayMode, savedDrawn =
+		masterVolume, masterVolumeRead, idleTicks, mvolLastActivityIdleTick, pendingMessages,
+		mvolReadPending, slFrameCounter, mvolReadPendingFrame, popupActive, displayMode, drawn
 
 	local function encoder_frame(tickByte)
 		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
@@ -2213,41 +2215,51 @@ do
 
 	drawn = {}
 	pendingMessages = {}
-	masterVolume = 100
+	idleTicks = 10
+	mvolLastActivityIdleTick = 5 -- boundary crossed: this tick starts a new gesture
+	masterVolume = 100 -- stale guess from earlier state; must be discarded, not accumulated onto
 	masterVolumeRead = nil
-	mvolNeedsSeed = true
 	mvolReadPending = false
 	popupActive = false
 	displayMode = 'zoom'
 
-	-- (a) Unknown value: the tick sends NO write, masterVolume is untouched, a read is still queued
-	-- (rate limited as usual), and the popup shows '--'.
+	-- (a) First tick of a gesture with no confirmed value: seeds masterVolume from MVOL_SEED_DEFAULT
+	-- (60), applies the tick's own delta, and DOES write. The accompanying read still goes out (that
+	-- is what makes the device start answering), and the popup shows the real seeded value, never a
+	-- placeholder.
 	handle_sl_frame(encoder_frame(0x45)) -- delta +5
-	check('unknown value: EID_A tick sends no Master Volume write', #mvol_write_messages() == 0)
-	check('...masterVolume is left untouched', masterVolume == 100)
-	check('...but still queues a Master Volume read', #mvol_read_messages() == 1)
-	check('...and the popup shows the -- placeholder', popup_value_text() == '--')
+	check('first tick with no known value seeds masterVolume from MVOL_SEED_DEFAULT (60 + 5 = 65)',
+		masterVolume == MVOL_SEED_DEFAULT + 5)
+	check('...and DOES send a Master Volume write', #mvol_write_messages() == 1)
+	check('...still queues the accompanying Master Volume read', #mvol_read_messages() == 1)
+	check('...and the popup shows the real seeded value (65), not a placeholder',
+		popup_value_text() == tostring(MVOL_SEED_DEFAULT + 5))
 
-	-- (b) The existing read rate limit still applies while unknown.
+	-- (b) The existing read rate limit still applies while unconfirmed.
 	pendingMessages = {}
 	handle_sl_frame(encoder_frame(0x41))
 	check('unknown value: a read already outstanding queues no further read', #mvol_read_messages() == 0)
 
-	-- (c) The READ reply lands; the very next EID_A tick DOES write, seeded from the device value -
-	-- forced by mvolNeedsSeed regardless of MVOL_GESTURE_IDLE_TICKS, so any deltas ticked while
-	-- unknown are discarded rather than replayed onto the stale guess (100).
+	-- (c) A READ reply lands mid-gesture: masterVolumeRead updates (section 45's invariant), but the
+	-- already-seeded masterVolume is untouched until the next gesture boundary.
 	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, 70, 0xF7))
-	check('a READ reply while unknown sets masterVolumeRead', masterVolumeRead == 70)
+	check('a READ reply mid-gesture sets masterVolumeRead', masterVolumeRead == 70)
+	check('...but does not overwrite the already-seeded masterVolume (66)', masterVolume == MVOL_SEED_DEFAULT + 6)
+
+	-- (d) The next gesture (idle boundary crossed again) reseeds from the now-known real device value
+	-- (70), not MVOL_SEED_DEFAULT - the placeholder only ever covers a genuinely unconfirmed gesture.
+	idleTicks = 20
+	mvolLastActivityIdleTick = 5
 	pendingMessages = {}
 	handle_sl_frame(encoder_frame(0x41)) -- delta +1
-	check('first known-value tick seeds masterVolume from the device (70), not the stale guess (100)',
+	check('once confirmed, the next gesture reseeds from the real device value (70), not MVOL_SEED_DEFAULT',
 		masterVolume == 71)
-	check('...and now DOES send a write', #mvol_write_messages() == 1)
 
-	masterVolume, masterVolumeRead, mvolNeedsSeed, pendingMessages, mvolReadPending,
-		slFrameCounter, mvolReadPendingFrame, popupActive, displayMode, drawn =
-		savedMasterVolume, savedMasterVolumeRead, savedMvolNeedsSeed, savedPending, savedMvolReadPending,
-		savedSlFrameCounter, savedMvolReadPendingFrame, savedPopupActive, savedDisplayMode, savedDrawn
+	masterVolume, masterVolumeRead, idleTicks, mvolLastActivityIdleTick, pendingMessages,
+		mvolReadPending, slFrameCounter, mvolReadPendingFrame, popupActive, displayMode, drawn =
+		savedMasterVolume, savedMasterVolumeRead, savedIdleTicks, savedMvolLastActivityIdleTick,
+		savedPending, savedMvolReadPending, savedSlFrameCounter, savedMvolReadPendingFrame,
+		savedPopupActive, savedDisplayMode, savedDrawn
 end
 
 -- MARK: - 48. Popup dismissal threshold doubled; the Master Volume gesture boundary is unaffected
@@ -2382,6 +2394,54 @@ do
 
 	pendingMessages, mvolReadPending, slFrameCounter, mvolReadPendingFrame =
 		savedPending, savedMvolReadPending, savedSlFrameCounter, savedMvolReadPendingFrame
+end
+
+-- MARK: - 53. A single A-encoder gesture cannot queue an unbounded/growing burst
+--
+-- Hardware run: one gesture's first tick queued 11 messages via set_display_mode('popup')'s double
+-- Clear Screen, and the queue kept backing up during the sweep, starving the Identification Query
+-- until the SL88 dropped the app. enter_popup_mode() (see
+-- docs/config-lua-history.md#popup-entry-skips-clear-screen-2026-09-12) drops the burst to 9; this
+-- section pins both the first-tick ceiling and that a following tick never grows the queue further,
+-- so either regression is caught without needing hardware.
+do
+	local savedPending, savedDrawn, savedMasterVolume, savedMasterVolumeRead, savedPopupActive,
+		savedDisplayMode, savedIdleTicks, savedMvolLastActivityIdleTick, savedMvolReadPending =
+		pendingMessages, drawn, masterVolume, masterVolumeRead, popupActive, displayMode, idleTicks,
+		mvolLastActivityIdleTick, mvolReadPending
+
+	local function encoder_frame(tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
+	end
+
+	drawn = {}
+	pendingMessages = {}
+	masterVolume = 50
+	masterVolumeRead = 50
+	mvolReadPending = false
+	popupActive = false
+	displayMode = 'zoom'
+	idleTicks = 10
+	mvolLastActivityIdleTick = 5 -- boundary crossed: this tick starts a new gesture and shows the popup
+
+	-- (a) First tick of a gesture: popup entry (bg + 4 border + label + knob + value + sacrificial =
+	-- 9) plus the write and the read = 11 at most. A regression back to set_display_mode's double
+	-- Clear Screen would push this past 11.
+	handle_sl_frame(encoder_frame(0x41)) -- delta +1
+	local firstTickCount = #pendingMessages
+	check('first tick of a gesture queues at most 11 messages total', firstTickCount <= 11)
+
+	-- (b) A second tick that only moves the value coalesces into the SAME queued entries (write,
+	-- read, knob, value all replace in place) rather than growing the queue - this is what makes a
+	-- sustained sweep safe regardless of how many ticks it contains.
+	handle_sl_frame(encoder_frame(0x41)) -- delta +1
+	check("a subsequent tick does not grow the queue past the first tick's count",
+		#pendingMessages <= firstTickCount)
+
+	pendingMessages, drawn, masterVolume, masterVolumeRead, popupActive, displayMode, idleTicks,
+		mvolLastActivityIdleTick, mvolReadPending =
+		savedPending, savedDrawn, savedMasterVolume, savedMasterVolumeRead, savedPopupActive,
+		savedDisplayMode, savedIdleTicks, savedMvolLastActivityIdleTick, savedMvolReadPending
 end
 
 -- MARK: - Summary

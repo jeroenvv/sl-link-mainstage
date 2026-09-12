@@ -378,18 +378,16 @@ encoderValue = { -- absolute 0-127 tracked value per encoder wired to a CC
 }
 
 masterVolume = 100 -- 0-100 percentage: the value being SENT, accumulated by EID_A deltas and reseeded
-	-- from masterVolumeRead at each gesture start - see the EID_A handler and
-	-- docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10.
-	-- Never written to the device until masterVolumeRead is known - see
-	-- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
+	-- from masterVolumeRead (or MVOL_SEED_DEFAULT while unconfirmed) at each gesture start - see the
+	-- EID_A handler and
+	-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
 masterVolumeRead = nil -- last VOL from an actual READ reply (07 00); nil until one arrives - seeds masterVolume, never shown directly
 
--- True until the first READ reply lands, forcing the EID_A handler to reseed masterVolume from
--- masterVolumeRead on that first known-value tick regardless of MVOL_GESTURE_IDLE_TICKS - see
--- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
--- Belt-and-suspenders: the mvolLastActivityIdleTick sentinel below already forces that same tick's
--- reseed on its own, so this flag's as-loaded default (true vs false) has no observable effect.
-mvolNeedsSeed = true
+-- Safe mid-scale placeholder a gesture seeds from when masterVolumeRead is still unknown: a write
+-- must flow before the device answers a READ at all, so refusing to write until confirmed left the
+-- read forever unanswered and the encoder dead. See
+-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
+MVOL_SEED_DEFAULT = 60
 
 -- Rate-limits the Master Volume read queued alongside each EID_A tick (see the EID_A handler): only
 -- queue another once the outstanding one has been answered, or MVOL_READ_TIMEOUT_FRAMES SL frames
@@ -1207,8 +1205,8 @@ POPUP_BORDER_COLOR = { 200, 210, 220 } -- thin light neutral border, matching th
 popupActive = false
 -- Cached name/CC/value for the CURRENTLY showing popup, updated by show_popup() and read by
 -- paint_popup_screen() - so a repaint triggered from elsewhere (paint_screen() dispatching to
--- paint_popup_screen() because displayMode=='popup', or set_display_mode('popup') itself) can
--- redraw the popup's content without needing the encoder id threaded through every call site.
+-- paint_popup_screen() because displayMode=='popup', or enter_popup_mode() itself) can redraw the
+-- popup's content without needing the encoder id threaded through every call site.
 popupControlName = nil
 popupCcNumber = nil
 popupValue = 0
@@ -1259,8 +1257,9 @@ end
 
 -- Same SIZE_MEDIUM/non-zero-maxWidth safety as draw_popup_label above - a 1-3 digit value is even
 -- shorter than the label, so truncation is not in play here either.
--- value may be nil - shown as '--', never as a number (defensive; no current caller passes nil -
--- see docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10).
+-- value may be nil - shown as '--', never as a number (defensive; no current caller passes nil
+-- since MVOL_SEED_DEFAULT replaced the placeholder - see
+-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12).
 function draw_popup_value(value)
 	local text = value and tostring(value) or '--'
 	draw_text('popupValue', text, POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
@@ -1284,8 +1283,8 @@ function draw_popup_knob(value)
 end
 
 -- The popup's own content-painting function, in the same family as paint_zoom_screen()/
--- paint_list_screen() - dispatched to from set_display_mode('popup') (the mode-switch path, once
--- per popup 'session') and from paint_screen() (an ordinary content-driven repaint that lands while
+-- paint_list_screen() - dispatched to from enter_popup_mode() (once per popup 'session') and from
+-- paint_screen() (an ordinary content-driven repaint that lands while
 -- displayMode=='popup', e.g. a patch-name change arriving mid-popup - see paint_screen's 3-way
 -- branch). Reads popupControlName/popupCcNumber/popupValue rather than taking parameters, since
 -- both call sites dispatch generically by mode with no encoder id in hand. Safe to call repeatedly -
@@ -1302,10 +1301,9 @@ end
 -- Call from handle_sl_frame's IT_ENCODER branch, right after encoderValue[eid] is updated, for
 -- every eid present in ENCODER_CC (looped there, not hardcoded - see that call site).
 --
--- FIRST call of a popup 'session' (popupActive false -> true) runs the full
--- set_display_mode('popup') machinery ONCE, whose own paint dispatch does the drawing. REPEAT calls
--- (continued scrubbing) must NOT re-run set_display_mode() - that would re-send the double Clear
--- Screen and a full invalidate on every tick. Instead call paint_popup_screen() directly: its
+-- FIRST call of a popup 'session' (popupActive false -> true) runs enter_popup_mode() ONCE, whose
+-- own paint dispatch does the drawing. REPEAT calls (continued scrubbing) must NOT re-run it - that
+-- would re-invalidate everything on every tick. Instead call paint_popup_screen() directly: its
 -- draw_* calls are per-id memoized, so unchanged content (background/border/label while
 -- popupCcNumber matches) queues nothing and only a genuinely new value re-queues - a DIFFERENT
 -- control taking over redraws the label for free, since its CC number differs.
@@ -1322,7 +1320,7 @@ function show_popup(eid)
 	if not popupActive then
 		popupPreviousMode = displayMode
 		popupActive = true
-		set_display_mode('popup') -- full mode-switch machinery once; its own dispatch paints the popup
+		enter_popup_mode()
 	else
 		paint_popup_screen()
 		request_quick_rearm()
@@ -1335,18 +1333,17 @@ function show_master_volume_popup()
 	popupControlName = 'Main Volume'
 	popupCcNumber = nil
 	-- The value being SENT (masterVolume), not the device's last READ reply - stays smooth during a
-	-- fast turn regardless of reply timing. See
+	-- fast turn regardless of reply timing, and is never nil once MVOL_SEED_DEFAULT seeds an unknown
+	-- gesture. See
 	-- docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10.
-	-- nil (masterVolumeRead not yet known) shows draw_popup_value's '--' placeholder instead - see
-	-- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
-	popupValue = masterVolumeRead and masterVolume or nil
+	popupValue = masterVolume
 	popupMax = 100
 	popupLastActivityIdleTick = idleTicks
 
 	if not popupActive then
 		popupPreviousMode = displayMode
 		popupActive = true
-		set_display_mode('popup')
+		enter_popup_mode()
 	else
 		paint_popup_screen()
 		request_quick_rearm()
@@ -1760,6 +1757,22 @@ function set_display_mode(mode)
 	slog('display mode -> ' .. mode)
 end
 
+-- Entering the popup overlay, unlike set_display_mode(), skips Clear Screen and invalidate_all():
+-- the popup's own draws (bg + border + label + knob/value) are opaque and non-overlapping, so
+-- nothing underneath needs erasing first - see
+-- docs/config-lua-history.md#popup-entry-skips-clear-screen-2026-09-12. dismiss_popup() still uses
+-- the full set_display_mode() to restore whatever the popup covered.
+function enter_popup_mode()
+	displayMode = 'popup'
+	drop_queued_display()
+	local before = queuedDisplayOps
+	paint_popup_screen()
+	if queuedDisplayOps > before then
+		queue_sacrificial_redraw()
+	end
+	request_quick_rearm()
+end
+
 
 -- MARK: - Session
 
@@ -2041,31 +2054,26 @@ function handle_sl_frame(e)
 		local eid = func
 		local delta = e[9] - 0x40
 		if eid == EID_A then
-			if masterVolumeRead == nil then
-				-- No confirmed device value yet: never write a guess - see
-				-- docs/config-lua-history.md#never-write-an-unconfirmed-master-volume-2026-09-10.
-				poll_master_volume()
-				show_master_volume_popup()
-			else
-				-- New gesture (>= MVOL_GESTURE_IDLE_TICKS idle ticks, ~1s each, since the last A tick, OR
-				-- the first known-value tick after a run of suppressed ones) starts from the device's own
-				-- truth, not the local guess - see mvolLastActivityIdleTick's declaration.
-				if mvolNeedsSeed or idleTicks - mvolLastActivityIdleTick >= MVOL_GESTURE_IDLE_TICKS then
-					masterVolume = masterVolumeRead
-					mvolNeedsSeed = false
-				end
-				mvolLastActivityIdleTick = idleTicks
-				local vol = masterVolume + delta
-				if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
-				masterVolume = vol
-				-- Own regionId so a fast twist's many ticks coalesce to one queued write, not several -
-				-- see queue_message's PER-REGION COALESCING comment.
-				local mvolWriteMsg = msg_master_volume_write(masterVolume)
-				slog('-> MASTER VOLUME WRITE: ' .. dump_bytes(mvolWriteMsg))
-				queue_message(mvolWriteMsg, 'mvol')
-				poll_master_volume()
-				show_master_volume_popup()
+			-- New gesture (>= MVOL_GESTURE_IDLE_TICKS idle ticks, ~1s each, since the last A tick - always
+			-- true on the very first tick ever, since mvolLastActivityIdleTick starts far in the past)
+			-- reseeds from the device's own truth. masterVolumeRead may still be nil (no reply has ever
+			-- landed) - a write must flow before the device answers a READ at all, so seed from
+			-- MVOL_SEED_DEFAULT instead of refusing to write - see
+			-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
+			if idleTicks - mvolLastActivityIdleTick >= MVOL_GESTURE_IDLE_TICKS then
+				masterVolume = masterVolumeRead or MVOL_SEED_DEFAULT
 			end
+			mvolLastActivityIdleTick = idleTicks
+			local vol = masterVolume + delta
+			if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
+			masterVolume = vol
+			-- Own regionId so a fast twist's many ticks coalesce to one queued write, not several - see
+			-- queue_message's PER-REGION COALESCING comment.
+			local mvolWriteMsg = msg_master_volume_write(masterVolume)
+			slog('-> MASTER VOLUME WRITE: ' .. dump_bytes(mvolWriteMsg))
+			queue_message(mvolWriteMsg, 'mvol')
+			poll_master_volume()
+			show_master_volume_popup()
 		else
 			local control = ENCODER_CC[eid]
 			if control ~= nil then

@@ -1332,3 +1332,58 @@ in unrelated call sites - this fix touches neither.
 was disappearing too quickly to read. `MVOL_GESTURE_IDLE_TICKS` (the Master Volume gesture re-seed
 boundary) is a separate constant, confirmed correct at 1 and left unchanged - see [Never write an
 unconfirmed Master Volume](#never-write-an-unconfirmed-master-volume-2026-09-10) above.
+
+---
+
+## Seed Master Volume at 60 instead of refusing to write (2026-09-12)
+
+[Never write an unconfirmed Master Volume](#never-write-an-unconfirmed-master-volume-2026-09-10)
+traded one hazard for another. Hardware log from the very next run: 16 A-encoder frames reached the
+script, the guard correctly suppressed all 16 writes, but the accompanying READ - sent 4 times - was
+never answered either, `masterVolumeRead` stayed `nil` for the whole session, and the encoder was
+permanently dead (no write ever went out, so no popup value, and the keyboard eventually dropped the
+app). Cross-referencing every run on record: a Master Volume READ only ever gets answered while
+writes are also flowing - the login-time READ and this guard's READ-only polling both went
+unanswered, but READs during an ordinary write-carrying gesture always came back. The guard's own
+premise - wait for a confirmation - could only ever be satisfied by the thing it was refusing to do.
+
+**Fix.** `mvolNeedsSeed`'s branch is gone. The EID_A handler is back to one path: on a new gesture
+(same `MVOL_GESTURE_IDLE_TICKS` boundary as before - always true on the very first tick, since
+`mvolLastActivityIdleTick` starts far in the past) it seeds `masterVolume = masterVolumeRead or
+MVOL_SEED_DEFAULT` and writes unconditionally. `MVOL_SEED_DEFAULT = 60` is the user's choice of a
+safe mid-scale starting point - not 100, where a single click could have slammed the audio board to
+full output, the exact hazard the original guard existed to prevent. The popup shows `masterVolume`
+directly now (never the `--` placeholder in normal operation); `draw_popup_value(nil)` stays as
+defensive dead code for a caller that no longer exists.
+
+`mvolNeedsSeed` was removed rather than repointed at the new default: with the reseed condition
+already true on the very first tick (the idle-tick sentinel forces it independently, per its own
+"belt-and-suspenders" comment), the flag never changed observable behaviour even before this fix -
+confirmed by re-reading its own declaration comment, not just by inspection here.
+
+---
+
+## Popup entry skips Clear Screen (2026-09-12)
+
+Companion fix to the seed change above, same hardware run: a single A-encoder tick queued 11
+messages at once (2x Clear Screen + `popupBg` + 4 border strips + `popupLabel` + `popupKnob` +
+`popupValue` + the trailing sacrificial redraw, from `set_display_mode('popup')`, plus the Master
+Volume READ), and the SL88 dropped the app mid-drain of that burst.
+
+The popup's own content was never the avoidable part - a first paint has nothing in `drawn[]` to
+compare against, so `paint_popup_screen()` queuing all of it once is correct, not a memoization bug.
+The double Clear Screen and `invalidate_all()` are the actual excess: they exist for
+`set_display_mode()`'s list<->zoom switches, where the outgoing screen's content differs in ways
+Write Text's own self-clearing background box can't guarantee to fully cover. The popup is not that
+case - `popupBg` plus the 4 border strips are opaque and together cover exactly the popup's own
+rect, so nothing underneath needs erasing, and `invalidate_all()` on entry is provably a no-op for
+the popup's own region ids either way: they are unset on the very first popup ever, and the memo
+returns to unset every time `dismiss_popup()`'s own `set_display_mode()` call invalidates everything
+on the way out.
+
+**Fix.** New `enter_popup_mode()` (used by both `show_popup()` and `show_master_volume_popup()`'s
+first-call branch) sets `displayMode`, drops stale queued display work for the outgoing mode, calls
+`paint_popup_screen()`, and still ends with the trailing sacrificial redraw and `request_quick_rearm()`
+- everything `set_display_mode()` did except the double Clear Screen and `invalidate_all()`. First-tick
+burst: 11 -> 9. `dismiss_popup()` is unchanged - it still needs `set_display_mode()`'s full treatment
+to properly restore whatever mode the popup was covering.
