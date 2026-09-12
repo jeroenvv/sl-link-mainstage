@@ -1563,3 +1563,41 @@ in-flight companion that makes writes work at all.
 **Method note.** Two findings in one day were overstated from narrow log windows — this one, and an
 earlier "vacuous assertion" call that turned out to be a mutation landing in a comment. Check a whole
 capture, or the complete set of distinct values, before writing a characterisation into this file.
+
+### The cadence experiment, for the probe (planned 2026-09-12)
+
+Jeroen's question: can the "device cannot keep up with a dense write stream" hypothesis be tested with
+the Swift probe? Yes, and better than through MainStage, because the probe controls the one variable
+that matters — the interval between writes — while MainStage's rate is dictated by encoder ticks and
+the flush budget.
+
+**Design.** Add a sweep mode to `Scripts/probe-mastervolume.swift`: walk the volume across the same
+range twice in one session, changing only the inter-write interval.
+
+- **Dense phase:** a write every ~10ms, approximating the encoder tick rate the script produces.
+- **Paced phase:** the same values, a write every ~100ms.
+
+**Observation is Jeroen's ear** — smooth versus stepped — since the read reply lags too far behind to
+serve as the measurement. Two supporting signals the probe should record itself:
+
+1. **Measured elapsed time between sends**, logged per phase. The cadence must be verified, not assumed;
+   a "10ms" loop that actually runs at 40ms would invalidate the comparison.
+2. **Read replies received per phase.** The script's capture suggests replies become rare under dense
+   writes. If the probe reproduces that, it is a second independent signal pointing at the same cause,
+   and it does not depend on anyone's hearing.
+
+**Outcomes and what each means:**
+
+- Dense stepped, paced smooth → hypothesis confirmed; the fix is a write-cadence limit in `config.lua`
+  (send the latest value at a fixed rate rather than once per encoder tick), which also lowers queue
+  pressure and so does not fight the session-safety work.
+- Both smooth → the device is NOT the bottleneck, and the uneven stepping lives somewhere in MainStage's
+  own send path. That is a different investigation, and worth knowing before spending effort on pacing.
+- Both stepped → the steps are inherent to the audio board's volume resolution, not to timing at all;
+  nothing to fix in the script.
+
+**Positive control already in hand:** the probe's existing scripted sequence proves writes take effect
+and read-backs can track them, so a null result cannot be dismissed as "the probe was not working".
+
+Run it solo with MainStage quit, and select the probe on the keyboard during the run — state carries
+between rapid successive runs.
