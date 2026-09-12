@@ -174,3 +174,18 @@ trailer describing the relative-encoder switch before merging, so the major bump
 defaults write com.apple.mainstage3 LUA_DEBUG -bool false
 pkill -f /tmp/sniffer
 ```
+
+## Upstream: reply posted to sl-link issue #2 (2026-09-12)
+
+Jeroen posted the reply drafted in `docs/upstream-reply-issue-2.md` to
+<https://github.com/fatarsrl/sl-link/issues/2>. **We are now waiting on answers to four questions**, so
+check the issue before investigating any of them locally:
+
+1. Must a READ accompany a WRITE for the write to be honoured?
+2. What does the READ reply report, given it lags far behind (returned 29 while writing 67)?
+3. Is there a recommended minimum interval between Master Volume writes?
+4. What does `IDENTIFICATION REJECTED` reason `00` mean for a freshly generated, never-used DeviceID?
+
+**Question 3 is the one that would change the code**: a documented rate limit turns the uneven-stepping
+defect into a one-line cadence cap, and would make the probe cadence experiment unnecessary. Worth
+checking for a reply before building that experiment.
