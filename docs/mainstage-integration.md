@@ -185,9 +185,10 @@ route instead.
 
 What's open, drawn from what's already tracked in this file and in `docs/config-lua-history.md`:
 
-- **Master Volume does not work, and the next step is a MIDI proxy** to capture Numa Player's
-  outbound bytes — every hypothesis reachable from our own side has been eliminated
-  (see "the login-state hypothesis is retired", 2026-09-10).
+- ~~**Master Volume does not work, and the next step is a MIDI proxy**~~ — **RESOLVED 2026-09-10.**
+  Master Volume works. The device requires a READ issued alongside the WRITE; a write on its own is
+  ignored. The MIDI proxy was never needed. See "Master Volume needs a live login" below and commit
+  `f2d9f3e`. Still unexplained: the login-time READ goes unanswered while gesture READs are answered.
 - **Two hardware paths remain unproven** (see "Refactor verification" above): Zoom LONG press (the
   force-full-repaint path in `handle_zoom_button`), and the re-identification wait path
   (`STATE_REIDENTIFY_WAIT`, `handle_identification_rejected`), which needs a deliberate DeviceID
@@ -237,16 +238,19 @@ None of these is committed as *the* next stage — this is the open candidate li
   2026-08-20 — it is *not* a keepalive or timeout problem. MainStage tears the script down and
   re-initialises it mid-session (4 finalize/initialize cycles in one run, while `state=active`). Each
   re-init resets `instanceID` to `SL_INSTANCE_START` (`0x6D`), but the SL88 still holds the previous
-  incarnation's registration under `0x6D` because **no logout is sent on teardown** — a script can
-  only transmit by returning MIDI from a callback, and `controller_finalize` has no return path. The
+  incarnation's registration under `0x6D` because **no logout is sent on teardown**. (The original
+  reason given here — that `controller_finalize` has no return path — was **wrong**, disproven on
+  hardware 2026-09-10: a Logout Request returned from `controller_finalize` reached the device, which
+  answered `00 03` LOGOUT CONFIRMATION. It is not sent because doing so logs the app out of the APP
+  list on every one of MainStage's spurious teardowns. See `config-lua-history.md`.) The
   keyboard therefore answers `IDENTIFICATION REJECTED (reason 00)`, the script bumps to `0x6E`, and
   re-registers **as a different app**, which is why the user's APP-list selection is lost. A second
   script instance — possible if MainStage loads one per USB-MIDI interface — would compound this by
   also starting at `0x6D`; the one hardware run measured so far ran as a single instance instead (see
   `docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28`).
 
-  Untested fix to try first: on rejection, **retry the same instance ID after a pause of more than
-  5 s** rather than immediately bumping. The SL88 drops a host that goes silent for ~5 s, so the
+  **SHIPPED 2026-09-10** (was "untested fix to try first"): on rejection, **retry the same instance ID
+  after a pause of more than 5 s** rather than immediately bumping. The SL88 drops a host that goes silent for ~5 s, so the
   stale registration should expire and the identity can be reclaimed instead of a new app being
   created. Deriving the instance byte from something stable per interface (the `portName` passed to
   `controller_midi_in`) would additionally stop the two instances colliding with each other.
