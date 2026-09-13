@@ -51,6 +51,12 @@ local function hex(t)
 	return table.concat(s, ' ')
 end
 
+-- instanceID is now derived per-instance (from instanceTag) rather than a fixed SL_INSTANCE_START,
+-- so golden vectors can no longer bake in a literal '6D' - this reads the live value. instanceID is
+-- never reassigned across this whole run (see test 36's own save/restore), so it's safe to inline
+-- into expected hex strings anywhere in this file.
+local function id2() return string.format('%02X', instanceID) end
+
 -- The reply to our own Identification Query - what drives the session
 -- clock (see config.lua's SESSION CLOCK note). Reads instanceID live so it
 -- stays correct even if a test upstream has bumped it.
@@ -107,7 +113,8 @@ end
 -- MARK: - 1. Golden byte vectors for every msg_* builder
 --
 -- Derived from the spec's message tables (docs/implementing-sl-link.md, the upstream spec pinned
--- at 4c0824d) at id1=SL_HOST_ID (0x03), id2=SL_INSTANCE_START (0x6D). Originally cross-checked by
+-- at 4c0824d) at id1=SL_HOST_ID (0x03), id2=instanceID (derived per-instance - see id2() above, and
+-- derive_instance_start in config.lua). Originally cross-checked by
 -- hand against this project's own Swift SLLinkEncoder.swift too - see Scripts/run-lua-tests.sh's
 -- header for that history and for the archive/swift-app recipe if a byte-for-byte second opinion
 -- is ever wanted again. Do NOT "fix" one of these to match whatever config.lua currently emits - a
@@ -117,40 +124,40 @@ end
 checkHex(
 	'msg_identification_request',
 	msg_identification_request(),
-	'F0 00 20 1A 16 03 6D 7F 00 4D 61 69 6E 53 74 61 67 65 00 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 7F 00 4D 61 69 6E 53 74 61 67 65 00 F7'
 )
 
 checkHex(
 	'msg_identification_query',
 	msg_identification_query(),
-	'F0 00 20 1A 16 03 6D 7F 03 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 7F 03 F7'
 )
 
 checkHex(
 	'msg_system(SYS_DEVICE_NOTIFICATION)',
 	msg_system(SYS_DEVICE_NOTIFICATION),
-	'F0 00 20 1A 16 03 6D 00 00 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 00 00 F7'
 )
 
 checkHex(
 	'msg_clear_screen(255, 128, 1)',
 	msg_clear_screen(255, 128, 1),
-	'F0 00 20 1A 16 03 6D 04 01 7F 40 00 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 04 01 7F 40 00 F7'
 )
 
 checkHex(
 	'msg_write_text("Hi!", ...)',
 	msg_write_text('Hi!', 5, 6, 100, ALIGN_CENTER, SIZE_BIG, 255, 0, 0, 0, 255, 0),
-	'F0 00 20 1A 16 03 6D 04 00 00 05 00 06 00 64 01 02 7F 00 00 00 7F 00 48 69 21 00 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 04 00 00 05 00 06 00 64 01 02 7F 00 00 00 7F 00 48 69 21 00 F7'
 )
 
 checkHex(
 	'msg_draw_rect(10, 20, 30, 40, 200, 100, 50)',
 	msg_draw_rect(10, 20, 30, 40, 200, 100, 50),
-	'F0 00 20 1A 16 03 6D 04 02 00 0A 00 14 00 1E 00 28 64 32 19 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 04 02 00 0A 00 14 00 1E 00 28 64 32 19 F7'
 )
 
--- Derived from the spec's Plot Bitmap message table (id1: 0x03, id2: 0x6D, x: 100, y: 50,
+-- Derived from the spec's Plot Bitmap message table (id1: 0x03, id2: instanceID, x: 100, y: 50,
 -- groupIndex: 0x00, iconIndex: 0x05, foreground RGB: 255, 140, 0, background RGB: 0, 0, 0).
 -- Originally cross-checked against SLLinkEncoder.displayPlotBitmap via the swiftc recipe now
 -- documented for a checkout of archive/swift-app in .claude/skills/lua-harness/SKILL.md.
@@ -158,7 +165,7 @@ checkHex(
 checkHex(
 	'msg_plot_bitmap(100, 50, BMP_GROUP_KNOB, 5, 255, 140, 0, 0, 0, 0)',
 	msg_plot_bitmap(100, 50, BMP_GROUP_KNOB, 5, 255, 140, 0, 0, 0, 0),
-	'F0 00 20 1A 16 03 6D 04 03 00 64 00 32 00 05 7F 46 00 00 00 00 F7'
+	'F0 00 20 1A 16 03 ' .. id2() .. ' 04 03 00 64 00 32 00 05 7F 46 00 00 00 00 F7'
 )
 
 -- MARK: - 2. Flush budget
@@ -565,16 +572,17 @@ do
 	end
 end
 
--- MARK: - 15. controller_finalize returns nil and queues no Logout Request
+-- MARK: - 15. controller_finalize sends nothing and still tears down
 --
--- A script can only send by RETURNING MIDI from a callback (see config.lua's
--- MainStage-host notes) - so a nil return is itself the guarantee that no
--- Logout Request (or anything else) goes out from this callback.
+-- See docs/config-lua-history.md#controller_finalize-sends-no-logout-request - sending a Logout
+-- Request here logged the app out of the SL88's APP list on every spurious MainStage teardown.
 do
 	state = STATE_ACTIVE
-	pendingMessages = {}
+	pendingMessages = { msg_draw_rect(0, 0, 10, 10, 0, 0, 0) }
 	local result = controller_finalize()
-	check('controller_finalize returns nil (no MIDI, so no Logout Request can go out)', result == nil)
+	check('controller_finalize returns nil (sends nothing)', result == nil)
+	check('controller_finalize still clears pendingMessages', #pendingMessages == 0)
+	check('controller_finalize still sets state to STATE_IDLE', state == STATE_IDLE)
 end
 
 -- MARK: - 16. append_text clamps bytes outside 0x20-0x80 to a space
@@ -986,6 +994,760 @@ do
 	check('mixed batch: relative control comes out correctly', cc_value_in(out.midi, ENC1_CC) == 0x01)
 	check('mixed batch: absolute control comes out correctly', cc_value_in(out.midi, SEL1_CC) == 127)
 	check('mixed batch: both controls emitted (6 bytes)', #out.midi == 6)
+end
+
+-- MARK: - 26. Cancel button (BID_CANCEL) logs out of SL Link
+--
+-- SHORT sends a Logout Request (the keyboard never confirms it - see request_logout()'s comment) and
+-- LONG skips straight to silence (force_logout()) since the request is ignored anyway. Both end in
+-- STATE_LOGGED_OUT, which controller_timer_trigger's own branch (section 27) suspends the keepalive
+-- for.
+do
+	local function button_frame(bid, pressKind)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, bid, pressKind, 0xF7)
+	end
+
+	local savedState = state
+
+	pendingMessages = {}
+	state = STATE_ACTIVE
+	handle_sl_frame(button_frame(BID_CANCEL, PRESS_SHORT))
+	checkHex(
+		'Cancel button SHORT queues exactly a Logout Request',
+		pendingMessages[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 00 02 F7'
+	)
+	check('Cancel button SHORT ends in STATE_LOGGED_OUT', state == STATE_LOGGED_OUT)
+
+	pendingMessages = {}
+	state = STATE_ACTIVE
+	handle_sl_frame(button_frame(BID_CANCEL, PRESS_LONG))
+	check('Cancel button LONG queues NO Logout Request', #pendingMessages == 0)
+	check('Cancel button LONG ends in STATE_LOGGED_OUT', state == STATE_LOGGED_OUT)
+
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	pendingMessages = {}
+	state = STATE_ACTIVE
+	handle_sl_frame(button_frame(BID_CANCEL, PRESS_SHORT))
+	local ccOut = flush_pending_cc()
+	check('Cancel button emits no CC (BID_CANCEL is not in BUTTON_CC)', #ccOut.midi == 0)
+
+	local function system_frame(func)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_SYSTEM, func, 0xF7)
+	end
+
+	state = STATE_ACTIVE
+	handle_sl_frame(system_frame(SYS_LOGOUT_CONFIRMATION))
+	check('inbound SYS_LOGOUT_CONFIRMATION leaves state at STATE_IDLE', state == STATE_IDLE)
+
+	state = savedState
+end
+
+-- MARK: - 27. STATE_LOGGED_OUT suspends the keepalive, then resumes identification
+--
+-- request_logout()/force_logout() (section 26) move to STATE_LOGGED_OUT. controller_timer_trigger's
+-- STATE_LOGGED_OUT branch must not call send_keepalive() - that silence is what lets the SL88's own
+-- ~5s no-keepalive timeout drop us from the APP list - but must still count down LOGOUT_SILENT_TICKS
+-- and resume identification once it reaches zero, so our name returns to the APP list. Spied via a
+-- send_keepalive stub rather than inspecting pendingMessages/flush output, since a flush drains at
+-- most one message per call regardless of whether a keepalive was ever queued.
+do
+	local savedState, savedTimerPending, savedLogoutTicksLeft, savedPending, savedArmed =
+		state, timerPending, logoutTicksLeft, pendingMessages, armed
+
+	local originalSendKeepalive = send_keepalive
+	local keepaliveCalls = 0
+	send_keepalive = function()
+		keepaliveCalls = keepaliveCalls + 1
+		originalSendKeepalive()
+	end
+
+	pendingMessages = {}
+	state = STATE_LOGGED_OUT
+	timerPending = true -- as if a one-shot were already outstanding, same as a real session
+	logoutTicksLeft = LOGOUT_SILENT_TICKS
+
+	controller_timer_trigger()
+	check('STATE_LOGGED_OUT timer tick queues no Device Notification', keepaliveCalls == 0)
+	check(
+		'STATE_LOGGED_OUT timer tick decrements the silent-tick counter',
+		logoutTicksLeft == LOGOUT_SILENT_TICKS - 1
+	)
+	check('STATE_LOGGED_OUT stays logged out before the count expires', state == STATE_LOGGED_OUT)
+
+	for _ = 1, LOGOUT_SILENT_TICKS - 1 do
+		controller_timer_trigger()
+	end
+	check('STATE_LOGGED_OUT never queues a Device Notification across the whole silent window', keepaliveCalls == 0)
+	check(
+		'after LOGOUT_SILENT_TICKS silent ticks, identification resumes and state leaves STATE_LOGGED_OUT',
+		state == STATE_IDENTIFYING
+	)
+
+	send_keepalive = originalSendKeepalive
+	state, timerPending, logoutTicksLeft, pendingMessages, armed =
+		savedState, savedTimerPending, savedLogoutTicksLeft, savedPending, savedArmed
+end
+
+-- MARK: - 28. STATE_LOGGED_OUT suspends display traffic and pins the tick at KEEPALIVE_MS
+--
+-- Two reinforcing halves of the fix (see request_logout()'s and rearm_timer()'s comments): (a)
+-- entering STATE_LOGGED_OUT with a popup up must dismiss it and drop whatever display traffic is
+-- left queued - including the repaint dismiss_popup() itself queues - so logout actually suspends
+-- display traffic instead of quietly draining it; (b) rearm_timer() must pin KEEPALIVE_MS while
+-- logged out regardless of has_pending()/popupActive, or LOGOUT_SILENT_TICKS maps to far less than
+-- the ~9s it is meant to.
+do
+	local savedState, savedPopupActive, savedDisplayMode, savedPopupPreviousMode, savedPending, savedTimerPending, savedArmed, savedTimerArmedInterval =
+		state, popupActive, displayMode, popupPreviousMode, pendingMessages, timerPending, armed, timerArmedInterval
+
+	local function button_frame(bid, pressKind)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, bid, pressKind, 0xF7)
+	end
+
+	-- (a) Cancel while a popup is up and other display work is queued: both must be gone afterward.
+	state = STATE_ACTIVE
+	popupActive = true
+	popupPreviousMode = 'zoom'
+	displayMode = 'popup'
+	pendingMessages = {}
+	queue_message(msg_draw_rect(0, 0, 1, 1, 0, 0, 0), 'test:logout-drop')
+	handle_sl_frame(button_frame(BID_CANCEL, PRESS_SHORT))
+
+	check('Cancel press dismisses an active popup', popupActive == false)
+	local displayLeft = 0
+	for i = 1, #pendingMessages do
+		if item_type_of(pendingMessages[i]) == IT_DISPLAY then displayLeft = displayLeft + 1 end
+	end
+	check('Cancel press leaves no display traffic queued', displayLeft == 0)
+
+	-- (b) rearm_timer() must pin KEEPALIVE_MS while logged out, even when has_pending() or
+	-- popupActive would normally pick a shorter interval.
+	state = STATE_LOGGED_OUT
+	pendingMessages = {}
+	queue_message(msg_draw_rect(0, 0, 1, 1, 0, 0, 0), 'test:logout-pin')
+	popupActive = false
+	timerPending = false
+	armed = nil
+	rearm_timer()
+	check('STATE_LOGGED_OUT: rearm_timer() pins KEEPALIVE_MS even with has_pending() true', armed == KEEPALIVE_MS)
+
+	pendingMessages = {}
+	popupActive = true
+	timerPending = false
+	armed = nil
+	rearm_timer()
+	check('STATE_LOGGED_OUT: rearm_timer() pins KEEPALIVE_MS even with popupActive true', armed == KEEPALIVE_MS)
+
+	-- request_quick_rearm() must not shorten an already-outstanding logout tick either -
+	-- dismiss_popup()'s set_display_mode() call reaches it during exactly the request_logout()/
+	-- force_logout() sequence tested above.
+	timerPending = true
+	timerArmedInterval = POPUP_TICK_MS
+	armed = nil
+	request_quick_rearm()
+	check(
+		'STATE_LOGGED_OUT: request_quick_rearm() does not shorten the outstanding tick',
+		armed == nil and timerArmedInterval == POPUP_TICK_MS
+	)
+
+	state, popupActive, displayMode, popupPreviousMode, pendingMessages, timerPending, armed, timerArmedInterval =
+		savedState, savedPopupActive, savedDisplayMode, savedPopupPreviousMode, savedPending, savedTimerPending, savedArmed, savedTimerArmedInterval
+end
+
+-- MARK: - 29. handle_login()/handle_restart() still repaint unconditionally, even on a
+-- reaffirmation - the enter_active_session() idempotency guard covers only its own session-transition
+-- bookkeeping, not the repaint the call sites are responsible for.
+do
+	local savedState, savedPending, savedLastPaintedPatch = state, pendingMessages, lastPaintedPatch
+
+	patchName, setName, currentConcert = 'Test Patch', 'Test Set', 'Test Concert'
+
+	local originalPaintScreen = paint_screen
+	local paintCalls = 0
+	paint_screen = function()
+		paintCalls = paintCalls + 1
+		originalPaintScreen()
+	end
+
+	state = STATE_ACTIVE -- already active; only the repaint call, not the transition, is under test
+	pendingMessages = {}
+	paintCalls = 0
+	handle_login()
+	check('handle_login() still repaints when called while already active', paintCalls == 1)
+
+	pendingMessages = {}
+	paintCalls = 0
+	handle_restart()
+	check('handle_restart() still repaints when called while already active', paintCalls == 1)
+
+	paint_screen = originalPaintScreen
+	state, pendingMessages, lastPaintedPatch = savedState, savedPending, savedLastPaintedPatch
+end
+
+-- MARK: - 30. rearm_timer() watchdog: recovers a one-shot MainStage never delivered
+--
+-- If timerPending latches true forever (the one-shot MainStage was supposed to fire never
+-- arrives), rearm_timer() must force a re-arm after TIMER_WATCHDOG_FRAMES inbound events - but only
+-- while there is queued work to push out; idle play must never trip it (rule 6) - see
+-- docs/config-lua-history.md#timer-watchdog-a-lost-one-shot-latches-timerpending-forever-2026-09-07.
+do
+	local savedState, savedTimerPending, savedFramesSinceTick, savedArmed, savedPending, savedPopupActive =
+		state, timerPending, framesSinceTick, armed, pendingMessages, popupActive
+
+	state = STATE_ACTIVE
+	popupActive = false
+
+	-- Below the threshold, with pending work queued: rule 6's protection must hold - no re-arm yet.
+	pendingMessages = {}
+	queue_message(msg_draw_rect(0, 0, 1, 1, 0, 0, 0), 'test:timer-watchdog')
+	timerPending = true
+	framesSinceTick = 0
+	armed = nil
+	for i = 1, TIMER_WATCHDOG_FRAMES - 1 do
+		controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	end
+	check('rearm_timer watchdog: below threshold does not re-arm', armed == nil)
+	check('rearm_timer watchdog: timerPending still latched below threshold', timerPending == true)
+
+	-- One more frame reaches the threshold, with pending work still queued: the watchdog must force
+	-- a re-arm.
+	controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	check('rearm_timer watchdog: re-arms once TIMER_WATCHDOG_FRAMES is reached with pending work',
+		armed == FLUSH_SOON_MS)
+	check('rearm_timer watchdog: framesSinceTick resets once it fires', framesSinceTick == 0)
+
+	-- At/over the threshold but with NO pending work: the watchdog must NOT re-arm - this is the
+	-- rule 6 case where a slow tick during idle play is not a dead clock.
+	pendingMessages = {}
+	timerPending = true
+	framesSinceTick = TIMER_WATCHDOG_FRAMES
+	armed = nil
+	rearm_timer()
+	check('rearm_timer watchdog: does not re-arm with no pending work even at threshold', armed == nil)
+	check('rearm_timer watchdog: timerPending stays latched with no pending work', timerPending == true)
+
+	-- A real tick resets the counter too, independent of the watchdog.
+	framesSinceTick = 42
+	timerPending = true
+	controller_timer_trigger()
+	check('controller_timer_trigger resets framesSinceTick', framesSinceTick == 0)
+
+	state, timerPending, framesSinceTick, armed, pendingMessages, popupActive =
+		savedState, savedTimerPending, savedFramesSinceTick, savedArmed, savedPending, savedPopupActive
+end
+
+-- MARK: - 31. Identification resend while identifying, and the ID_QUERY self-heal no longer fakes
+-- an approval - see
+-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+do
+	local savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending =
+		state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending
+
+	local function approved_frame()
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_IDENTIFICATION, ID_APPROVED,
+			0x01, 0x01, 0x02, 0x01, 0xF7)
+	end
+
+	local function rejected_frame(reason)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_IDENTIFICATION, ID_REJECTED,
+			reason, 0x01, 0x01, 0x02, 0x01, 0xF7)
+	end
+
+	local function id_requests_in(bytes)
+		local n = 0
+		for _, m in ipairs(split_messages(bytes or {})) do
+			if item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_REQUEST then n = n + 1 end
+		end
+		return n
+	end
+
+	local function keepalives_in(bytes)
+		local n = 0
+		for _, m in ipairs(split_messages(bytes or {})) do
+			if item_type_of(m) == IT_SYSTEM and func_of(m) == SYS_DEVICE_NOTIFICATION then n = n + 1 end
+		end
+		return n
+	end
+
+	-- (a) Still identifying, not yet approved: a keepalive-cadence tick re-sends the Identification
+	-- Request rather than a Device Notification, and spends the bounded resend budget.
+	state = STATE_IDENTIFYING
+	identifyResendsLeft = MAX_IDENTIFY_RESENDS
+	pendingMessages = {}
+	local out = controller_timer_trigger()
+	check('STATE_IDENTIFYING timer tick re-sends the Identification Request',
+		id_requests_in(out and out.midi) == 1)
+	check('the resend spends identifyResendsLeft', identifyResendsLeft == MAX_IDENTIFY_RESENDS - 1)
+
+	-- (a2) Bounded: once the budget is spent, further ticks stop resending rather than spamming. The
+	-- fallback floor engages instead of going silent - see
+	-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+	identifyResendsLeft = 0
+	identifyFallback = false
+	pendingMessages = {}
+	out = controller_timer_trigger()
+	check('no further resend once identifyResendsLeft is exhausted', id_requests_in(out and out.midi) == 0)
+	check('exhausting the resend budget engages identifyFallback', identifyFallback == true)
+	check('the fallback sends a keepalive rather than staying silent',
+		keepalives_in(out and out.midi) == 1)
+
+	-- (b) An explicit 7F 01 APPROVED reply moves out of STATE_IDENTIFYING (to STATE_LISTED) and stops
+	-- the resend - the branch that resends only fires while state == STATE_IDENTIFYING. The ordinary
+	-- ID_QUERY self-heal (legitimate from STATE_LISTED) is what then promotes to STATE_ACTIVE,
+	-- matching the real hardware sequence.
+	state = STATE_IDENTIFYING
+	identifyResendsLeft = MAX_IDENTIFY_RESENDS
+	pendingMessages = {}
+	controller_midi_in(approved_frame(), 'LINK')
+	check('7F 01 APPROVED leaves STATE_IDENTIFYING', state == STATE_LISTED)
+	pendingMessages = {}
+	out = controller_timer_trigger()
+	check('no identify-resend fires once APPROVED (state == STATE_LISTED)',
+		id_requests_in(out and out.midi) == 0)
+	pendingMessages = {}
+	controller_midi_in(qreply(), 'LINK')
+	check('an ID_QUERY reply after APPROVED promotes STATE_LISTED to STATE_ACTIVE', state == STATE_ACTIVE)
+
+	-- (c) An ID_QUERY reply ALONE - no APPROVED ever seen, and the resend budget not yet exhausted -
+	-- must NOT promote an unapproved STATE_IDENTIFYING session to STATE_ACTIVE. This is the exact bug:
+	-- the query reply is not proof of approval. identifyFallback must be false here or this would
+	-- pass for the wrong reason (the fallback floor, tested separately below).
+	state = STATE_IDENTIFYING
+	identifyFallback = false
+	pendingMessages = {}
+	controller_midi_in(qreply(), 'LINK')
+	check('an ID_QUERY reply alone does not promote an unapproved session before the fallback engages',
+		state == STATE_IDENTIFYING)
+
+	-- (c2) Once the fallback floor has engaged (resend budget exhausted, still no APPROVED), an
+	-- ID_QUERY reply DOES promote - reverting to the pre-fix self-heal so the session cannot go
+	-- permanently silent. See
+	-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+	state = STATE_IDENTIFYING
+	identifyFallback = true
+	pendingMessages = {}
+	controller_midi_in(qreply(), 'LINK')
+	check('an ID_QUERY reply promotes STATE_IDENTIFYING to STATE_ACTIVE once identifyFallback is set',
+		state == STATE_ACTIVE)
+
+	-- (d) A 7F 02 REJECTED reply still enters STATE_REIDENTIFY_WAIT and retries the SAME instanceID -
+	-- never bumping on a first rejection (see handle_identification_rejected's comment).
+	state = STATE_IDENTIFYING
+	local sameInstance = instanceID
+	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
+	pendingMessages = {}
+	timerPending = false
+	armed = nil
+	controller_midi_in(rejected_frame(0x00), 'LINK')
+	check('7F 02 REJECTED enters STATE_REIDENTIFY_WAIT', state == STATE_REIDENTIFY_WAIT)
+	check('a first rejection retries the SAME instanceID, no bump', instanceID == sameInstance)
+	check('a first rejection decrements reidentifyRetriesLeft',
+		reidentifyRetriesLeft == MAX_SAME_ID_RETRIES - 1)
+	check('rearm_timer armed the REIDENTIFY_WAIT_MS one-shot', armed == REIDENTIFY_WAIT_MS)
+
+	-- The wait elapsing fires controller_timer_trigger, which must retry - still the SAME id, not a
+	-- bumped one.
+	pendingMessages = {}
+	out = controller_timer_trigger()
+	check('the reidentify-wait retry re-sends as the SAME instanceID', instanceID == sameInstance)
+	check('the reidentify-wait retry queues an Identification Request',
+		id_requests_in(out and out.midi) == 1)
+
+	state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending =
+		savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending
+end
+
+-- MARK: - 32. Per-instance log tag
+--
+-- MainStage runs one script instance per matched USB-MIDI interface, all sharing one stdout - see
+-- the instanceTag/compute_instance_tag comment in config.lua. Checks the [sllink tag/id] prefix
+-- format on this single loaded instance, then exercises compute_instance_tag directly with distinct
+-- simulated per-state inputs. An earlier version of this test instead spawned two `lua` processes
+-- and compared their real tags, which failed intermittently: separate fresh Lua states frequently
+-- allocate at the same address, so that comparison depended on allocator luck rather than the code.
+do
+	check('instanceTag is a 6-character lowercase hex string',
+		instanceTag ~= nil and instanceTag:match('^%x%x%x%x%x%x$') ~= nil)
+
+	local captured = nil
+	local originalPrint = print
+	print = function(msg) captured = msg end
+	slog('probe')
+	print = originalPrint
+
+	check('slog output matches the documented [sllink tag/id] prefix format',
+		captured == '[sllink ' .. instanceTag .. '/' .. string.format('%02X', instanceID) .. '] probe')
+
+	check('compute_instance_tag output is always a 6-character lowercase hex string',
+		compute_instance_tag(0, 0, 0, 0, 0):match('^%x%x%x%x%x%x$') ~= nil)
+
+	check('compute_instance_tag is deterministic for identical inputs',
+		compute_instance_tag(0x1000, 0x2000, 0x3000, 0x4000, 12.5) ==
+		compute_instance_tag(0x1000, 0x2000, 0x3000, 0x4000, 12.5))
+
+	check('compute_instance_tag mixes each input: two simulated states differing in only one value get different tags',
+		compute_instance_tag(0x1000, 0x2000, 0x3000, 0x4000, 12.5) ~=
+			compute_instance_tag(0x1001, 0x2000, 0x3000, 0x4000, 12.5)
+		and compute_instance_tag(0x1000, 0x2000, 0x3000, 0x4000, 12.5) ~=
+			compute_instance_tag(0x1000, 0x2000, 0x3000, 0x4000, 13.5))
+end
+
+-- MARK: - 33. Per-instance starting instanceID (derive_instance_start)
+--
+-- Each instance used to start at the literal SL_INSTANCE_START (0x6D); now it derives its starting
+-- instanceID from its own instanceTag instead (see docs/config-lua-history.md, "Per-instance
+-- starting id"). Exercises derive_instance_start directly with simulated tag inputs - the same
+-- allocator-independent pattern section 32 already uses for compute_instance_tag - rather than
+-- comparing two real cross-process instanceTags/instanceIDs.
+do
+	local sampleTags = { '000000', '000001', '00007e', '00007f', '0000ff', '123456', 'abcdef', 'ffffff', '800000' }
+	local allInRange, all7Bit = true, true
+	for _, tag in ipairs(sampleTags) do
+		local id = derive_instance_start(tag)
+		if id < SL_INSTANCE_MIN or id > SL_INSTANCE_MAX then allInRange = false end
+		if id >= 0x80 then all7Bit = false end
+	end
+	check('derive_instance_start stays within [SL_INSTANCE_MIN, SL_INSTANCE_MAX] for a variety of tags',
+		allInRange)
+	check('derive_instance_start always returns a 7-bit value (< 0x80)', all7Bit)
+
+	check('derive_instance_start is deterministic for the same tag',
+		derive_instance_start('123456') == derive_instance_start('123456'))
+
+	check('two different tags can yield different starting bytes',
+		derive_instance_start('000001') ~= derive_instance_start('000002'))
+
+	-- Ties the module-level assignment (instanceID = derive_instance_start(instanceTag), evaluated
+	-- once at load) to the same range guarantee, not just the function checked in isolation above.
+	check('the live instanceID this run actually started at is within the legal range',
+		instanceID >= SL_INSTANCE_MIN and instanceID <= SL_INSTANCE_MAX)
+end
+
+-- MARK: - 34. Rejection still retries the SAME id before bumping, and the bump wraps in range
+--
+-- Complements section 31 (which covers the first same-id retry against a live rejected frame): this
+-- calls handle_identification_rejected directly to also reach the exhausted-budget bump, confirming
+-- it still wraps correctly using the new SL_INSTANCE_MIN/MAX constants. Preserves the existing
+-- ordering exactly - see handle_identification_rejected's own comment and
+-- docs/config-lua-history.md, "Identification and instance-ID collisions".
+do
+	local savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending =
+		state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending
+
+	-- (a) With retries still available, a rejection retries the SAME id - no bump.
+	state = STATE_IDENTIFYING
+	instanceID = SL_INSTANCE_MIN + 5
+	local sameId = instanceID
+	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
+	pendingMessages = {}
+	handle_identification_rejected(0x00)
+	check('a rejection with retries left keeps the SAME instanceID', instanceID == sameId)
+	check('...and decrements reidentifyRetriesLeft', reidentifyRetriesLeft == MAX_SAME_ID_RETRIES - 1)
+
+	-- (b) Once the retry budget is exhausted, the NEXT rejection bumps - and wraps SL_INSTANCE_MAX
+	-- back to SL_INSTANCE_MIN rather than escaping the legal/7-bit range.
+	state = STATE_IDENTIFYING
+	instanceID = SL_INSTANCE_MAX
+	reidentifyRetriesLeft = 0
+	pendingMessages = {}
+	handle_identification_rejected(0x00)
+	check('exhausting the retry budget bumps instanceID (no longer the same id)', instanceID ~= SL_INSTANCE_MAX)
+	check('the bump wraps SL_INSTANCE_MAX back to SL_INSTANCE_MIN', instanceID == SL_INSTANCE_MIN)
+	check('the bump resets reidentifyRetriesLeft for the new id', reidentifyRetriesLeft == MAX_SAME_ID_RETRIES)
+
+	state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending =
+		savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending
+end
+
+-- MARK: - 35. STATE_REIDENTIFY_WAIT's ID_QUERY reply never promotes on a stale identifyFallback
+--
+-- handle_identification_rejected never clears identifyFallback, so a rejected session can sit in
+-- STATE_REIDENTIFY_WAIT with it still true from an earlier STATE_IDENTIFYING fallback engagement.
+-- Promotion to STATE_ACTIVE must still require STATE_LISTED or STATE_IDENTIFYING, not the flag alone.
+do
+	local savedState, savedPending, savedIdentifyFallback, savedArmed, savedTimerPending =
+		state, pendingMessages, identifyFallback, armed, timerPending
+
+	state = STATE_REIDENTIFY_WAIT
+	identifyFallback = true
+	pendingMessages = {}
+	controller_midi_in(qreply(), 'LINK')
+	check('an ID_QUERY reply during STATE_REIDENTIFY_WAIT does not promote to STATE_ACTIVE even with a stale identifyFallback',
+		state == STATE_REIDENTIFY_WAIT)
+
+	state, pendingMessages, identifyFallback, armed, timerPending =
+		savedState, savedPending, savedIdentifyFallback, savedArmed, savedTimerPending
+end
+
+-- MARK: - 36. derive_instance_start's modulus makes SL_INSTANCE_MAX actually reachable
+--
+-- The modulus range width is SL_INSTANCE_MAX - SL_INSTANCE_MIN + 1; dropping the +1 silently makes
+-- SL_INSTANCE_MAX unreachable while every other derive_instance_start check still passes. Sweeping
+-- every residue of the range width confirms the top end is actually produced.
+do
+	local rangeWidth = SL_INSTANCE_MAX - SL_INSTANCE_MIN + 1
+	local maxSeen = SL_INSTANCE_MIN
+	for n = 0, rangeWidth - 1 do
+		local id = derive_instance_start(string.format('%06x', n))
+		if id > maxSeen then maxSeen = id end
+	end
+	check('derive_instance_start reaches SL_INSTANCE_MAX over a full residue sweep', maxSeen == SL_INSTANCE_MAX)
+end
+
+-- MARK: - 37. Bump-wrap boundary: SL_INSTANCE_MAX - 1 bumps to SL_INSTANCE_MAX without wrapping
+--
+-- Mirrors test 34(b), which covers the wrap FROM SL_INSTANCE_MAX; mutating instanceID > SL_INSTANCE_MAX
+-- to >= passes without this case, which must land exactly on the max and not wrap early.
+do
+	local savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending =
+		state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending
+
+	state = STATE_IDENTIFYING
+	instanceID = SL_INSTANCE_MAX - 1
+	reidentifyRetriesLeft = 0
+	pendingMessages = {}
+	handle_identification_rejected(0x00)
+	check('bumping from SL_INSTANCE_MAX - 1 lands on exactly SL_INSTANCE_MAX', instanceID == SL_INSTANCE_MAX)
+	check('...and does not wrap to SL_INSTANCE_MIN', instanceID ~= SL_INSTANCE_MIN)
+
+	state, pendingMessages, instanceID, identifyResendsLeft, identifyFallback, reidentifyRetriesLeft,
+		armed, timerPending =
+		savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
+		savedReidentifyRetriesLeft, savedArmed, savedTimerPending
+end
+
+-- MARK: - 38. Recovery watchdog: recovers a STATE_ACTIVE session the SL88 silently dropped
+--
+-- Hardware evidence: the SL88 can stop replying to Identification Queries entirely while
+-- STATE_ACTIVE - no logout, no standby - while still sending other traffic (encoder frames). A
+-- similar detector was tried and removed after a suspected freeze from unbounded re-identify
+-- retries - see docs/config-lua-history.md#recovering-a-silently-dropped-active-session-bounded-2026-09-13.
+-- This section proves the threshold and the reset-on-reply in isolation; tests 39-41 prove the
+-- cooldown, the attempt cap, and the not-ACTIVE guard.
+do
+	local savedState, savedPending, savedTimerPending, savedFramesSinceTick, savedArmed, savedPopupActive,
+		savedSinceReply, savedCooldown, savedAttempts, savedGivenUp, savedArmedInterval, savedResends,
+		savedFallback =
+		state, pendingMessages, timerPending, framesSinceTick, armed, popupActive,
+		activeMsSinceQueryReply, recoveryCooldownMs, recoveryAttempts, recoveryGivenUp, timerArmedInterval,
+		identifyResendsLeft, identifyFallback
+
+	-- start_identification()'s Identification Request is queued, but controller_timer_trigger's own
+	-- `return flush_pending(true)` immediately dequeues one message per call - so a fired attempt
+	-- shows up in the FLUSHED bytes this call returns, not in pendingMessages afterward. Checks both,
+	-- so a fix that left it merely queued (never flushed) would still be caught.
+	local function has_id_request(out)
+		for i = 1, #pendingMessages do
+			local m = pendingMessages[i]
+			if item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_REQUEST then return true end
+		end
+		for _, m in ipairs(split_messages(out and out.midi or {})) do
+			if item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_REQUEST then return true end
+		end
+		return false
+	end
+
+	-- (a) Below ACTIVE_QUERY_DROP_MS: must not fire, though the elapsed time still accumulates.
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	activeMsSinceQueryReply = 0
+	recoveryCooldownMs = 0
+	recoveryAttempts = 0
+	recoveryGivenUp = false
+	timerArmedInterval = ACTIVE_QUERY_DROP_MS - 1
+	local out = controller_timer_trigger()
+	check('recovery watchdog: below ACTIVE_QUERY_DROP_MS does not fire',
+		state == STATE_ACTIVE and recoveryAttempts == 0 and not has_id_request(out))
+	check('recovery watchdog: elapsed time still accumulates below the threshold',
+		activeMsSinceQueryReply == ACTIVE_QUERY_DROP_MS - 1)
+
+	-- (b) Reaching the threshold fires exactly once: falls to STATE_IDLE, whose existing branch
+	-- (just below the watchdog in controller_timer_trigger) takes it the rest of the way to
+	-- STATE_IDENTIFYING with an Identification Request queued; arms the cooldown; counts one attempt.
+	pendingMessages = {}
+	timerArmedInterval = 1 -- the last 1ms needed to reach ACTIVE_QUERY_DROP_MS exactly
+	out = controller_timer_trigger()
+	check('recovery watchdog: fires at the threshold and re-identifies',
+		state == STATE_IDENTIFYING and has_id_request(out))
+	check('recovery watchdog: counts the attempt', recoveryAttempts == 1)
+	check('recovery watchdog: arms the cooldown', recoveryCooldownMs == RECOVERY_COOLDOWN_MS)
+	check('recovery watchdog: resets its own elapsed counter on firing', activeMsSinceQueryReply == 0)
+
+	-- (c) A query reply resets the elapsed-time counter - the ordinary healthy case where the
+	-- keyboard does answer, exercised independently of the fire in (b).
+	state = STATE_ACTIVE
+	activeMsSinceQueryReply = 5000
+	controller_midi_in(qreply(), 'LINK')
+	check('recovery watchdog: an Identification Query reply resets the elapsed-time counter',
+		activeMsSinceQueryReply == 0)
+
+	state, pendingMessages, timerPending, framesSinceTick, armed, popupActive,
+		activeMsSinceQueryReply, recoveryCooldownMs, recoveryAttempts, recoveryGivenUp, timerArmedInterval,
+		identifyResendsLeft, identifyFallback =
+		savedState, savedPending, savedTimerPending, savedFramesSinceTick, savedArmed, savedPopupActive,
+		savedSinceReply, savedCooldown, savedAttempts, savedGivenUp, savedArmedInterval, savedResends,
+		savedFallback
+end
+
+-- MARK: - 39. Recovery watchdog: cooldown prevents an attempt too soon after the last one
+--
+-- Isolates RECOVERY_COOLDOWN_MS from the attempt cap (test 40) and the threshold (test 38): starts
+-- from a state that just fired (cooldown armed, one attempt counted) and proves a session that
+-- re-hits the threshold immediately is NOT allowed to fire again until the cooldown itself elapses.
+do
+	local savedState, savedPending, savedSinceReply, savedCooldown, savedAttempts, savedGivenUp,
+		savedArmedInterval, savedResends, savedFallback =
+		state, pendingMessages, activeMsSinceQueryReply, recoveryCooldownMs, recoveryAttempts,
+		recoveryGivenUp, timerArmedInterval, identifyResendsLeft, identifyFallback
+
+	local function has_id_request(out)
+		for i = 1, #pendingMessages do
+			local m = pendingMessages[i]
+			if item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_REQUEST then return true end
+		end
+		for _, m in ipairs(split_messages(out and out.midi or {})) do
+			if item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_REQUEST then return true end
+		end
+		return false
+	end
+
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	activeMsSinceQueryReply = 0
+	recoveryAttempts = 1
+	recoveryGivenUp = false
+	recoveryCooldownMs = RECOVERY_COOLDOWN_MS -- as if a recovery attempt just fired
+
+	-- One full tick at the threshold interval reaches ACTIVE_QUERY_DROP_MS immediately, but the
+	-- cooldown (still mostly outstanding) must block it.
+	timerArmedInterval = ACTIVE_QUERY_DROP_MS
+	local out = controller_timer_trigger()
+	check('recovery watchdog: cooldown blocks a second attempt reached too soon',
+		state == STATE_ACTIVE and recoveryAttempts == 1 and not has_id_request(out))
+	check('recovery watchdog: cooldown still counts down while blocking',
+		recoveryCooldownMs == RECOVERY_COOLDOWN_MS - ACTIVE_QUERY_DROP_MS)
+
+	-- Once the cooldown actually reaches zero, the same still-over-threshold condition is free to
+	-- fire.
+	timerArmedInterval = recoveryCooldownMs
+	out = controller_timer_trigger()
+	check('recovery watchdog: fires again once the cooldown has fully elapsed',
+		state == STATE_IDENTIFYING and has_id_request(out) and recoveryAttempts == 2)
+
+	state, pendingMessages, activeMsSinceQueryReply, recoveryCooldownMs, recoveryAttempts,
+		recoveryGivenUp, timerArmedInterval, identifyResendsLeft, identifyFallback =
+		savedState, savedPending, savedSinceReply, savedCooldown, savedAttempts, savedGivenUp,
+		savedArmedInterval, savedResends, savedFallback
+end
+
+-- MARK: - 40. Recovery watchdog: caps consecutive attempts and gives up rather than retrying forever
+--
+-- Isolated from the cooldown (test 39): resets recoveryCooldownMs to 0 before each trigger, so only
+-- MAX_RECOVERY_ATTEMPTS itself is under test. After the cap, the (MAX_RECOVERY_ATTEMPTS + 1)-th
+-- would-be attempt must not re-identify, and must log clearly that recovery has given up.
+do
+	local savedState, savedPending, savedSinceReply, savedCooldown, savedAttempts, savedGivenUp,
+		savedArmedInterval, savedResends, savedFallback =
+		state, pendingMessages, activeMsSinceQueryReply, recoveryCooldownMs, recoveryAttempts,
+		recoveryGivenUp, timerArmedInterval, identifyResendsLeft, identifyFallback
+
+	local function has_id_request(out)
+		for i = 1, #pendingMessages do
+			local m = pendingMessages[i]
+			if item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_REQUEST then return true end
+		end
+		for _, m in ipairs(split_messages(out and out.midi or {})) do
+			if item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_REQUEST then return true end
+		end
+		return false
+	end
+
+	local function fire_once()
+		state = STATE_ACTIVE
+		pendingMessages = {}
+		recoveryCooldownMs = 0
+		activeMsSinceQueryReply = 0
+		timerArmedInterval = ACTIVE_QUERY_DROP_MS
+		return controller_timer_trigger()
+	end
+
+	recoveryAttempts = 0
+	recoveryGivenUp = false
+
+	for i = 1, MAX_RECOVERY_ATTEMPTS do
+		local out = fire_once()
+		check('recovery watchdog: attempt ' .. i .. '/' .. MAX_RECOVERY_ATTEMPTS .. ' re-identifies',
+			state == STATE_IDENTIFYING and has_id_request(out))
+	end
+	check('recovery watchdog: has not given up within the attempt cap', not recoveryGivenUp)
+
+	-- One more trigger beyond the cap: no re-identify, and a clear give-up log line.
+	local capturedLines = {}
+	local originalPrint = print
+	print = function(msg) capturedLines[#capturedLines + 1] = msg end
+	local givenUpOut = fire_once()
+	print = originalPrint
+
+	local function log_contains(substr)
+		for _, line in ipairs(capturedLines) do
+			if line:find(substr, 1, true) then return true end
+		end
+		return false
+	end
+
+	check('recovery watchdog: stops attempting once the cap is exceeded',
+		state == STATE_ACTIVE and not has_id_request(givenUpOut))
+	check('recovery watchdog: latches given-up', recoveryGivenUp == true)
+	check('recovery watchdog: logs that it is giving up', log_contains('giving up'))
+
+	state, pendingMessages, activeMsSinceQueryReply, recoveryCooldownMs, recoveryAttempts,
+		recoveryGivenUp, timerArmedInterval, identifyResendsLeft, identifyFallback =
+		savedState, savedPending, savedSinceReply, savedCooldown, savedAttempts, savedGivenUp,
+		savedArmedInterval, savedResends, savedFallback
+end
+
+-- MARK: - 41. Recovery watchdog: never fires outside STATE_ACTIVE
+--
+-- Even with activeMsSinceQueryReply pre-loaded past the threshold (as if state had just left ACTIVE
+-- without the accumulator being reset), no non-ACTIVE state may trigger a recovery attempt - the
+-- watchdog exists to recover STATE_ACTIVE specifically, not to second-guess the ordinary
+-- identify/reject/wait machinery already governing every other state.
+do
+	local savedState, savedPending, savedSinceReply, savedCooldown, savedAttempts, savedGivenUp,
+		savedArmedInterval, savedResends, savedFallback, savedRetries, savedLogoutTicks =
+		state, pendingMessages, activeMsSinceQueryReply, recoveryCooldownMs, recoveryAttempts,
+		recoveryGivenUp, timerArmedInterval, identifyResendsLeft, identifyFallback,
+		reidentifyRetriesLeft, logoutTicksLeft
+
+	for _, s in ipairs({ STATE_IDLE, STATE_IDENTIFYING, STATE_LISTED, STATE_STANDBY, STATE_LOGGED_OUT }) do
+		state = s
+		pendingMessages = {}
+		activeMsSinceQueryReply = ACTIVE_QUERY_DROP_MS + 1000
+		recoveryCooldownMs = 0
+		recoveryAttempts = 0
+		recoveryGivenUp = false
+		timerArmedInterval = 1
+		controller_timer_trigger()
+		check('recovery watchdog: does not fire from state=' .. s,
+			recoveryAttempts == 0 and not recoveryGivenUp)
+	end
+
+	state, pendingMessages, activeMsSinceQueryReply, recoveryCooldownMs, recoveryAttempts,
+		recoveryGivenUp, timerArmedInterval, identifyResendsLeft, identifyFallback,
+		reidentifyRetriesLeft, logoutTicksLeft =
+		savedState, savedPending, savedSinceReply, savedCooldown, savedAttempts, savedGivenUp,
+		savedArmedInterval, savedResends, savedFallback, savedRetries, savedLogoutTicks
 end
 
 -- MARK: - Summary
