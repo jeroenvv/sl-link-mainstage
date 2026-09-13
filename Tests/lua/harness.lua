@@ -18,7 +18,8 @@
 -- do not exist in the real sandbox - config.lua must never touch them, but
 -- this HARNESS is plain `lua`, so using `os.exit` etc. here is fine)
 
-MIDI_Wildcard, MIDI_MSB, MIDI_LSB = 0, 0, 0
+-- Observed runtime values (2026-09-05 hardware log); the first three are strings, not numbers.
+MIDI_Wildcard, MIDI_MSB, MIDI_LSB, MIDI_CtrChange = '??', 'bb', 'aa', 176
 armed = nil
 function settriggertimer(ms) armed = ms end
 
@@ -782,6 +783,209 @@ do
 		local trimmed = contents:gsub('^%s+', ''):gsub('%s+$', '')
 		check('SCRIPT_VERSION matches the repo-root VERSION file', SCRIPT_VERSION == trimmed)
 	end
+end
+
+-- MARK: - 23. controller_info(): hand-written CC_MAP items (Layout mode names/types)
+--
+-- controller_info() lists one item per CC_MAP key, after the 5 physical-MIDI items, written out
+-- literally (2026-09-05) rather than generated, for eyeball comparison against CC_MAP/CC_LABEL. These
+-- checks are now the only thing standing between that literal list and drift from CC_MAP/CC_LABEL.
+do
+	local info = controller_info()
+	local items = info.items
+	local PHYSICAL_ITEM_COUNT = 5
+	local generated = {}
+	for i = PHYSICAL_ITEM_COUNT + 1, #items do
+		generated[#generated + 1] = items[i]
+	end
+
+	local ccMapCount = 0
+	for _ in pairs(CC_MAP) do ccMapCount = ccMapCount + 1 end
+
+	check(
+		'controller_info() generates exactly one item per CC_MAP key (' .. ccMapCount .. ')',
+		#generated == ccMapCount
+	)
+
+	-- Index generated items by their own CC number and by name, to check both "every CC_MAP key
+	-- produced exactly one item" and "no two items collide on CC number" without assuming order.
+	local byCcNumber = {}
+	local byName = {}
+	local duplicateCc = false
+	for _, item in ipairs(generated) do
+		local ccNumber = item.midi[2]
+		if byCcNumber[ccNumber] ~= nil then duplicateCc = true end
+		byCcNumber[ccNumber] = item
+		if item.name ~= nil then byName[item.name] = item end
+	end
+	check('no two generated items share a CC number', not duplicateCc)
+
+	local everyControlHasOneItem = true
+	for control, ccNumber in pairs(CC_MAP) do
+		if byCcNumber[ccNumber] == nil or byCcNumber[ccNumber].name ~= CC_LABEL[control] then
+			everyControlHasOneItem = false
+		end
+	end
+	check('every CC_MAP key has exactly one generated item, at its own CC number', everyControlHasOneItem)
+
+	local everyItemOnChannel16 = true
+	for _, item in ipairs(generated) do
+		if item.midi[1] ~= 0xB0 + CC_CHANNEL then everyItemOnChannel16 = false end
+	end
+	check('every generated item addresses CC_CHANNEL', everyItemOnChannel16)
+
+	-- CC_MAP <-> CC_LABEL: every key has exactly one label, no orphaned label.
+	local everyMapKeyHasLabel = true
+	for control in pairs(CC_MAP) do
+		if CC_LABEL[control] == nil then everyMapKeyHasLabel = false end
+	end
+	check('every CC_MAP key has a CC_LABEL entry', everyMapKeyHasLabel)
+
+	local noOrphanedLabel = true
+	for control in pairs(CC_LABEL) do
+		if CC_MAP[control] == nil then noOrphanedLabel = false end
+	end
+	check('no CC_LABEL entry is orphaned (missing from CC_MAP)', noOrphanedLabel)
+
+	-- CC_TURN gestures -> Knob; a spot-checked button gesture -> Button.
+	local allTurnsAreKnobs = true
+	for control in pairs(CC_TURN) do
+		local item = byName[CC_LABEL[control]]
+		if item == nil or item.objectType ~= 'Knob' then allTurnsAreKnobs = false end
+	end
+	check('all CC_TURN gestures generate objectType Knob', allTurnsAreKnobs)
+
+	-- CC_TURN gestures are also the only ones declared Relative2C (Change 1, 2026-09-05) - see
+	-- docs/mainstage-integration.md's "Encoders send relative deltas" section.
+	local allTurnsAreRelative2C = true
+	for control in pairs(CC_TURN) do
+		local item = byName[CC_LABEL[control]]
+		if item == nil or item.midiType ~= 'Relative2C' then allTurnsAreRelative2C = false end
+	end
+	check('all CC_TURN gestures declare midiType Relative2C', allTurnsAreRelative2C)
+
+	-- JOY_ROTATE joined CC_TURN (fix 2026-09-05): its item must match the other five turn gestures,
+	-- not the Momentary Button it was wrongly declared as when it still emitted relative deltas.
+	check('JOY_ROTATE is a member of CC_TURN', CC_TURN['JOY_ROTATE'] == true)
+	local joyRotateItem = byName[CC_LABEL['JOY_ROTATE']]
+	check(
+		'JOY_ROTATE declares objectType Knob',
+		joyRotateItem ~= nil and joyRotateItem.objectType == 'Knob'
+	)
+	check(
+		'JOY_ROTATE declares midiType Relative2C',
+		joyRotateItem ~= nil and joyRotateItem.midiType == 'Relative2C'
+	)
+
+	local joyUpItem = byName[CC_LABEL['JOY_UP_SHORT']]
+	check(
+		'a spot-checked button gesture (JOY_UP_SHORT) generates objectType Button',
+		joyUpItem ~= nil and joyUpItem.objectType == 'Button'
+	)
+
+	-- Determinism: items must come out in ascending CC order (guards the hand-written list's order).
+	local ascending = true
+	for i = 2, #generated do
+		if generated[i].midi[2] <= generated[i - 1].midi[2] then ascending = false end
+	end
+	check('generated items are in strictly ascending CC order', ascending)
+end
+
+-- MARK: - 24. handle_sl_frame(IT_ENCODER) + flush_pending_cc: relative delta emission (Change 1,
+-- 2026-09-05; coalescing fix 2026-09-05)
+--
+-- CC_TURN/JOY_ROTATE encoders emit each tick's signed delta, Relative2C-encoded (two's complement,
+-- 7-bit), instead of the tracked absolute value - see docs/mainstage-integration.md's "Encoders send
+-- relative deltas" section. encoderValue must keep accumulating/clamping 0-127 regardless, since
+-- show_popup's ring gauge still reads it. The clamp/modulo encoding now happens in flush_pending_cc,
+-- not in handle_sl_frame - see queue_relative_cc() - so these checks flush before inspecting the byte.
+local function encoder_frame(eid, tick)
+	return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, eid, tick, 0xF7)
+end
+
+-- Scans a flat flush_pending_cc() byte array (3 bytes per CC: status, ccNumber, value) for one CC
+-- number's emitted value; nil if that CC number was not emitted this flush.
+local function cc_value_in(bytes, ccNumber)
+	for i = 1, #bytes, 3 do
+		if bytes[i + 1] == ccNumber then return bytes[i + 2] end
+	end
+	return nil
+end
+
+do
+	local savedEncoderValue = encoderValue[EID_ZONE1]
+	local ENC1_CC = CC_MAP['ENC1_TURN']
+
+	-- One tick, one flush: wire-encodes to the Relative2C byte for that raw delta.
+	local function tick(delta)
+		pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+		encoderValue[EID_ZONE1] = 64
+		handle_sl_frame(encoder_frame(EID_ZONE1, 0x40 + delta))
+		local out = flush_pending_cc()
+		return cc_value_in(out.midi, ENC1_CC)
+	end
+
+	check('encoder tick +1 emits wire value 0x01', tick(1) == 0x01)
+	check('encoder tick -1 emits wire value 0x7F', tick(-1) == 0x7F)
+	check('encoder tick +5 emits wire value 0x05', tick(5) == 0x05)
+	check('encoder tick -5 emits wire value 0x7B', tick(-5) == 0x7B)
+	check('encoder tick of 0 emits nothing', tick(0) == nil)
+
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	encoderValue[EID_ZONE1] = 125
+	handle_sl_frame(encoder_frame(EID_ZONE1, 0x40 + 5))
+	check('encoderValue still accumulates and clamps to 127', encoderValue[EID_ZONE1] == 127)
+
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	encoderValue[EID_ZONE1] = 2
+	handle_sl_frame(encoder_frame(EID_ZONE1, 0x40 - 5))
+	check('encoderValue still accumulates and clamps to 0', encoderValue[EID_ZONE1] == 0)
+
+	encoderValue[EID_ZONE1] = savedEncoderValue
+end
+
+-- MARK: - 25. Relative CC coalescing: accumulate, don't replace (fix 2026-09-05)
+--
+-- queue_cc's per-control coalescing REPLACES a pending value - correct for an absolute control, wrong
+-- for a relative delta, where two ticks for the same control before a flush must SUM rather than lose
+-- the first tick's motion. queue_relative_cc/flush_pending_cc fix this - closes the "Known gap, not yet
+-- fixed" note in docs/mainstage-integration.md's "Encoders send relative deltas" section.
+do
+	local ENC1_CC = CC_MAP['ENC1_TURN']
+	local SEL1_CC = CC_MAP['SEL1_SHORT']
+
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	queue_relative_cc('ENC1_TURN', 1)
+	queue_relative_cc('ENC1_TURN', 1)
+	local out = flush_pending_cc()
+	check('two +1 ticks before a flush emit a single +2 (0x02)', cc_value_in(out.midi, ENC1_CC) == 0x02)
+	check('two coalesced +1 ticks emit only one CC message (3 bytes)', #out.midi == 3)
+
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	queue_relative_cc('ENC1_TURN', 1)
+	queue_relative_cc('ENC1_TURN', -1)
+	out = flush_pending_cc()
+	check('a +1 then a -1 before a flush emits nothing for that control', #out.midi == 0)
+	check('a net-zero relative control does not remain queued', pendingCCOrder[1] == nil)
+
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	queue_relative_cc('ENC1_TURN', 100)
+	out = flush_pending_cc()
+	check('a large positive accumulated total clamps to +63 (0x3F)', cc_value_in(out.midi, ENC1_CC) == 0x3F)
+
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	queue_relative_cc('ENC1_TURN', -100)
+	out = flush_pending_cc()
+	check('a large negative accumulated total clamps to -63 (0x41)', cc_value_in(out.midi, ENC1_CC) == 0x41)
+
+	-- A relative and an absolute control queued in the same round both come out correctly in one batch.
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	queue_relative_cc('ENC1_TURN', 1)
+	queue_cc('SEL1_SHORT', 127)
+	out = flush_pending_cc()
+	check('mixed batch: relative control comes out correctly', cc_value_in(out.midi, ENC1_CC) == 0x01)
+	check('mixed batch: absolute control comes out correctly', cc_value_in(out.midi, SEL1_CC) == 127)
+	check('mixed batch: both controls emitted (6 bytes)', #out.midi == 6)
 end
 
 -- MARK: - Summary
