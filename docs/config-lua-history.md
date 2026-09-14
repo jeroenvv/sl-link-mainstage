@@ -1983,3 +1983,21 @@ the settled value rather than leaving it one step behind.
 Pinned by Lua harness sections 65-66: throttled cadence during continuous motion, the settled value
 painted rather than left stale, the knob invalidation forcing the value through despite an unelapsed
 throttle window, and `draw_popup_knob()`'s own repaint rate (memoized purely by icon) left unchanged.
+
+### Popup rework verified on hardware (2026-09-14)
+
+Jeroen exercised the reworked popup on the SL88 across several deploys: **"this is way better"**, layout
+good, three-digit values fine, redraws clean through knob-level changes in both directions.
+
+Settled after three rounds of tuning by eye, because neither the ring's inner hole nor `SIZE_MEDIUM`'s
+real glyph height has ever been measured: the value box narrowed 45 → 38px, and the value nudged down 5
+then 8px.
+
+**Confirmed fixed on hardware:** the popup no longer paints the patch-list top line over the zoom screen
+(`queue_sacrificial_redraw()` branched on `displayMode`, which is `'popup'` while a popup is up, so it
+always took the list branch — pre-existing, exposed by the smaller panel).
+
+**Not proven by this run:** the session recovery still has not fired. Two drops occurred; Jeroen restored
+the app by re-selecting it on the keyboard, and the log shows no `recovery` or `watchdog` lines at all.
+The mechanism is now *reachable* from the inbound path — previously it could only run from the tick
+handler, which is dead in exactly the case it exists for — but reachable is not the same as proven.
