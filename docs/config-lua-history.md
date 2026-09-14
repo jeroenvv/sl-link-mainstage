@@ -2001,3 +2001,48 @@ always took the list branch — pre-existing, exposed by the smaller panel).
 the app by re-selecting it on the keyboard, and the log shows no `recovery` or `watchdog` lines at all.
 The mechanism is now *reachable* from the inbound path — previously it could only run from the tick
 handler, which is dead in exactly the case it exists for — but reachable is not the same as proven.
+
+### A encoder button mute (2026-09-14)
+
+The A encoder's push button (`BID_A_ENC = 0x0B`) now toggles the SL88's audio-board mute: SHORT flips
+it, LONG resets volume to `MVOL_SEED_DEFAULT` (60) and unmutes. Offline only — **nothing here has been
+run against hardware yet.**
+
+**The `VOL > 0x64` technique.** §6's write frame is `07 01 <VOL> [MUTE]`; omitting `MUTE` leaves it
+untouched, which is why `msg_master_volume_write()` (the plain encoder-turn write) stays exactly as it
+was — it must never carry `MUTE`, or turning the A encoder could flip mute as a side effect. To change
+mute *alone*, the write needs a `VOL` byte the firmware will ignore, and the upstream answer says any
+value over `0x64` (100) qualifies. `MVOL_IGNORE_VOL = 0x7F` was picked as that sentinel — the max legal
+7-bit data byte. The new `msg_master_volume_mute_write(vol, muted)` builder is used for both the SHORT
+toggle (`MVOL_IGNORE_VOL`, flipped `MUTE`) and the LONG reset (`MVOL_SEED_DEFAULT`, `MUTE=0` together —
+a real volume and a real mute change in one message, since LONG wants both anyway).
+
+**First LED message this project has ever sent.** `IT_LED = 0x02` (`<WLID> <state 0|1>`, on/off only)
+had no builder before this — `msg_white_led()` is new. The A encoder's LED id, `WLID_A_ENC = 0x0A`, is
+**probable, not certain**: it comes from `docs/full-functionality-plan.md`, a historical doc, not from
+an authoritative table — the real white-LED id table lives upstream in `fatarsrl/sl-link`'s
+`docs/hardware-io.md` and is not vendored in this repo. `0x0A` needs confirming against a lit ring on
+the first hardware run.
+
+**`BID 0x0B` has never been observed.** The spec claims the host never sees the A encoder's button
+(reserved for USB audio), but §7 already records the opposite for A traffic in general — EID_A ticks
+reach the host as ordinary messages with no special-casing needed. Expected to work the same way, but
+unexercised: if the first hardware press logs nothing, the spec's "reserved" claim holds for the button
+specifically and this feature stops there, which is a real possible outcome, not a bug.
+
+**Startup state:** seeded from the READ reply already sent at `enter_active_session()`, which now also
+sends the LED once unconditionally to establish it before any reply arrives (`set_master_mute`
+called with the current default). If the reply's `MUTE` byte differs from that default, it corrects the
+state and resends the LED; a reply with no trailing `MUTE` byte (§7 — trailing bytes are optional more
+often than documented) leaves the assumed default (unmuted) alone.
+
+**Popup:** `POPUP_H` grew by `POPUP_MUTE_HINT_H` (21px, `SIZE_SMALL`'s one *measured* height) plus
+`POPUP_MUTE_HINT_GAP` (8px) to fit a "PUSH TO MUTE/UNMUTE" hint line, shown only when `popupCcNumber`
+is `nil` (true only for the Master Volume popup — mapped-encoder popups always have a CC number). A
+control switch mid-popup-session (no full erase) that moves away from Master Volume blanks the hint
+with an empty Write Text call rather than leaving it stale, the same self-clearing idiom used elsewhere
+in this file for blanked rows.
+
+Pinned by Lua harness sections 19 (both 8- and 9-message popup counts), 27 (an addition confirming a
+volume turn never touches `masterMuted`), 52 (per-tick ceiling raised 11 → 12), and new sections 68-69
+(button SHORT/LONG behaviour and byte vectors, LED on/off bytes, the READ reply's optional `MUTE` byte).
