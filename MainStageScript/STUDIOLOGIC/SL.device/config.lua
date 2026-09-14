@@ -1218,15 +1218,21 @@ POPUP_KNOB_X = math.floor(POPUP_CENTER_X - BMP_ICON_W / 2) -- horizontally centr
 POPUP_KNOB_Y = POPUP_Y + 22 -- clears the border's inner top edge (+4) with headroom
 POPUP_LABEL_Y = POPUP_KNOB_Y + BMP_ICON_H + 12 -- below the ring, 12px gap under it
 
--- Knob icon's inner hole width - UNMEASURED, a first estimate pending a hardware look (see
--- docs/config-lua-history.md#value-moved-inside-the-ring-2026-09-14). Must stay narrower than the
--- hole: Write Text's background box fills its whole maxWidth, so a box wider than the hole paints
--- an opaque bar through the ring's sides.
-POPUP_VALUE_W = 45
+-- Knob icon's inner hole width - UNMEASURED, an eyeball fit against hardware pending a real
+-- measurement (see docs/config-lua-history.md#value-moved-inside-the-ring-2026-09-14). Must stay
+-- narrower than the hole: Write Text's background box fills its whole maxWidth, so a box wider
+-- than the hole paints an opaque bar through the ring's sides. Tightened from 45 (which left a
+-- visibly wide black bar) to 38 on hardware feedback; 3-digit values were confirmed to still fit
+-- at 45, so there is some headroom left at 38, but re-check on hardware if this clips.
+POPUP_VALUE_W = 38
 POPUP_VALUE_X = POPUP_KNOB_X + math.floor((BMP_ICON_W - POPUP_VALUE_W) / 2) -- centred on the icon
 -- SIZE_MEDIUM's glyph height, same ~27px estimate as above - centres the value vertically in the icon.
 POPUP_VALUE_GLYPH_H = 27
-POPUP_VALUE_Y = POPUP_KNOB_Y + math.floor((BMP_ICON_H - POPUP_VALUE_GLYPH_H) / 2)
+-- Eyeball correction: on hardware the value sits noticeably high in the ring relative to what
+-- POPUP_VALUE_GLYPH_H's centring predicts, suggesting the real glyph box differs from that
+-- estimate. Nudges the value down pending an actual measurement of both.
+POPUP_VALUE_Y_NUDGE = 5
+POPUP_VALUE_Y = POPUP_KNOB_Y + math.floor((BMP_ICON_H - POPUP_VALUE_GLYPH_H) / 2) + POPUP_VALUE_Y_NUDGE
 
 POPUP_BG_COLOR = { 0, 0, 0 }
 POPUP_KNOB_FG = { 255, 140, 0 } -- true orange, carried over from the old ring's lit-segment colour
@@ -1721,8 +1727,18 @@ end
 -- instead hand it the SAME regionId as the real ctx/zcnc draw earlier in this same paint's queue
 -- and coalesce into that entry, collapsing the one thing this mechanism must guarantee (a
 -- disposable duplicate strictly AFTER everything real).
+--
+-- While a popup is showing, displayMode is 'popup', not the mode it covers - the duplicate must
+-- match what's underneath (popupPreviousMode), or it paints the WRONG screen's line over the
+-- other one (see docs/config-lua-history.md#sacrificial-redraw-painted-the-list-line-under-a-
+-- popup-2026-09-14). Falls back to 'zoom' if popupPreviousMode is somehow unset, matching
+-- displayMode's own declared default.
 function queue_sacrificial_redraw()
-	if displayMode == 'zoom' then
+	local underlyingMode = displayMode
+	if displayMode == 'popup' then
+		underlyingMode = popupPreviousMode or 'zoom'
+	end
+	if underlyingMode == 'zoom' then
 		queue_message(msg_write_text(currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL,
 			120, 120, 120, 0, 0, 0))
 	else

@@ -1863,3 +1863,29 @@ rectangle on all four edges.
 interpolated figure `config.lua`'s `SIZE_MEDIUM` comment already flags). Settling both is a hardware
 task, not something the offline harness can prove - if a hardware look finds the number wrong, retune
 the constant, not the reasoning above it.
+
+## Sacrificial redraw painted the list line under a popup (2026-09-14)
+
+**Pre-existing bug, exposed (not introduced) by the popup-in-ring rework.** `queue_sacrificial_redraw()`
+branched directly on `displayMode`, so while a popup was showing (`displayMode == 'popup'`) it always
+took the else branch and queued the LIST screen's ctx-bar duplicate - even when the popup was covering
+the ZOOM screen. Confirmed on hardware: the patch list's top line appeared drawn over the zoom screen
+whenever a popup was up. Fixed by branching on `popupPreviousMode` (what the popup covers) whenever
+`displayMode == 'popup'`, falling back to `'zoom'` - matching `displayMode`'s own declared default - if
+`popupPreviousMode` is somehow unset. Pinned by Lua harness section 61, both directions plus the
+fallback.
+
+## Popup value tuned on hardware: position and box width (2026-09-14)
+
+Two eyeball corrections from a hardware run of the value-in-ring popup (the position and box-width
+numbers were flagged as unmeasured estimates above; this is that hardware feedback, not a
+measurement of either underlying value):
+
+- **Position:** the value sat too high in the ring. Added `POPUP_VALUE_Y_NUDGE = 5`, applied on top of
+  `POPUP_VALUE_Y`'s existing centring math, rather than changing what `POPUP_VALUE_GLYPH_H` means -
+  the high position suggests the real glyph box differs from that 27px estimate, but this nudge doesn't
+  resolve that, it just compensates for it. Containment (harness section 59) still holds with 9px of
+  slack at the bottom edge.
+- **Box width:** `POPUP_VALUE_W` tightened from 45 to 38 - at 45 the text background painted a visibly
+  wide black bar inside the ring. 3-digit values were confirmed fine at 45, so there's some headroom
+  left at 38, but this is untested on hardware for clipping at the new width.
