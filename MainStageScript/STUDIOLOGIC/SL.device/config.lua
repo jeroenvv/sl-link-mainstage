@@ -313,6 +313,13 @@ MAX_IDENTIFY_RESENDS = 3
 -- docs/config-lua-history.md#recovering-a-silently-dropped-active-session-bounded-2026-09-13.
 ACTIVE_QUERY_DROP_MS = 10000
 
+-- Inbound-path equivalent of ACTIVE_QUERY_DROP_MS above, counting inbound FRAMES instead of elapsed
+-- ms - see framesSinceQueryReply's declaration for why (ticks, and so ms accumulation, can be dead).
+-- Deliberately higher than TIMER_WATCHDOG_FORCE_FRAMES so the cheaper local timer restart gets a
+-- chance to fix a merely-dead clock before this drastic step (drop + re-identify) runs - see
+-- docs/config-lua-history.md#dead-clock-instrumentation-and-two-recovery-backstops-2026-09-14.
+ACTIVE_QUERY_DROP_FRAMES = 1200
+
 -- Minimum quiet period between recovery attempts, so a recovery that does not stick cannot
 -- re-trigger immediately and hammer the device - the suspected mechanism behind the freeze that got
 -- the previous, unbounded version of this detector removed. Longer than the worst-case identify
@@ -425,6 +432,11 @@ timerPending = false
 -- lost one-shot - see docs/config-lua-history.md#timer-watchdog-a-lost-one-shot-latches-timerpending-forever-2026-09-07.
 framesSinceTick = 0
 
+-- framesSinceTick value at which the rearm_timer() diagnostic last logged - lets it rate-limit itself
+-- to once at first crossing plus once per TIMER_WATCHDOG_DIAG_EVERY_FRAMES after, instead of once per
+-- frame. Reset to 0 wherever framesSinceTick itself resets.
+watchdogDiagLastFrames = 0
+
 -- Which interval the CURRENTLY OUTSTANDING one-shot (if timerPending is true) was armed at -
 -- KEEPALIVE_MS, FLUSH_SOON_MS, POPUP_TICK_MS, or REIDENTIFY_WAIT_MS. Set at every settriggertimer
 -- call site alongside timerPending. Read by request_quick_rearm() (below) to decide whether an
@@ -451,6 +463,13 @@ identifyFallback = false
 -- a tick COUNT - tick pacing is not constant, see timerArmedInterval's own comment above). Reset to
 -- 0 by any ID_QUERY reply (handle_sl_frame) and by entering STATE_ACTIVE (enter_active_session).
 activeMsSinceQueryReply = 0
+
+-- Frames elapsed since the last ID_QUERY reply while STATE_ACTIVE - the inbound-path counterpart to
+-- activeMsSinceQueryReply, reset at the same three sites (that ID_QUERY reply, enter_active_session,
+-- and a fired recovery attempt). A frame count is a coarse stand-in for elapsed time - it depends on
+-- how much else is arriving, not a clock - but it is the only thing check_inbound_recovery() can
+-- measure without a running tick. See ACTIVE_QUERY_DROP_FRAMES above.
+framesSinceQueryReply = 0
 
 -- Ms remaining before another recovery attempt is permitted (RECOVERY_COOLDOWN_MS above), and the
 -- count of consecutive attempts made with no intervening return to STATE_ACTIVE. recoveryGivenUp
@@ -599,6 +618,26 @@ FLUSH_SOON_MS = 35
 -- latches-timerpending-forever-2026-09-07 for the measured healthy/failure distribution behind
 -- both this value and that gate).
 TIMER_WATCHDOG_FRAMES = 20
+
+-- Second, ungated backstop: forces a re-arm at this frame count regardless of has_pending(), so a
+-- clock that dies while the queue is EMPTY (TIMER_WATCHDOG_FRAMES above only fires when there is
+-- queued output stuck behind it) is not stuck forever - see
+-- docs/config-lua-history.md#dead-clock-instrumentation-and-two-recovery-backstops-2026-09-14. Must
+-- stay well above anything ordinary play could reach before the next real tick fires on its own
+-- (KEEPALIVE_MS, independent of MIDI traffic) - a threshold reached during a still-healthy pending
+-- one-shot would revive rule 6 (re-arming cancels-and-restarts it, pushing the deadline back). 600 is
+-- sized against the same margin TIMER_WATCHDOG_FRAMES used relative to its own healthy/failure split,
+-- not measured hardware data for the empty-queue case (that data does not exist yet).
+TIMER_WATCHDOG_FORCE_FRAMES = 600
+
+-- Rate limit for the diagnostic log in rearm_timer() that fires while a one-shot looks lost but the
+-- watchdog above is declining to act (frame count past TIMER_WATCHDOG_FRAMES yet has_pending() is
+-- false, or still short of TIMER_WATCHDOG_FORCE_FRAMES) - the case that was previously silent and
+-- ambiguous. rearm_timer() runs on every inbound MIDI event including notes, so this must not log
+-- every frame; logs once at first crossing, then at most every 40 frames after (2x
+-- TIMER_WATCHDOG_FRAMES - frequent enough to bound a multi-second stall in a handful of lines,
+-- sparse enough that ordinary play never floods the log).
+TIMER_WATCHDOG_DIAG_EVERY_FRAMES = 40
 
 -- `regionId`, when given, is stashed as a NAMED field on the message table (Lua's `#`/ipairs only
 -- see the integer-keyed byte sequence, so this rides along for free without disturbing
@@ -1231,7 +1270,7 @@ POPUP_VALUE_GLYPH_H = 27
 -- Eyeball correction: on hardware the value sits noticeably high in the ring relative to what
 -- POPUP_VALUE_GLYPH_H's centring predicts, suggesting the real glyph box differs from that
 -- estimate. Nudges the value down pending an actual measurement of both.
-POPUP_VALUE_Y_NUDGE = 5
+POPUP_VALUE_Y_NUDGE = 8 -- was 5; still sat a touch high on hardware (2026-09-14)
 POPUP_VALUE_Y = POPUP_KNOB_Y + math.floor((BMP_ICON_H - POPUP_VALUE_GLYPH_H) / 2) + POPUP_VALUE_Y_NUDGE
 
 POPUP_BG_COLOR = { 0, 0, 0 }
@@ -1941,6 +1980,7 @@ function enter_active_session()
 	-- ACTIVE_QUERY_DROP_MS above) - it counts CONSECUTIVE attempts that never even got back here, not
 	-- how often the session drops.
 	activeMsSinceQueryReply = 0
+	framesSinceQueryReply = 0
 	recoveryAttempts = 0
 	queue_master_volume_read()
 	return true
@@ -2050,9 +2090,10 @@ function handle_sl_frame(e)
 		elseif func == ID_REJECTED then
 			handle_identification_rejected(e[9])
 		elseif func == ID_QUERY then
-			-- Any reply - whichever result byte - proves the query round-trip is alive, which is what the
-			-- recovery watchdog (ACTIVE_QUERY_DROP_MS, controller_timer_trigger) watches for.
+			-- Any reply - whichever result byte - proves the query round-trip is alive, which is what
+			-- both recovery watchdogs (ACTIVE_QUERY_DROP_MS/_FRAMES) watch for.
 			activeMsSinceQueryReply = 0
+			framesSinceQueryReply = 0
 			-- The reply to our own keepalive query. Receiving it is what re-arms the timer, but its result
 			-- byte is also the most reliable session signal we get - far more dependable than waiting for a
 			-- LOGIN CONFIRMATION, which the keyboard only sends on a *fresh* login and skips entirely if it
@@ -2256,6 +2297,39 @@ function controller_finalize()
 	return nil
 end
 
+-- Fires the recovery action itself (drop to STATE_IDLE, which controller_timer_trigger's STATE_IDLE
+-- branch turns into a re-identify) subject to the cooldown/attempt-cap bounds. Shared by the ms-based
+-- watchdog below (ticks still running) and check_inbound_recovery() (ticks dead - see
+-- ACTIVE_QUERY_DROP_FRAMES and docs/config-lua-history.md#dead-clock-instrumentation-and-two-recovery-backstops-2026-09-14),
+-- so the bounds apply no matter which one notices the drop first.
+function trigger_recovery(reason)
+	if recoveryGivenUp or recoveryCooldownMs > 0 then return end
+	recoveryAttempts = recoveryAttempts + 1
+	if recoveryAttempts > MAX_RECOVERY_ATTEMPTS then
+		recoveryGivenUp = true
+		slog('recovery watchdog: giving up after ' .. MAX_RECOVERY_ATTEMPTS ..
+			' failed attempts - not re-identifying')
+		return
+	end
+	slog('recovery watchdog: ' .. reason .. ' - re-identifying (attempt ' .. recoveryAttempts .. '/' ..
+		MAX_RECOVERY_ATTEMPTS .. ')')
+	recoveryCooldownMs = RECOVERY_COOLDOWN_MS
+	activeMsSinceQueryReply = 0
+	framesSinceQueryReply = 0
+	state = STATE_IDLE
+end
+
+-- Inbound-path counterpart to controller_timer_trigger's ms-based recovery watchdog below - reachable
+-- even when the session clock itself is dead, since it runs off inbound frames rather than ticks. See
+-- ACTIVE_QUERY_DROP_FRAMES's declaration for why frames, and why its threshold sits above
+-- TIMER_WATCHDOG_FORCE_FRAMES. Called from controller_midi_in on every inbound event.
+function check_inbound_recovery()
+	if state ~= STATE_ACTIVE then return end
+	if framesSinceQueryReply >= ACTIVE_QUERY_DROP_FRAMES then
+		trigger_recovery('no query reply for ' .. framesSinceQueryReply .. ' inbound frames')
+	end
+end
+
 -- Periodic. Re-arms itself so it keeps firing for as long as the device stays selected. This is the
 -- only clock the session has, so the keepalive cadence depends on it.
 timerTicks = 0
@@ -2270,6 +2344,7 @@ function controller_timer_trigger()
 	-- timer is already pending when none actually is.
 	timerPending = false
 	framesSinceTick = 0
+	watchdogDiagLastFrames = 0
 	settriggertimer(KEEPALIVE_MS)
 	timerTicks = timerTicks + 1
 
@@ -2309,20 +2384,8 @@ function controller_timer_trigger()
 	end
 	if state == STATE_ACTIVE then
 		activeMsSinceQueryReply = activeMsSinceQueryReply + timerArmedInterval
-		if activeMsSinceQueryReply >= ACTIVE_QUERY_DROP_MS and recoveryCooldownMs == 0
-			and not recoveryGivenUp then
-			recoveryAttempts = recoveryAttempts + 1
-			if recoveryAttempts > MAX_RECOVERY_ATTEMPTS then
-				recoveryGivenUp = true
-				slog('recovery watchdog: giving up after ' .. MAX_RECOVERY_ATTEMPTS ..
-					' failed attempts - not re-identifying')
-			else
-				slog('recovery watchdog: no query reply for ' .. activeMsSinceQueryReply ..
-					'ms - re-identifying (attempt ' .. recoveryAttempts .. '/' .. MAX_RECOVERY_ATTEMPTS .. ')')
-				recoveryCooldownMs = RECOVERY_COOLDOWN_MS
-				activeMsSinceQueryReply = 0
-				state = STATE_IDLE
-			end
+		if activeMsSinceQueryReply >= ACTIVE_QUERY_DROP_MS then
+			trigger_recovery('no query reply for ' .. activeMsSinceQueryReply .. 'ms')
 		end
 	end
 
@@ -2454,17 +2517,35 @@ function rearm_timer()
 		return
 	end
 	if timerPending then
-		if framesSinceTick < TIMER_WATCHDOG_FRAMES or not has_pending() then
+		local queueBacked = framesSinceTick >= TIMER_WATCHDOG_FRAMES and has_pending()
+		local forced = framesSinceTick >= TIMER_WATCHDOG_FORCE_FRAMES
+		if not queueBacked and not forced then
 			-- A one-shot is already outstanding; it will fire on its own. This is the notes-starve-the-clock
 			-- fix - see this function's comment above. The has_pending() check keeps the watchdog from
 			-- ever firing on idle play, where a slow tick isn't a dead clock - see the doc anchor above.
+			--
+			-- Diagnostic: past TIMER_WATCHDOG_FRAMES the clock already looks suspicious, but is being left
+			-- alone here (either still short of TIMER_WATCHDOG_FORCE_FRAMES, or has_pending() is false) -
+			-- log the inputs this decision is made from, rate-limited to first crossing plus once every
+			-- TIMER_WATCHDOG_DIAG_EVERY_FRAMES after, so the next capture can show WHY a stalled clock did
+			-- or didn't recover instead of just going silent. See that constant's declaration.
+			if framesSinceTick >= TIMER_WATCHDOG_FRAMES and
+				(framesSinceTick == TIMER_WATCHDOG_FRAMES or
+					framesSinceTick - watchdogDiagLastFrames >= TIMER_WATCHDOG_DIAG_EVERY_FRAMES) then
+				watchdogDiagLastFrames = framesSinceTick
+				slog('timer watchdog diag: timerPending=' .. tostring(timerPending) ..
+					' framesSinceTick=' .. framesSinceTick .. ' has_pending=' .. tostring(has_pending()) ..
+					' state=' .. state .. ' timerArmedInterval=' .. timerArmedInterval)
+			end
 			return
 		end
 		-- Watchdog: MainStage never delivered the outstanding one-shot, so nothing was ever going to
 		-- clear timerPending. Re-arm anyway - see
 		-- docs/config-lua-history.md#timer-watchdog-a-lost-one-shot-latches-timerpending-forever-2026-09-07.
-		slog('timer watchdog: one-shot lost after ' .. framesSinceTick .. ' frames - re-arming')
+		slog('timer watchdog: one-shot lost after ' .. framesSinceTick .. ' frames' ..
+			((forced and not queueBacked) and ' (forced - queue was empty)' or '') .. ' - re-arming')
 		framesSinceTick = 0
+		watchdogDiagLastFrames = 0
 	end
 	if state == STATE_LOGGED_OUT then
 		-- Pin the tick at KEEPALIVE_MS regardless of has_pending()/popupActive, so LOGOUT_SILENT_TICKS
@@ -2511,6 +2592,8 @@ end
 
 function controller_midi_in(midiEvent, portName)
 	framesSinceTick = framesSinceTick + 1
+	framesSinceQueryReply = framesSinceQueryReply + 1
+	check_inbound_recovery()
 
 	if midiEvent[0] == 0xF0 then
 		slog('<- SYSEX on port=' .. tostring(portName) .. ': ' .. dump_event(midiEvent))

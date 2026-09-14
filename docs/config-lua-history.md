@@ -1889,3 +1889,73 @@ measurement of either underlying value):
 - **Box width:** `POPUP_VALUE_W` tightened from 45 to 38 - at 45 the text background painted a visibly
   wide black bar inside the ring. 3-digit values were confirmed fine at 45, so there's some headroom
   left at 38, but this is untested on hardware for clipping at the new width.
+
+## Dead-clock instrumentation and two recovery backstops (2026-09-14)
+
+**Hardware evidence.** Turning encoders killed the session twice; the second time it never recovered.
+The capture shows: last `timer tick #239` (`pending=2 draining=true`); afterward 28 inbound SL frames
+arrived and were processed normally (CC batches still went out, so `controller_midi_in` was running and
+reaching `rearm_timer()`); no tick ever fired again, and neither the timer watchdog
+(`TIMER_WATCHDOG_FRAMES`) nor the recovery watchdog (`ACTIVE_QUERY_DROP_MS`) logged anything; the SL88
+eventually stopped sending entirely, having dropped the app for want of a keepalive.
+
+**Cause not determined.** Neither watchdog's decision inputs were logged, so the silence is ambiguous:
+each may have correctly declined to fire, or wrongly declined - there was no way to tell which from the
+capture alone. This work does not identify why MainStage stopped delivering the one-shot; it makes the
+*next* occurrence legible, and closes two structural gaps that stopped the existing defences from ever
+having a chance to run.
+
+**Structural flaw: the recovery watchdog could not run in the case it was built for.**
+`ACTIVE_QUERY_DROP_MS` recovery (see "Recovering a silently dropped active session" above) lived
+entirely inside `controller_timer_trigger`, accumulating *elapsed ms* once per tick. A dead session
+clock is precisely the condition it exists to recover from, and precisely the condition under which
+that accumulation cannot advance - consistent with it never having fired across three prior hardware
+sessions despite genuine drops (see "Recovery did not fire" and "v2.0.0 verified on hardware" above).
+
+**Fix 1: instrument the decision.** `rearm_timer()`'s `timerPending` branch now logs
+`timerPending`/`framesSinceTick`/`has_pending()`/`state`/`timerArmedInterval` whenever
+`framesSinceTick` has crossed `TIMER_WATCHDOG_FRAMES` but the watchdog is declining to act (short of
+`TIMER_WATCHDOG_FORCE_FRAMES`, or `has_pending()` is false). Rate-limited via
+`TIMER_WATCHDOG_DIAG_EVERY_FRAMES = 40` (2x `TIMER_WATCHDOG_FRAMES`) to once at first crossing plus at
+most once every 40 frames after - this runs on every inbound MIDI event including notes, so logging it
+per-frame would flood the log the same way an earlier frame-count sweep already warned against.
+
+**Fix 2: a second, ungated timer backstop.** `TIMER_WATCHDOG_FRAMES`'s existing `has_pending()` guard is
+deliberate (see "Timer watchdog" above) - it is what keeps a long run of uncounted note traffic from
+ever tripping the watchdog during a legitimately-outstanding one-shot. But it also means a clock that
+dies while the display queue is *empty* was never recovered, silently and permanently - exactly what
+the hardware capture shows once the 28 frames' worth of CC/note traffic drained whatever was left in
+`pendingMessages`. `TIMER_WATCHDOG_FORCE_FRAMES = 600` forces a re-arm regardless of `has_pending()`.
+Sized the same way `TIMER_WATCHDOG_FRAMES` was (comfortably above anything a real one-shot's own
+`KEEPALIVE_MS`/`FLUSH_SOON_MS` cadence should ever let frames reach before firing on its own), but
+without hardware data for the empty-queue case specifically - a real one-shot firing does not depend on
+frame counts at all, so the only way this backstop mis-fires is if ordinary play manages to jam more
+than 600 inbound events into a single outstanding interval, which no captured session has shown.
+
+**Fix 3: the recovery trigger, reachable from the inbound path.** The re-identify action
+(`recoveryAttempts`/`recoveryCooldownMs`/`recoveryGivenUp` bookkeeping, previously inline in
+`controller_timer_trigger`) is now `trigger_recovery(reason)`, called from two places: the original
+ms-based check (unchanged bounds - `ACTIVE_QUERY_DROP_MS` 10s, `RECOVERY_COOLDOWN_MS` 15s,
+`MAX_RECOVERY_ATTEMPTS` 3), and a new `check_inbound_recovery()` called from `controller_midi_in`. The
+inbound path cannot measure elapsed ms (no ticks means no clock), so it counts inbound *frames* instead
+via `framesSinceQueryReply`, reset at the same three sites as `activeMsSinceQueryReply` (an ID_QUERY
+reply, `enter_active_session`, and a fired recovery attempt). This is a coarse proxy, not a duration -
+it under-counts a drop during quiet play and over-counts during a burst - which is why
+`ACTIVE_QUERY_DROP_FRAMES = 1200` is set well above `TIMER_WATCHDOG_FORCE_FRAMES`: the cheap,
+non-disruptive clock restart (fix 2) gets first chance to fix a merely-dead local timer before this
+more drastic step (drop to `STATE_IDLE`, forcing a re-identify) runs. Both paths share
+`trigger_recovery()`, so the cooldown and attempt cap bound them identically regardless of which one
+notices the drop first.
+
+**Explicitly not a proven fix.** All three changes are instrumentation and structural repair: they make
+the failure observable and give the state machine a path to recover that previously did not exist. None
+of them establishes *why* MainStage stopped delivering the one-shot in the first place. Treat the next
+hardware capture's watchdog-diagnostic lines as the next real evidence, not this entry.
+
+Pinned by Lua harness sections 62-64: the diagnostic's rate limit, the force backstop firing only at
+its own (much higher) threshold while leaving the `has_pending()`-backed path unchanged, and the
+inbound recovery path firing/cooldown/cap - all reached via `controller_midi_in` alone, with
+`controller_timer_trigger()` never called, to prove they do not depend on a working tick.
+
+Unrelated, same session: `POPUP_VALUE_Y_NUDGE` raised from 5 to 8 - still sat a touch high on hardware.
+Containment (harness section 59) holds with 6px of slack at the bottom edge.
