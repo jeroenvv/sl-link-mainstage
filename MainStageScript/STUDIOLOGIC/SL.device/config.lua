@@ -1200,7 +1200,7 @@ ROW_COLORS = {
 POPUP_TICK_MS = 1000
 
 POPUP_W = 280
-POPUP_H = 200
+POPUP_H = 140 -- shrunk from 200: value moved inside the ring, freeing the row it used to occupy below
 POPUP_X = math.floor((SCREEN_WIDTH - POPUP_W) / 2)
 POPUP_Y = math.floor((SCREEN_HEIGHT - POPUP_H) / 2)
 POPUP_PAD = 10 -- inset for the label/value text, so neither touches the panel's side edges
@@ -1210,20 +1210,23 @@ POPUP_CONTENT_W = POPUP_W - 2 * POPUP_PAD
 
 POPUP_CENTER_X = POPUP_X + POPUP_W / 2 -- the panel is itself screen-centred, so this also centres on SCREEN_WIDTH
 
--- Three non-overlapping vertical bands (label, knob, value - top to bottom), all inside the
--- panel's border-inset content area (POPUP_Y+POPUP_BORDER_THICKNESS .. POPUP_Y+POPUP_H-
--- POPUP_BORDER_THICKNESS). Offsets are bare numbers tied to POPUP_Y (same idiom the old ring
--- geometry used), sized against SIZE_MEDIUM's ~27px glyph height (see SIZE_MEDIUM's declaration
--- comment above) and the Knob bitmap's fixed BMP_ICON_W x BMP_ICON_H size - not eyeballed.
-POPUP_LABEL_Y = POPUP_Y + 20 -- clears the border's inner top edge (+4) with headroom for the label
+-- Two non-overlapping vertical bands (knob, then label - top to bottom); the value is not a third
+-- band, it is drawn INSIDE the knob's band (see the NON-OVERLAP RULE escape hatch on
+-- draw_popup_knob() below). Offsets sized against SIZE_MEDIUM's ~27px glyph height (see SIZE_MEDIUM's
+-- declaration comment above) and the Knob bitmap's fixed BMP_ICON_W x BMP_ICON_H size.
 POPUP_KNOB_X = math.floor(POPUP_CENTER_X - BMP_ICON_W / 2) -- horizontally centred (screen-centred, see above); floored - BMP_ICON_W is odd, so the raw centring math lands on a half-pixel
-POPUP_KNOB_Y = POPUP_Y + 70 -- clears the label band (20 + ~27 tall = 47) with a comfortable gap
-POPUP_VALUE_Y = POPUP_KNOB_Y + BMP_ICON_H + 16 -- BELOW the dial, not inside it - 16px gap under it
+POPUP_KNOB_Y = POPUP_Y + 22 -- clears the border's inner top edge (+4) with headroom
+POPUP_LABEL_Y = POPUP_KNOB_Y + BMP_ICON_H + 12 -- below the ring, 12px gap under it
 
--- Value shares the label's box: same width/x as the label, both centred - a 61x54 icon can't host
--- a legible SIZE_BIG number, so unlike the old ring the value no longer lives inside the dial.
-POPUP_VALUE_X = POPUP_CONTENT_X
-POPUP_VALUE_W = POPUP_CONTENT_W
+-- Knob icon's inner hole width - UNMEASURED, a first estimate pending a hardware look (see
+-- docs/config-lua-history.md#value-moved-inside-the-ring-2026-09-14). Must stay narrower than the
+-- hole: Write Text's background box fills its whole maxWidth, so a box wider than the hole paints
+-- an opaque bar through the ring's sides.
+POPUP_VALUE_W = 45
+POPUP_VALUE_X = POPUP_KNOB_X + math.floor((BMP_ICON_W - POPUP_VALUE_W) / 2) -- centred on the icon
+-- SIZE_MEDIUM's glyph height, same ~27px estimate as above - centres the value vertically in the icon.
+POPUP_VALUE_GLYPH_H = 27
+POPUP_VALUE_Y = POPUP_KNOB_Y + math.floor((BMP_ICON_H - POPUP_VALUE_GLYPH_H) / 2)
 
 POPUP_BG_COLOR = { 0, 0, 0 }
 POPUP_KNOB_FG = { 255, 140, 0 } -- true orange, carried over from the old ring's lit-segment colour
@@ -1295,7 +1298,8 @@ end
 -- truncation never triggers. A non-zero maxWidth also means Write Text's own background box makes
 -- this self-clearing (see MARK: - Per-region memoization's non-overlap rule above) - no erase rect
 -- needed. Plain ASCII ' - ' separator, not a middle dot/en dash: the SLMK2 font only covers 0x20-0x80
--- (see append_text's clamp).
+-- (see append_text's clamp). Below the ring now, not above it - see docs/config-lua-history.md#value-
+-- moved-inside-the-ring-2026-09-14.
 function draw_popup_label(name, ccNumber)
 	-- ccNumber is nil for controls with no CC (Master Volume/EID_A) - show just the name.
 	local label = ccNumber and (name .. ' - CC ' .. ccNumber) or name
@@ -1309,6 +1313,8 @@ end
 -- value may be nil - shown as '--', never as a number (defensive; no current caller passes nil
 -- since MVOL_SEED_DEFAULT replaced the placeholder - see
 -- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12).
+-- Draws INSIDE draw_popup_knob()'s rect - POPUP_VALUE_W is kept narrower than the ring's inner hole
+-- (see its declaration above) so Write Text's opaque background box never crosses into the ring.
 function draw_popup_value(value)
 	local text = value and tostring(value) or '--'
 	draw_text('popupValue', text, POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
@@ -1325,8 +1331,19 @@ function popup_knob_icon(value)
 	return math.floor(value * (BMP_KNOB_LEVELS - 1) / popupMax)
 end
 
+-- NON-OVERLAP RULE escape hatch (see MARK: - Per-region memoization above): popupValue draws inside
+-- this bitmap's rect, and the icon has only 13 fill levels against 128 possible values, so a knob
+-- redraw is not always paired with a value change - clear popupValue's memo so a knob redraw (which
+-- repaints the whole icon, wiping the centre) always forces the value to resend on the same tick.
+-- Compares just the icon index (draw_bitmap's tuple field 4) since it is the only field that varies
+-- at this call site. See docs/config-lua-history.md#value-moved-inside-the-ring-2026-09-14.
 function draw_popup_knob(value)
-	draw_bitmap('popupKnob', POPUP_KNOB_X, POPUP_KNOB_Y, BMP_GROUP_KNOB, popup_knob_icon(value),
+	local icon = popup_knob_icon(value)
+	local prior = drawn['popupKnob']
+	if prior == nil or prior[4] ~= icon then
+		drawn['popupValue'] = nil
+	end
+	draw_bitmap('popupKnob', POPUP_KNOB_X, POPUP_KNOB_Y, BMP_GROUP_KNOB, icon,
 		POPUP_KNOB_FG[1], POPUP_KNOB_FG[2], POPUP_KNOB_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end

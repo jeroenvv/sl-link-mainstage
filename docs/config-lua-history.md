@@ -1825,3 +1825,41 @@ was accepted:
 - **The residual volume stepping on fast encoder turns.** Writes are evenly paced at one per tick, so
   the remaining coarseness is the ~35ms tick rate, not spacing. Improving it means going below the
   `FLUSH_SOON_MS` floor that previously caused display drop-outs.
+
+## Value moved inside the ring (2026-09-14)
+
+The popup's value moved from a band **below** the Knob bitmap to **inside** the ring, the label moved
+below the ring, and the panel shrunk (`POPUP_H` 200 → 140) to reclaim the freed row. Shared by both
+`show_popup()` and `show_master_volume_popup()` via the one `paint_popup_screen()` component.
+
+**Supersedes the 2026-08-29 reasoning** behind the old layout
+([the Knob bitmap replaces the ring](#the-knob-bitmap-replaces-the-ring-2026-08-29)), which put the
+value below on the judgement that "a 61x54 icon cannot host a legible `SIZE_BIG` number." That call only
+ever ruled out `SIZE_BIG` - it was never evidence against `SIZE_MEDIUM`, which the popup actually uses
+and which is what now sits inside the ring.
+
+**The non-overlap trap.** `popupValue` now sits inside `popupKnob`'s rectangle, breaking the NON-OVERLAP
+RULE (`config.lua`, MARK: - Per-region memoization) on purpose. The Knob bitmap fully replaces the
+pixels beneath it (no alpha), and it only has 13 fill levels against 128 possible values - so a knob
+redraw is a much rarer event than a value change, meaning **every knob redraw is a value change, but not
+every value change is a knob redraw.** Left alone, a knob repaint at an unchanged value's text would
+wipe the number from the centre of the ring and leave it blank until the value next changed. `config.lua`'s
+`draw_popup_knob()` compares the icon it is about to draw against the last one it actually drew
+(`drawn['popupKnob'][4]`, the icon field of `draw_bitmap`'s own memo tuple) and clears
+`drawn['popupValue']` whenever they differ - the same "clear the overlapping ids' memos together"
+escape hatch used by `draw_popup_erase()`. `paint_popup_screen()` keeps queuing the knob before the
+value, so the corrective resend lands in the same flush burst. Lua harness section 60 pins this
+directly: draws the knob at same-icon and different-icon values and asserts the value's memo only
+clears on the icon change.
+
+**The text-background trap.** Write Text's background box fills its whole `maxWidth`, not just the
+glyphs (confirmed on hardware). The value's box (`POPUP_VALUE_W`) is a new constant, deliberately
+narrower than the ring's hole rather than reusing `POPUP_CONTENT_W`, so it can't paint an opaque bar
+through the ring's sides. Harness section 59 asserts the value's box lies entirely within the knob's
+rectangle on all four edges.
+
+**Two numbers are still estimates, not measurements**, same as before: the Knob icon's inner hole width
+(`POPUP_VALUE_W = 45`) and `SIZE_MEDIUM`'s glyph height (`POPUP_VALUE_GLYPH_H = 27`, the same
+interpolated figure `config.lua`'s `SIZE_MEDIUM` comment already flags). Settling both is a hardware
+task, not something the offline harness can prove - if a hardware look finds the number wrong, retune
+the constant, not the reasoning above it.
