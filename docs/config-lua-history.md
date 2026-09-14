@@ -2090,3 +2090,31 @@ reset write, and separately issues the repeated unmute as an ordinary mute-only 
 Pinned by Lua harness section 12b (`queue_repeated` produces N separate, non-coalesced entries) and
 the rewritten sections 68-69 (mute/LED assertions now expect `MUTE_LED_REPEATS` sends, and the LONG
 reset write is checked for the plain 3-byte shape).
+
+### A-button mute verified on hardware, and a follow-up (2026-09-14)
+
+Verified by Jeroen on the SL88 after the repeat workaround landed: **short press mutes and unmutes; the
+A encoder's ring lights when unmuted and goes dark when muted; the screen is not blanked; long press
+resets the volume to 60 and unmutes; and turning the encoder while muted leaves it muted.**
+
+Two corrections to earlier conclusions in this file:
+
+- **The LED message never blanked the display.** It is spec-correct, `WLID 0x0A` is confirmed as the A
+  encoder's ring, and the probe lit both it and the Zone 1 LED with an on-screen marker visible
+  throughout. The single MainStage run that blanked had four instances with two colliding on id `4B`,
+  and the SL88 discards draws from an app that is not selected — a far likelier cause than the LED. The
+  earlier "the LED message blanks the display" claim rested on one run each way.
+- **The firmware does not deviate on the MUTE byte.** Every mute form works from the probe, including
+  `07 01 <vol> <mute>` and the `VOL > 0x64` mute-only form, and including when sent paired with an
+  Identification Query in `flush_pending()`'s exact shape. The bytes and the pairing are both exonerated.
+
+**OPEN — not all volume changes are carried out.** Jeroen reports that while turning the A encoder, some
+volume steps do not take effect. This is the same family as the mute-write drops: single messages from
+MainStage go missing, and the volume path has been masking it by streaming dozens of writes per gesture.
+The repeat workaround (`MUTE_LED_REPEATS = 3`) applies only to mute and the LED, not to volume writes —
+which are additionally throttled to one per tick, so a dropped one is simply a step that never happened.
+
+Worth testing next: whether the dropped volume writes correlate with queue depth (the captured mute
+failure had `queueDepthAfter=11`), and whether repeating or un-throttling volume writes closes the gap
+without reintroducing the flicker the throttle was added to fix. **The underlying cause — why MainStage's
+single messages are dropped at all, when byte-identical ones from a probe are not — remains unexplained.**
