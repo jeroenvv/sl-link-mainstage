@@ -2118,3 +2118,12 @@ Worth testing next: whether the dropped volume writes correlate with queue depth
 failure had `queueDepthAfter=11`), and whether repeating or un-throttling volume writes closes the gap
 without reintroducing the flicker the throttle was added to fix. **The underlying cause — why MainStage's
 single messages are dropped at all, when byte-identical ones from a probe are not — remains unexplained.**
+
+**Follow-up, same session: confirm the settled volume lands.** Beyond the dropped intermediate steps
+above, the *final* value of a gesture must be guaranteed to reach the device — a dropped mid-gesture
+write is corrected milliseconds later, but a dropped final write leaves the popup and the audio board
+permanently disagreeing, silently. Options, in rough order of cost: repeat the last write once motion
+settles (the mute/LED workaround, applied at gesture end rather than per tick); or issue a READ after the
+gesture settles and re-send if the reported VOL differs from what was intended — the read reply is the
+only evidence the device actually took the value. Note the read is answered reliably from a probe, and
+was answered from MainStage in the 2026-09-13 runs, so this is testable.
