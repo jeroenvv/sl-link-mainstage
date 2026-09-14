@@ -1959,3 +1959,27 @@ inbound recovery path firing/cooldown/cap - all reached via `controller_midi_in`
 
 Unrelated, same session: `POPUP_VALUE_Y_NUDGE` raised from 5 to 8 - still sat a touch high on hardware.
 Containment (harness section 59) holds with 6px of slack at the bottom edge.
+
+## Popup value repaint throttled (2026-09-14)
+
+**Measured on hardware:** during one encoder sweep, `popupValue` flushed 399 times against
+`popupKnob`'s 76. Write Text has no compositing to fall back on - it blanks its whole background box
+before painting glyphs - so a redraw on essentially every tick (~28/s at `FLUSH_SOON_MS`) reads as a
+visible blink. The ring flickers far less because it only has 13 fill levels, so it redraws about a
+fifth as often.
+
+**Fix:** `queue_popup_value()` throttles the value's redraw to at most once every
+`POPUP_VALUE_THROTTLE_TICKS` (3) ticks - ~10/s, chosen as a trade against coarser value increments
+during a fast sweep. It bypasses the throttle whenever `drawn['popupValue']` is `nil`, which is also
+exactly the signal `draw_popup_knob()` sets when an icon change wipes the ring's centre - so that
+invalidation still wins immediately, on the same tick, regardless of the throttle window.
+
+**Staleness guarantee:** a throttled call sets `popupValueDirty = true` instead of drawing.
+`flush_popup_value_if_due()`, called every tick from `controller_timer_trigger`, drains that flag once
+`POPUP_VALUE_THROTTLE_TICKS` have elapsed since the last actual paint - so once encoder motion stops
+and no further `queue_popup_value()` calls arrive, the next few ordinary keepalive ticks still paint
+the settled value rather than leaving it one step behind.
+
+Pinned by Lua harness sections 65-66: throttled cadence during continuous motion, the settled value
+painted rather than left stale, the knob invalidation forcing the value through despite an unelapsed
+throttle window, and `draw_popup_knob()`'s own repaint rate (memoized purely by icon) left unchanged.
