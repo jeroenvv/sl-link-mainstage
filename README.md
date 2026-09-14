@@ -24,7 +24,7 @@ MainStage's stdout — turn it back off afterward, since it measurably slows Mai
 
 ## Versioning
 
-Current version: **1.0.0** (see the repo-root `VERSION` file; also stamped into
+Current version: **2.1.0** (see the repo-root `VERSION` file; also stamped into
 `config.lua`'s `SCRIPT_VERSION` and printed on every `controller_initialize`, so `/tmp/lua.log`
 shows which build MainStage actually has loaded). Semantic versioning:
 
