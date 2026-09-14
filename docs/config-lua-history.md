@@ -1809,3 +1809,19 @@ duplicate entries are transient. The "elect one active instance, others stay pas
 `portName` discriminator, and CLAUDE.md's standing "decide whether the second instance should stay
 passive" question) is therefore NOT being implemented — revisit only if duplicate entries or contention
 become a real problem in use.
+
+## v2.0.0 verified on hardware (2026-09-14)
+
+The released v2.0.0 build was installed from `main` and exercised on the SL88 by Jeroen: **works fine.**
+This is the first release of the relative-CC behaviour, the identification-resend fix, per-instance
+DeviceIDs and log tags, and Master Volume driven from the A encoder.
+
+Two things remain untested rather than proven, and should not be read as working because the release
+was accepted:
+
+- **The bounded session-recovery watchdog** (`ACTIVE_QUERY_DROP_MS` / `RECOVERY_COOLDOWN_MS` /
+  `MAX_RECOVERY_ATTEMPTS`). It has still never fired. The run that exercised a genuine drop recovered
+  through MainStage's own re-initialisation churn instead, before the 10s threshold elapsed.
+- **The residual volume stepping on fast encoder turns.** Writes are evenly paced at one per tick, so
+  the remaining coarseness is the ~35ms tick rate, not spacing. Improving it means going below the
+  `FLUSH_SOON_MS` floor that previously caused display drop-outs.
