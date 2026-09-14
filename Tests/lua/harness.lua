@@ -549,14 +549,13 @@ end
 -- an earlier entry for the same region. See queue_sacrificial_redraw's
 -- comment.
 --
--- queue_sacrificial_redraw has TWO branches - displayMode == 'zoom' draws the
--- concert line, and the else branch (list, popup - set_display_mode's mode
--- check confirms both reach this same function) draws the ctx bar via
--- ctx_text() - so this must be checked under every mode that reaches it, not
--- just zoom, or a regionId regression in the else branch goes uncaught. A
--- small synthetic listRows/cursorIndex is set up once so ctx_text()'s
--- dependency chain (cursor_set_label(), which reads listRows/cursorIndex)
--- produces a real string for the list/popup branch.
+-- queue_sacrificial_redraw has TWO branches - the underlying mode == 'zoom' draws the concert
+-- line, else it draws the ctx bar via ctx_text(). For displayMode == 'popup' the underlying mode
+-- is popupPreviousMode, not 'popup' itself (see fix in MARK: - 61 below) - pinned here to 'list'
+-- so this test exercises the else branch deterministically regardless of leftover global state. A
+-- small synthetic listRows/cursorIndex is set up once so ctx_text()'s dependency chain
+-- (cursor_set_label(), which reads listRows/cursorIndex) produces a real string for the list/popup
+-- branch.
 do
 	listRows = {
 		{ label = 'Test Set', isPatch = false },
@@ -564,6 +563,8 @@ do
 	}
 	cursorIndex = 1
 	currentConcert = 'Test Concert'
+	local savedPopupPreviousMode = popupPreviousMode
+	popupPreviousMode = 'list'
 
 	for _, mode in ipairs({ 'zoom', 'list', 'popup' }) do
 		pendingMessages = {}
@@ -576,6 +577,8 @@ do
 			last ~= nil and last.regionId == nil
 		)
 	end
+
+	popupPreviousMode = savedPopupPreviousMode
 end
 
 -- MARK: - 15. controller_finalize sends nothing and still tears down
@@ -2771,6 +2774,69 @@ do
 	check('popupValue resends after the knob icon returns to 0', #pendingMessages == 1)
 
 	drawn, pendingMessages, popupMax = savedDrawn, savedPending, savedMax
+end
+
+-- MARK: - 61. Sacrificial redraw under a popup matches what the popup covers, not 'popup' itself
+--
+-- BUG (docs/config-lua-history.md#sacrificial-redraw-painted-the-list-line-under-a-popup-2026-09-
+-- 14): queue_sacrificial_redraw() used to branch on displayMode directly, so while a popup was
+-- showing (displayMode == 'popup') it always took the else branch and queued the LIST screen's ctx
+-- bar - even when the popup was covering the ZOOM screen. Confirmed on hardware: the patch list's
+-- top line appeared over the zoom screen whenever a popup was up. The fix branches on
+-- popupPreviousMode (what the popup covers) whenever displayMode == 'popup'.
+do
+	local savedDisplayMode, savedPopupPreviousMode, savedListRows, savedCursorIndex, savedConcert =
+		displayMode, popupPreviousMode, listRows, cursorIndex, currentConcert
+	listRows = {
+		{ label = 'Test Set', isPatch = false },
+		{ label = 'Test Patch', isPatch = true, setIndex = 0, patchIndex = 0 },
+	}
+	cursorIndex = 1
+	currentConcert = 'Test Concert'
+	displayMode = 'popup'
+
+	-- (a) Popup covering the ZOOM screen: the duplicate must be the zoom concert line, byte-for-byte.
+	popupPreviousMode = 'zoom'
+	pendingMessages = {}
+	queue_sacrificial_redraw()
+	check('popup-over-zoom queues exactly one duplicate', #pendingMessages == 1)
+	if #pendingMessages == 1 then
+		checkHex(
+			'popup-over-zoom sacrificial redraw matches the ZOOM duplicate, not the list one',
+			pendingMessages[1],
+			hex(msg_write_text(currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0))
+		)
+	end
+
+	-- (b) Popup covering the LIST screen: the duplicate must be the ctx bar, byte-for-byte.
+	popupPreviousMode = 'list'
+	pendingMessages = {}
+	queue_sacrificial_redraw()
+	check('popup-over-list queues exactly one duplicate', #pendingMessages == 1)
+	if #pendingMessages == 1 then
+		checkHex(
+			'popup-over-list sacrificial redraw matches the LIST duplicate, not the zoom one',
+			pendingMessages[1],
+			hex(msg_write_text(ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL, 120, 120, 120, 0, 0, 0))
+		)
+	end
+
+	-- (c) Defensive fallback: if popupPreviousMode is somehow unset, default to the zoom duplicate
+	-- (matching displayMode's own declared default), not a crash and not the list duplicate.
+	popupPreviousMode = nil
+	pendingMessages = {}
+	queue_sacrificial_redraw()
+	check('popup with unset popupPreviousMode queues exactly one duplicate', #pendingMessages == 1)
+	if #pendingMessages == 1 then
+		checkHex(
+			'popup with unset popupPreviousMode falls back to the ZOOM duplicate',
+			pendingMessages[1],
+			hex(msg_write_text(currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0))
+		)
+	end
+
+	displayMode, popupPreviousMode, listRows, cursorIndex, currentConcert =
+		savedDisplayMode, savedPopupPreviousMode, savedListRows, savedCursorIndex, savedConcert
 end
 
 -- MARK: - Summary
