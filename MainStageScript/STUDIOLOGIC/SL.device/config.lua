@@ -1294,6 +1294,18 @@ popupMax = 127 -- popupValue's scale for popup_knob_icon's ring fill; 127 for CC
 popupPreviousMode = nil
 popupLastActivityIdleTick = 0
 
+-- Repaint popupValue at most every Nth tick, not every tick - an opaque Write Text redraw on every
+-- tick (~28/s while draining, see FLUSH_SOON_MS) reads as flicker on a device with no compositing;
+-- measured 399 value repaints against the ring's 76 over one sweep. 3 -> ~10/s. See
+-- docs/config-lua-history.md#popup-value-repaint-throttled-2026-09-14.
+POPUP_VALUE_THROTTLE_TICKS = 3
+-- timerTicks value popupValue was last actually redrawn; -1 so the first paint is never throttled.
+popupValueLastPaintTick = -1
+-- True when popupValue changed but the throttle withheld the redraw - drained by
+-- flush_popup_value_if_due() once POPUP_VALUE_THROTTLE_TICKS have elapsed, so a settled value can
+-- never stay stale.
+popupValueDirty = false
+
 -- Border: same 'four non-overlapping edge-strip rects' idiom as the Swift companion app's
 -- zone-selection outline (see the demo screen on archive/swift-app) - top/bottom span the panel's
 -- full width, left/right span only the strip between them, so no two edges cover the same pixel. The
@@ -1393,6 +1405,32 @@ function draw_popup_knob(value)
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
+-- Throttled entry point for popupValue - call this instead of draw_popup_value() directly (see
+-- POPUP_VALUE_THROTTLE_TICKS). `drawn['popupValue'] == nil` means either the very first paint or
+-- draw_popup_knob() just invalidated it for an icon change; either way that must win over the
+-- throttle immediately, or the value stays blank/stale until the throttle next allows a repaint.
+function queue_popup_value()
+	local forced = drawn['popupValue'] == nil
+	if forced or timerTicks - popupValueLastPaintTick >= POPUP_VALUE_THROTTLE_TICKS then
+		popupValueLastPaintTick = timerTicks
+		popupValueDirty = false
+		draw_popup_value(popupValue)
+	else
+		popupValueDirty = true
+	end
+end
+
+-- Called every timer tick (controller_timer_trigger) while the popup is active - drains a
+-- throttle-withheld redraw once POPUP_VALUE_THROTTLE_TICKS have elapsed, so a value that settles
+-- mid-throttle still ends up painted rather than staying one step behind.
+function flush_popup_value_if_due()
+	if not popupActive or not popupValueDirty then return end
+	if timerTicks - popupValueLastPaintTick < POPUP_VALUE_THROTTLE_TICKS then return end
+	popupValueLastPaintTick = timerTicks
+	popupValueDirty = false
+	draw_popup_value(popupValue)
+end
+
 -- The popup's own content-painting function, in the same family as paint_zoom_screen()/
 -- paint_list_screen() - dispatched to from enter_popup_mode() (once per popup 'session') and from
 -- paint_screen() (an ordinary content-driven repaint that lands while
@@ -1406,7 +1444,7 @@ function paint_popup_screen()
 	draw_popup_border()
 	draw_popup_label(popupControlName, popupCcNumber)
 	draw_popup_knob(popupValue)
-	draw_popup_value(popupValue)
+	queue_popup_value()
 end
 
 -- Call from handle_sl_frame's IT_ENCODER branch, right after encoderValue[eid] is updated, for
@@ -2366,6 +2404,9 @@ function controller_timer_trigger()
 	local draining = has_pending()
 	if not draining then idleTicks = idleTicks + 1 end
 	check_popup_dismiss()
+	-- Drain a throttle-withheld popupValue redraw once it's due (see POPUP_VALUE_THROTTLE_TICKS) -
+	-- this is what guarantees a settled value is never left stale.
+	flush_popup_value_if_due()
 	-- `tick=`/`pending=`/`draining=` here let a captured hardware log be read as 'N drain ticks
 	-- elapsed while M messages went out' - pair against the `tick=` field flush_pending's own FLUSH
 	-- print carries.

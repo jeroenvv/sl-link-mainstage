@@ -3059,6 +3059,219 @@ do
 		savedGivenUp, savedTimerPending, savedFramesSinceTick
 end
 
+-- MARK: - 65. Popup value throttle: at most every POPUP_VALUE_THROTTLE_TICKS ticks, never stale,
+-- and the knob's own invalidation still wins
+--
+-- Flicker measurement (399 popupValue repaints vs the ring's 76, hardware capture): an opaque Write
+-- Text redraw on essentially every tick reads as a visible blink on a device with no compositing.
+-- queue_popup_value()/flush_popup_value_if_due() throttle popupValue's redraw to at most once every
+-- POPUP_VALUE_THROTTLE_TICKS ticks - see docs/config-lua-history.md#popup-value-repaint-throttled-
+-- 2026-09-14. These tests drive the two functions directly against a synthetic timerTicks sequence,
+-- the same way section 60 drives draw_popup_knob() directly.
+do
+	local savedDrawn, savedPending, savedActive, savedValue, savedMax, savedTicks,
+		savedLastPaint, savedDirty =
+		drawn, pendingMessages, popupActive, popupValue, popupMax, timerTicks,
+		popupValueLastPaintTick, popupValueDirty
+
+	popupActive = true
+	popupMax = 127
+
+	-- (a) At most once every POPUP_VALUE_THROTTLE_TICKS ticks during continuous motion: the value
+	-- changes on EVERY tick (as a fast encoder sweep does), but only 1 draw in 3 must reach the wire.
+	drawn, pendingMessages = {}, {}
+	timerTicks = 1000
+	popupValue = 10
+	queue_popup_value() -- first call always paints (drawn['popupValue'] starts nil)
+	check('popup value throttle: the first paint is never throttled', #pendingMessages == 1)
+
+	local drawsInWindow = 0
+	for i = 1, 9 do
+		pendingMessages = {}
+		timerTicks = 1000 + i
+		popupValue = 10 + i -- genuinely new text every tick, so a suppressed draw is a real suppression
+		queue_popup_value()
+		drawsInWindow = drawsInWindow + #pendingMessages
+	end
+	check('popup value throttle: exactly 1 draw per 3 ticks over 9 ticks of continuous motion (3, not 9)',
+		drawsInWindow == 3)
+
+	-- (b) The final value is painted once motion stops, not left stale: a throttled change must
+	-- still reach the wire once POPUP_VALUE_THROTTLE_TICKS have elapsed with no further motion.
+	drawn, pendingMessages = {}, {}
+	timerTicks = 2000
+	popupValue = 42
+	queue_popup_value()
+	pendingMessages = {}
+
+	timerTicks = 2001
+	popupValue = 43 -- the settled value - no further changes after this
+	queue_popup_value()
+	check('popup value throttle: a change 1 tick after the last paint is withheld, not sent',
+		#pendingMessages == 0 and popupValueDirty == true)
+
+	-- Ticks keep arriving (as controller_timer_trigger's keepalive does) with no more encoder input.
+	timerTicks = 2002
+	flush_popup_value_if_due()
+	check('popup value throttle: still withheld 2 ticks after the last paint', #pendingMessages == 0)
+
+	timerTicks = 2003
+	flush_popup_value_if_due()
+	check('popup value throttle: settled value (43) is painted once 3 ticks have elapsed, not left stale',
+		#pendingMessages == 1 and write_text_body(pendingMessages[1]) == '43')
+	check('popup value throttle: dirty flag clears once the settled value is painted', popupValueDirty == false)
+
+	-- (c) A knob redraw that changes the icon must force popupValue through immediately, even though
+	-- the throttle window has not elapsed - otherwise the number disappears until the throttle next
+	-- allows a repaint (the ring wipes its own centre on every icon redraw).
+	drawn, pendingMessages = {}, {}
+	timerTicks = 3000
+	popupValue = 64
+	draw_popup_knob(0) -- icon 0 - queues its own bitmap message, isolated from the value below
+	pendingMessages = {}
+	queue_popup_value()
+	check('popup value throttle setup: first value paint after the initial knob draw', #pendingMessages == 1)
+
+	pendingMessages = {}
+	timerTicks = 3001 -- only 1 tick later - the throttle alone would withhold this
+	draw_popup_knob(127) -- icon 12: a genuine icon change, clears drawn['popupValue']
+	pendingMessages = {} -- isolate the knob's own bitmap message from the value's below
+	queue_popup_value()
+	check('popup value throttle: a knob icon change forces the value through despite only 1 elapsed tick',
+		#pendingMessages == 1)
+	check('popup value throttle: the forced paint does not leave the throttle dirty', popupValueDirty == false)
+
+	drawn, pendingMessages, popupActive, popupValue, popupMax, timerTicks,
+		popupValueLastPaintTick, popupValueDirty =
+		savedDrawn, savedPending, savedActive, savedValue, savedMax, savedTicks,
+		savedLastPaint, savedDirty
+end
+
+-- MARK: - 66. flush_popup_value_if_due() is actually wired into controller_timer_trigger()
+--
+-- Section 65 drives flush_popup_value_if_due() directly, which proves the function's own logic but
+-- nothing about its caller - deleting the call site in controller_timer_trigger() still passes
+-- section 65 outright, since that section never goes through the real timer callback. This drives the
+-- drain through controller_timer_trigger() itself instead, so removing the call site fails here.
+--
+-- popupLastActivityIdleTick is re-pinned to idleTicks after every tick below, deliberately isolating
+-- this test from POPUP_DISMISS_IDLE_TICKS (section 48; ==2), which is shorter than
+-- POPUP_VALUE_THROTTLE_TICKS (3) - left to drift naturally, check_popup_dismiss() (which runs before
+-- flush_popup_value_if_due() inside controller_timer_trigger) would dismiss the popup on the very tick
+-- the drain is due, for reasons unrelated to the wiring under test here.
+do
+	local savedState, savedPending, savedDrawn, savedPopupActive, savedPopupValue, savedPopupMax,
+		savedTimerTicks, savedLastPaint, savedDirty, savedIdleTicks, savedLastActivity,
+		savedDisplayFlushReady, savedMvolFlushReady, savedSettleTicks, savedTimerPending,
+		savedFramesSinceTick, savedWatchdogFrames, savedCooldown, savedAttempts, savedGivenUp,
+		savedSinceReply, savedArmedInterval, savedArmed =
+		state, pendingMessages, drawn, popupActive, popupValue, popupMax,
+		timerTicks, popupValueLastPaintTick, popupValueDirty, idleTicks, popupLastActivityIdleTick,
+		displayFlushReady, mvolFlushReady, displaySettleTicks, timerPending,
+		framesSinceTick, watchdogDiagLastFrames, recoveryCooldownMs, recoveryAttempts, recoveryGivenUp,
+		activeMsSinceQueryReply, timerArmedInterval, armed
+
+	local function write_text_in(bytes)
+		for _, m in ipairs(split_messages(bytes or {})) do
+			if item_type_of(m) == IT_DISPLAY and func_of(m) == DISP_WRITE_TEXT then return m end
+		end
+		return nil
+	end
+
+	drawn, pendingMessages = {}, {}
+	state = STATE_ACTIVE
+	popupActive = true
+	popupMax = 127
+	displayFlushReady = true
+	mvolFlushReady = true
+	displaySettleTicks = 0
+	timerPending = false
+	framesSinceTick = 0
+	watchdogDiagLastFrames = 0
+	recoveryCooldownMs = 0
+	recoveryAttempts = 0
+	recoveryGivenUp = false
+	activeMsSinceQueryReply = 0
+	timerArmedInterval = POPUP_TICK_MS -- 1000ms/tick, so 3 ticks stays far below ACTIVE_QUERY_DROP_MS
+	idleTicks = 100
+	popupLastActivityIdleTick = 100
+
+	-- Seed the "settled value" state exactly like section 65(b): a first paint, then one more change
+	-- that the throttle withholds, with no further motion after that.
+	timerTicks = 500
+	popupValue = 77
+	queue_popup_value() -- forced first paint; sets popupValueLastPaintTick = 500
+	pendingMessages = {}
+	popupValue = 78 -- the settled value - no further changes after this
+	queue_popup_value()
+	check('wiring setup: the settled value is withheld by the throttle, not sent immediately',
+		#pendingMessages == 0 and popupValueDirty == true)
+	pendingMessages = {}
+
+	-- Ticks 1 and 2: fewer than POPUP_VALUE_THROTTLE_TICKS (3) have elapsed since the last real paint
+	-- (tick 500) - must not emit yet. Only controller_timer_trigger() is called from here on, never
+	-- the drain function directly.
+	for i = 1, 2 do
+		local out = controller_timer_trigger()
+		check('wiring: tick ' .. i .. ' after the last paint does not yet emit the withheld value',
+			write_text_in(out and out.midi) == nil)
+		check('wiring: tick ' .. i .. ' leaves the value still marked dirty', popupValueDirty == true)
+		popupLastActivityIdleTick = idleTicks -- isolate from POPUP_DISMISS_IDLE_TICKS - see comment above
+	end
+
+	-- Tick 3: POPUP_VALUE_THROTTLE_TICKS have now elapsed (500 -> 503) - controller_timer_trigger()
+	-- itself must drain the withheld value onto the wire.
+	local out = controller_timer_trigger()
+	local written = write_text_in(out and out.midi)
+	check('wiring: controller_timer_trigger() emits the settled value once the throttle elapses',
+		written ~= nil and write_text_body(written) == '78')
+	check('wiring: the dirty flag is cleared once controller_timer_trigger() drains it',
+		popupValueDirty == false)
+	check('wiring sanity: the popup was never dismissed mid-test (would falsely explain a missing write)',
+		popupActive == true)
+
+	state, pendingMessages, drawn, popupActive, popupValue, popupMax,
+		timerTicks, popupValueLastPaintTick, popupValueDirty, idleTicks, popupLastActivityIdleTick,
+		displayFlushReady, mvolFlushReady, displaySettleTicks, timerPending,
+		framesSinceTick, watchdogDiagLastFrames, recoveryCooldownMs, recoveryAttempts, recoveryGivenUp,
+		activeMsSinceQueryReply, timerArmedInterval, armed =
+		savedState, savedPending, savedDrawn, savedPopupActive, savedPopupValue, savedPopupMax,
+		savedTimerTicks, savedLastPaint, savedDirty, savedIdleTicks, savedLastActivity,
+		savedDisplayFlushReady, savedMvolFlushReady, savedSettleTicks, savedTimerPending,
+		savedFramesSinceTick, savedWatchdogFrames, savedCooldown, savedAttempts, savedGivenUp,
+		savedSinceReply, savedArmedInterval, savedArmed
+end
+
+-- MARK: - 67. The popup value throttle does not change the knob's own repaint rate
+--
+-- draw_popup_knob() is unmodified by the throttle above - it must still memoize purely by icon
+-- (drawn[]'s existing per-id rule), with no new tick-based gating layered on top. Sweeps every value
+-- 0..127 and checks a message queues exactly when the icon actually changes, never otherwise - the
+-- same coverage as MARK 18's icon-mapping check, but counting messages instead of icon indices.
+do
+	local savedDrawn, savedPending, savedMax = drawn, pendingMessages, popupMax
+	drawn, pendingMessages = {}, {}
+	popupMax = 127 -- pin explicitly - popup_knob_icon scales by the global popupMax (section 28)
+
+	local lastIcon = nil
+	local changedIcons, allCorrect = 0, true
+	for v = 0, 127 do
+		pendingMessages = {}
+		draw_popup_knob(v)
+		local icon = popup_knob_icon(v)
+		local expected = (icon ~= lastIcon) and 1 or 0
+		if expected == 1 then changedIcons = changedIcons + 1 end
+		if #pendingMessages ~= expected then allCorrect = false end
+		lastIcon = icon
+	end
+	check('popup knob repaint rate is unchanged: a message queues exactly on an icon change, never otherwise',
+		allCorrect)
+	check('popup knob repaint rate is unchanged: still BMP_KNOB_LEVELS distinct icon transitions over 0..127',
+		changedIcons == BMP_KNOB_LEVELS)
+
+	drawn, pendingMessages, popupMax = savedDrawn, savedPending, savedMax
+end
+
 -- MARK: - Summary
 
 realPrint('')
