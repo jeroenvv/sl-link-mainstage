@@ -2839,6 +2839,226 @@ do
 		savedDisplayMode, savedPopupPreviousMode, savedListRows, savedCursorIndex, savedConcert
 end
 
+-- MARK: - 62. rearm_timer() watchdog diagnostic: rate-limited, not per-frame
+--
+-- A real hardware capture had the watchdog decline to fire with nothing logged, so a silent decline
+-- and a correct one were indistinguishable - see
+-- docs/config-lua-history.md#dead-clock-instrumentation-and-two-recovery-backstops-2026-09-14. This
+-- proves the diagnostic fires once TIMER_WATCHDOG_FRAMES is crossed while has_pending() is what's
+-- declining (empty queue), and is rate-limited to first-crossing plus once every
+-- TIMER_WATCHDOG_DIAG_EVERY_FRAMES after - not once per inbound frame, which would flood the log
+-- during ordinary play (rearm_timer runs on every inbound MIDI event, not just SL frames).
+do
+	local savedState, savedTimerPending, savedFramesSinceTick, savedWatchdogDiag, savedArmed,
+		savedPending, savedPopupActive, savedFramesSinceQueryReply =
+		state, timerPending, framesSinceTick, watchdogDiagLastFrames, armed, pendingMessages,
+		popupActive, framesSinceQueryReply
+
+	state = STATE_ACTIVE
+	popupActive = false
+	pendingMessages = {} -- has_pending() false: the silent-decline case the diagnostic exists for
+	framesSinceQueryReply = 0
+	timerPending = true
+	framesSinceTick = 0
+	watchdogDiagLastFrames = 0
+	armed = nil
+
+	local capturedLines = {}
+	local originalPrint = print
+	print = function(msg) capturedLines[#capturedLines + 1] = msg end
+	local function diag_count()
+		local n = 0
+		for _, line in ipairs(capturedLines) do
+			if line:find('timer watchdog diag', 1, true) then n = n + 1 end
+		end
+		return n
+	end
+
+	-- Below TIMER_WATCHDOG_FRAMES: nothing logged yet.
+	for i = 1, TIMER_WATCHDOG_FRAMES - 1 do
+		controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	end
+	check('watchdog diag: silent below TIMER_WATCHDOG_FRAMES', diag_count() == 0)
+
+	-- Crossing the threshold: exactly one diagnostic line, and the watchdog itself must NOT have
+	-- re-armed (has_pending() is false and framesSinceTick is nowhere near TIMER_WATCHDOG_FORCE_FRAMES).
+	controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	check('watchdog diag: logs once at first crossing', diag_count() == 1)
+	check('watchdog diag: does not itself re-arm the timer', armed == nil)
+	check('watchdog diag: timerPending still latched', timerPending == true)
+
+	-- Between crossings: no further line until TIMER_WATCHDOG_DIAG_EVERY_FRAMES have elapsed since
+	-- the last one - proves this is rate-limited, not emitted on every one of these inbound frames.
+	for i = 1, TIMER_WATCHDOG_DIAG_EVERY_FRAMES - 1 do
+		controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	end
+	check('watchdog diag: still just one line short of the rate limit', diag_count() == 1)
+
+	-- One more frame reaches the rate limit: a second line.
+	controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	check('watchdog diag: logs again once the rate limit elapses', diag_count() == 2)
+
+	print = originalPrint
+	state, timerPending, framesSinceTick, watchdogDiagLastFrames, armed, pendingMessages,
+		popupActive, framesSinceQueryReply =
+		savedState, savedTimerPending, savedFramesSinceTick, savedWatchdogDiag, savedArmed,
+		savedPending, savedPopupActive, savedFramesSinceQueryReply
+end
+
+-- MARK: - 63. rearm_timer() watchdog: high-frame backstop re-arms even with an empty queue
+--
+-- TIMER_WATCHDOG_FRAMES's has_pending() guard is deliberate (rule 6 protection - see test 34), but it
+-- means a clock that dies while nothing is queued for display was never recovered before this
+-- backstop existed - see
+-- docs/config-lua-history.md#dead-clock-instrumentation-and-two-recovery-backstops-2026-09-14.
+-- TIMER_WATCHDOG_FORCE_FRAMES forces a re-arm regardless of has_pending() once frames reach a much
+-- higher bar; the original has_pending()-backed path (test 34) must be unaffected.
+do
+	local savedState, savedTimerPending, savedFramesSinceTick, savedWatchdogDiag, savedArmed,
+		savedPending, savedPopupActive, savedFramesSinceQueryReply =
+		state, timerPending, framesSinceTick, watchdogDiagLastFrames, armed, pendingMessages,
+		popupActive, framesSinceQueryReply
+
+	state = STATE_ACTIVE
+	popupActive = false
+	pendingMessages = {} -- has_pending() false throughout: only TIMER_WATCHDOG_FORCE_FRAMES may fire
+	framesSinceQueryReply = 0
+	timerPending = true
+
+	-- (a) One frame short of the backstop: must still not re-arm.
+	framesSinceTick = TIMER_WATCHDOG_FORCE_FRAMES - 1
+	armed = nil
+	rearm_timer()
+	check('force backstop: does not fire one frame short', armed == nil)
+	check('force backstop: timerPending stays latched one frame short', timerPending == true)
+
+	-- (b) Reaching TIMER_WATCHDOG_FORCE_FRAMES: forces a re-arm despite the empty queue, and logs
+	-- that it was the forced (not the queue-backed) path.
+	local capturedLines = {}
+	local originalPrint = print
+	print = function(msg) capturedLines[#capturedLines + 1] = msg end
+	local function log_contains(substr)
+		for _, line in ipairs(capturedLines) do
+			if line:find(substr, 1, true) then return true end
+		end
+		return false
+	end
+	framesSinceTick = TIMER_WATCHDOG_FORCE_FRAMES
+	rearm_timer()
+	print = originalPrint
+
+	check('force backstop: re-arms at TIMER_WATCHDOG_FORCE_FRAMES with an empty queue',
+		armed == KEEPALIVE_MS)
+	check('force backstop: resets framesSinceTick', framesSinceTick == 0)
+	check('force backstop: log marks it as the forced path', log_contains('forced - queue was empty'))
+
+	-- (c) The original has_pending()-backed path (test 34) is unchanged by adding the backstop: it
+	-- still fires at the much lower TIMER_WATCHDOG_FRAMES once something is queued, and its log does
+	-- NOT carry the forced marker - the two backstops stay distinguishable in a hardware capture.
+	pendingMessages = {}
+	queue_message(msg_draw_rect(0, 0, 1, 1, 0, 0, 0), 'test:force-backstop')
+	timerPending = true
+	framesSinceTick = TIMER_WATCHDOG_FRAMES
+	armed = nil
+	capturedLines = {}
+	print = function(msg) capturedLines[#capturedLines + 1] = msg end
+	rearm_timer()
+	print = originalPrint
+	check('force backstop: has_pending()-backed path at TIMER_WATCHDOG_FRAMES still fires unchanged',
+		armed == FLUSH_SOON_MS)
+	check('force backstop: has_pending()-backed path log carries no forced marker',
+		log_contains('one-shot lost') and not log_contains('forced'))
+
+	state, timerPending, framesSinceTick, watchdogDiagLastFrames, armed, pendingMessages,
+		popupActive, framesSinceQueryReply =
+		savedState, savedTimerPending, savedFramesSinceTick, savedWatchdogDiag, savedArmed,
+		savedPending, savedPopupActive, savedFramesSinceQueryReply
+end
+
+-- MARK: - 64. Recovery watchdog reachable from the inbound path when the session clock is dead
+--
+-- The ms-based watchdog in controller_timer_trigger structurally cannot fire once ticks have
+-- stopped - its elapsed-ms accumulator only advances inside a tick - which is why it has never fired
+-- across three hardware sessions despite genuine drops. See
+-- docs/config-lua-history.md#dead-clock-instrumentation-and-two-recovery-backstops-2026-09-14.
+-- check_inbound_recovery(), called from controller_midi_in, uses framesSinceQueryReply instead, so it
+-- can trigger with zero ticks in between - controller_timer_trigger() is never called anywhere in
+-- this test, simulating exactly that.
+do
+	local savedState, savedPending, savedFramesSinceQueryReply, savedCooldown, savedAttempts,
+		savedGivenUp, savedTimerPending, savedFramesSinceTick =
+		state, pendingMessages, framesSinceQueryReply, recoveryCooldownMs, recoveryAttempts,
+		recoveryGivenUp, timerPending, framesSinceTick
+
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	framesSinceQueryReply = 0
+	recoveryCooldownMs = 0
+	recoveryAttempts = 0
+	recoveryGivenUp = false
+
+	-- (a) Below the threshold: state stays ACTIVE, no attempt counted.
+	for i = 1, ACTIVE_QUERY_DROP_FRAMES - 1 do
+		controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	end
+	check('inbound recovery: below ACTIVE_QUERY_DROP_FRAMES does not fire',
+		state == STATE_ACTIVE and recoveryAttempts == 0)
+
+	-- (b) One more inbound frame, with no tick having fired anywhere in between, reaches the
+	-- threshold and drops to STATE_IDLE - controller_timer_trigger's own STATE_IDLE branch takes it
+	-- the rest of the way to re-identifying once a tick eventually does fire (not exercised here).
+	controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	check('inbound recovery: fires at ACTIVE_QUERY_DROP_FRAMES with the clock dead', state == STATE_IDLE)
+	check('inbound recovery: counts the attempt', recoveryAttempts == 1)
+	check('inbound recovery: arms the cooldown', recoveryCooldownMs == RECOVERY_COOLDOWN_MS)
+	check('inbound recovery: resets its own frame counter on firing', framesSinceQueryReply == 0)
+
+	-- (c) Cooldown blocks an immediate second attempt, even though frames keep arriving with the
+	-- clock still dead.
+	state = STATE_ACTIVE -- as if the earlier drop had already resumed an active session
+	for i = 1, ACTIVE_QUERY_DROP_FRAMES do
+		controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	end
+	check('inbound recovery: cooldown blocks a second attempt reached too soon',
+		state == STATE_ACTIVE and recoveryAttempts == 1)
+
+	-- (d) Once the cooldown clears (as ticks resuming would do over time), the same frame-based path
+	-- fires again.
+	recoveryCooldownMs = 0
+	framesSinceQueryReply = 0
+	for i = 1, ACTIVE_QUERY_DROP_FRAMES do
+		controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	end
+	check('inbound recovery: fires again once the cooldown clears',
+		state == STATE_IDLE and recoveryAttempts == 2)
+
+	-- (e) Attempt cap: one more successful cycle reaches MAX_RECOVERY_ATTEMPTS; the cycle after that
+	-- must give up rather than retry forever - the same cap trigger_recovery() enforces for the
+	-- ms-based path (test 57), reached here via frames instead of elapsed ms.
+	recoveryCooldownMs = 0
+	framesSinceQueryReply = 0
+	state = STATE_ACTIVE
+	for i = 1, ACTIVE_QUERY_DROP_FRAMES do
+		controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	end
+	check('inbound recovery: reaches the attempt cap',
+		recoveryAttempts == MAX_RECOVERY_ATTEMPTS and not recoveryGivenUp)
+
+	recoveryCooldownMs = 0
+	framesSinceQueryReply = 0
+	state = STATE_ACTIVE
+	for i = 1, ACTIVE_QUERY_DROP_FRAMES do
+		controller_midi_in(frame(0x90, 0x40, 0x64), 'LINK')
+	end
+	check('inbound recovery: gives up beyond the cap instead of retrying forever',
+		recoveryGivenUp == true and state == STATE_ACTIVE)
+
+	state, pendingMessages, framesSinceQueryReply, recoveryCooldownMs, recoveryAttempts,
+		recoveryGivenUp, timerPending, framesSinceTick =
+		savedState, savedPending, savedFramesSinceQueryReply, savedCooldown, savedAttempts,
+		savedGivenUp, savedTimerPending, savedFramesSinceTick
+end
+
 -- MARK: - Summary
 
 realPrint('')
