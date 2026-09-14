@@ -8,24 +8,6 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [2.0.0] - 2026-09-14
 
-- docs: explain that SL.device is a macOS package
-- Merge pull request #10 from jeroenvv/docs/device-bundle-note
-- chore: relicense to Apache-2.0 and ship the licence in the zip
-- Merge pull request #11 from jeroenvv/chore/apache-license
-- chore: add a sponsor link
-- Merge pull request #12 from jeroenvv/chore/funding
-- Delete .github/FUNDING.yml (#13)
-- Create FUNDING.yml (#14)
-- Create FUNDING2.yml (#15)
-- Update FUNDING.yml (#16)
-- docs: link the donation directly in the README
-- Merge pull request #17 from jeroenvv/docs/sponsor-link
-- feat: declare every SL88 gesture and send encoders as relative deltas
-- feat: make session identification and recovery resilient to MainStage churn
-- feat: drive the SL88's Master Volume from the A encoder
-- docs: bring over release automation, agent guidance, and docs from the reference tree
-- docs: catch up CHANGELOG's Unreleased section with two sessions of work
-
 ### BREAKING
 
 - The five encoders and the joystick rotary ring now send `Relative2C` two's-complement relative
@@ -104,5 +86,6 @@ MK2 over the SL Link SysEx protocol, entirely from Lua, no helper app.
   SL88's native Knob bitmap.
 - Semantic versioning and a release pipeline that bumps `VERSION` from commit prefixes.
 
-[Unreleased]: https://github.com/jeroenvv/sl-link-mainstage/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jeroenvv/sl-link-mainstage/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/jeroenvv/sl-link-mainstage/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/jeroenvv/sl-link-mainstage/releases/tag/v1.0.0
