@@ -514,6 +514,20 @@ do
 	)
 end
 
+-- MARK: - 12b. queue_repeated: N calls reach the queue as N separate entries, not one coalesced entry
+--
+-- The mechanism section 68's mute/LED repeats rely on. A regression that gave queue_repeated's
+-- copies a shared regionId would hit section 12's own coalescing behaviour and collapse them back to
+-- one - this pins that it does not.
+do
+	pendingMessages = {}
+	queue_repeated(function() return msg_white_led(WLID_A_ENC, true) end, 5)
+	check('queue_repeated(builder, 5) queues 5 separate messages', #pendingMessages == 5)
+	for i = 1, #pendingMessages do
+		check('...entry ' .. i .. ' carries no regionId (never coalesced)', pendingMessages[i].regionId == nil)
+	end
+end
+
 -- MARK: - 13. drop_queued_display clears the corresponding drawn[] entries
 --
 -- See config.lua's drop_queued_display comment: leaving a discarded message's
@@ -3304,10 +3318,11 @@ end
 --
 -- SHORT writes VOL=MVOL_IGNORE_VOL (>0x64, so the firmware ignores it) with the flipped MUTE byte -
 -- msg_master_volume_write() itself is untouched and still never carries MUTE (section 27's five
--- assertions pin that absence; this uses the separate msg_master_volume_mute_write() builder).
--- LONG writes MVOL_SEED_DEFAULT and MUTE=0 together in one message. Both also update the A encoder's
--- LED (WLID_A_ENC). See docs/implementing-sl-link.md §6 and
--- docs/config-lua-history.md#a-encoder-button-mute-2026-09-14.
+-- assertions pin that absence; this uses the separate msg_master_volume_mute_write() builder). LONG
+-- writes a PLAIN MVOL_SEED_DEFAULT write (no MUTE byte) and separately unmutes. Both the mute write
+-- and the LED are each repeated MUTE_LED_REPEATS times, with no shared regionId (so per-region
+-- coalescing cannot collapse the repeats into one queued entry) - see MUTE_LED_REPEATS' declaration
+-- and docs/config-lua-history.md#mute-and-led-writes-are-dropped-from-mainstage-2026-09-14.
 do
 	local function button_frame(bid, pressKind)
 		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, bid, pressKind, 0xF7)
@@ -3317,6 +3332,30 @@ do
 		local out = {}
 		for i = 1, #pendingMessages do
 			if pendingMessages[i].regionId == regionId then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+
+	-- Mute writes and LED writes never carry a regionId any more (queue_repeated's whole point), so
+	-- they're found by content instead: mute writes are the IT_MASTER_VOLUME/MVOL_WRITE messages
+	-- carrying a MUTE byte (#m == 12, vs 11 for the plain reset write), LED writes are the sole
+	-- IT_LED message shape in this script.
+	local function mute_writes()
+		local out = {}
+		for i = 1, #pendingMessages do
+			local m = pendingMessages[i]
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_WRITE and #m == 12 then
+				out[#out + 1] = m
+			end
+		end
+		return out
+	end
+
+	local function led_writes()
+		local out = {}
+		for i = 1, #pendingMessages do
+			local m = pendingMessages[i]
+			if item_type_of(m) == IT_LED then out[#out + 1] = m end
 		end
 		return out
 	end
@@ -3335,22 +3374,24 @@ do
 	popupPreviousMode = 'zoom'
 	timerPending = false
 
-	-- (a) SHORT while unmuted: toggles to muted, volume untouched, LED goes off.
+	-- (a) SHORT while unmuted: toggles to muted, volume untouched, LED goes off. Repeated
+	-- MUTE_LED_REPEATS times each - the count itself is the anti-coalescing proof: a regression that
+	-- reintroduced a shared regionId across the repeats would collapse this back to 1.
 	pendingMessages = {}
 	masterVolume = 77
 	masterMuted = false
 	handle_sl_frame(button_frame(BID_A_ENC, PRESS_SHORT))
 	check('A button SHORT does not change masterVolume', masterVolume == 77)
 	check('A button SHORT flips masterMuted to true', masterMuted == true)
-	local muteWrites = messages_with_region('mvolMute')
-	check('A button SHORT queues exactly one mute write', #muteWrites == 1)
+	local muteWrites = mute_writes()
+	check('A button SHORT queues MUTE_LED_REPEATS separate mute writes', #muteWrites == MUTE_LED_REPEATS)
 	checkHex(
 		'...carrying VOL=MVOL_IGNORE_VOL (0x7F, ignored since > 0x64) and MUTE=1',
 		muteWrites[1],
 		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 7F 01 F7'
 	)
-	local ledWrites = messages_with_region('aEncLed')
-	check('A button SHORT queues exactly one LED write', #ledWrites == 1)
+	local ledWrites = led_writes()
+	check('A button SHORT queues MUTE_LED_REPEATS separate LED writes', #ledWrites == MUTE_LED_REPEATS)
 	checkHex(
 		'...carrying WLID_A_ENC and state=0 (off, muted)',
 		ledWrites[1],
@@ -3361,21 +3402,23 @@ do
 	pendingMessages = {}
 	handle_sl_frame(button_frame(BID_A_ENC, PRESS_SHORT))
 	check('A second SHORT flips masterMuted back to false', masterMuted == false)
-	muteWrites = messages_with_region('mvolMute')
+	muteWrites = mute_writes()
+	check('...and still queues MUTE_LED_REPEATS mute writes', #muteWrites == MUTE_LED_REPEATS)
 	checkHex(
 		'...and the mute write now carries MUTE=0',
 		muteWrites[1],
 		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 7F 00 F7'
 	)
-	ledWrites = messages_with_region('aEncLed')
+	ledWrites = led_writes()
 	checkHex(
 		'...and the LED write now carries state=1 (on, unmuted)',
 		ledWrites[1],
 		'F0 00 20 1A 16 03 ' .. id2() .. ' 02 0A 01 F7'
 	)
 
-	-- (c) LONG: resets volume to MVOL_SEED_DEFAULT AND unmutes, in one combined write - satisfies the
-	-- project's LONG-must-never-be-a-no-op rule (see config.lua's handle_zoom_button comment) unconditionally.
+	-- (c) LONG: resets volume via a PLAIN write (no MUTE byte) and separately unmutes via
+	-- MUTE_LED_REPEATS repeated mute writes - satisfies the project's LONG-must-never-be-a-no-op rule
+	-- (see config.lua's handle_zoom_button comment) unconditionally.
 	pendingMessages = {}
 	masterVolume = 20
 	masterMuted = true
@@ -3383,14 +3426,21 @@ do
 	check('A button LONG resets masterVolume to MVOL_SEED_DEFAULT', masterVolume == MVOL_SEED_DEFAULT)
 	check('A button LONG unmutes', masterMuted == false)
 	local resetWrites = messages_with_region('mvol')
-	check('A button LONG queues exactly one combined write', #resetWrites == 1)
+	check('A button LONG queues exactly one plain reset write', #resetWrites == 1)
 	checkHex(
-		'...carrying VOL=MVOL_SEED_DEFAULT (0x3C) and MUTE=0 together',
+		'...carrying VOL=MVOL_SEED_DEFAULT (0x3C), no MUTE byte',
 		resetWrites[1],
-		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 3C 00 F7'
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 3C F7'
 	)
-	ledWrites = messages_with_region('aEncLed')
-	check('A button LONG (from muted) also queues the LED write', #ledWrites == 1)
+	local unmuteWrites = mute_writes()
+	check('A button LONG also queues MUTE_LED_REPEATS separate unmute writes', #unmuteWrites == MUTE_LED_REPEATS)
+	checkHex(
+		'...carrying VOL=MVOL_IGNORE_VOL and MUTE=0',
+		unmuteWrites[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 7F 00 F7'
+	)
+	ledWrites = led_writes()
+	check('A button LONG (from muted) also queues MUTE_LED_REPEATS LED writes', #ledWrites == MUTE_LED_REPEATS)
 	checkHex(
 		'...carrying state=1 (on, unmuted)',
 		ledWrites[1],
@@ -3404,8 +3454,9 @@ do
 	masterVolume = 99
 	masterMuted = false
 	handle_sl_frame(button_frame(BID_A_ENC, PRESS_LONG))
-	ledWrites = messages_with_region('aEncLed')
-	check('A button LONG resends the LED even when mute was already false', #ledWrites == 1)
+	ledWrites = led_writes()
+	check('A button LONG resends MUTE_LED_REPEATS LED writes even when mute was already false',
+		#ledWrites == MUTE_LED_REPEATS)
 
 	masterVolume, masterMuted, pendingMessages, popupActive, displayMode, popupPreviousMode, timerPending =
 		savedMasterVolume, savedMasterMuted, savedPending, savedPopupActive, savedDisplayMode,
@@ -3425,10 +3476,12 @@ do
 		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, vol, mute, 0xF7)
 	end
 
-	local function messages_with_region(regionId)
+	-- LED writes carry no regionId any more (queue_repeated's whole point - see section 68's own
+	-- comment), so they're found by itemType instead.
+	local function led_writes()
 		local out = {}
 		for i = 1, #pendingMessages do
-			if pendingMessages[i].regionId == regionId then out[#out + 1] = pendingMessages[i] end
+			if item_type_of(pendingMessages[i]) == IT_LED then out[#out + 1] = pendingMessages[i] end
 		end
 		return out
 	end
@@ -3436,19 +3489,20 @@ do
 	local savedMasterMuted, savedMasterVolumeRead, savedPending =
 		masterMuted, masterVolumeRead, pendingMessages
 
-	-- (a) READ reply WITH MUTE=1 seeds masterMuted true from a false starting point, and sends the LED.
+	-- (a) READ reply WITH MUTE=1 seeds masterMuted true from a false starting point, and sends
+	-- MUTE_LED_REPEATS LED writes.
 	pendingMessages = {}
 	masterMuted = false
 	handle_sl_frame(mvol_read_frame(50, 1))
 	check('READ reply with MUTE=1 seeds masterMuted true', masterMuted == true)
-	check('...and queues the LED write reflecting it', #messages_with_region('aEncLed') == 1)
+	check('...and queues MUTE_LED_REPEATS LED writes reflecting it', #led_writes() == MUTE_LED_REPEATS)
 
 	-- (b) READ reply WITH MUTE=0 seeds masterMuted false from a true starting point.
 	pendingMessages = {}
 	masterMuted = true
 	handle_sl_frame(mvol_read_frame(50, 0))
 	check('READ reply with MUTE=0 seeds masterMuted false', masterMuted == false)
-	check('...and queues the LED write reflecting it', #messages_with_region('aEncLed') == 1)
+	check('...and queues MUTE_LED_REPEATS LED writes reflecting it', #led_writes() == MUTE_LED_REPEATS)
 
 	-- (c) READ reply WITHOUT a MUTE byte leaves masterMuted at whatever it already was (the assumed
 	-- default, per docs/implementing-sl-link.md §7's optional-trailing-byte rule) - and queues no LED
@@ -3457,7 +3511,7 @@ do
 	masterMuted = false
 	handle_sl_frame(mvol_read_frame(50, nil))
 	check('READ reply without a MUTE byte leaves masterMuted at its default (false)', masterMuted == false)
-	check('...and queues no LED write, since nothing changed', #messages_with_region('aEncLed') == 0)
+	check('...and queues no LED write, since nothing changed', #led_writes() == 0)
 
 	-- (d) Same, but starting muted - confirms the fallback is 'leave as-is', not 'force unmuted'.
 	pendingMessages = {}

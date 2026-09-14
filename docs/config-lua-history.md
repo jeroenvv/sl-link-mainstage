@@ -2046,3 +2046,47 @@ in this file for blanked rows.
 Pinned by Lua harness sections 19 (both 8- and 9-message popup counts), 27 (an addition confirming a
 volume turn never touches `masterMuted`), 52 (per-tick ceiling raised 11 → 12), and new sections 68-69
 (button SHORT/LONG behaviour and byte vectors, LED on/off bytes, the READ reply's optional `MUTE` byte).
+
+## Mute and LED writes are dropped from MainStage (2026-09-14)
+
+The mute write and the LED write from the section above were run against hardware. Both were
+**ignored when sent from MainStage**, but `Scripts/probe-mute-led.swift`, sending byte-identical
+messages directly over CoreMIDI with no MainStage in the loop, **worked reliably**. This is a
+workaround for that asymmetry, not a diagnosis of it — nothing below explains *why* MainStage's path
+drops these two messages specifically.
+
+**Ruled out.** The message bytes themselves: re-checked against §6 and confirmed spec-correct — the
+same bytes the probe sent successfully. And the `[message, query]` pairing shape `flush_pending()`
+always uses: the probe's own four-phase run (paired and unpaired sends both worked) rules out pairing
+as the cause.
+
+**The remaining difference is repetition.** A volume turn writes on every tick of the gesture — dozens
+per turn — so any single dropped write is invisible; the next tick's write lands a moment later and
+the hardware ends up in the right state regardless. The mute write and the LED write are each sent
+**exactly once** per button press. A captured failure shows `FLUSH #131 regionId=mvolMute bytes=12
+queueDepthAfter=11` — the write went out, into a queue that was already 11 messages deep, and nothing
+downstream shows it taking effect. A one-shot message dropped once is simply lost; the volume path
+never faced that test because it never sends only once.
+
+**The fix: repeat them, the way the volume path effectively does.** `MUTE_LED_REPEATS = 3` (survives
+up to two drops); both `set_master_mute()`'s LED write and the mute WRITE itself now go out via the
+new `queue_repeated()` helper, called `MUTE_LED_REPEATS` times. Coalescing was the obstacle: repeating
+a `queue_message(msg, 'mvolMute')` call collapses to one queued entry the moment the second call finds
+the same regionId already queued (see `queue_message`'s PER-REGION COALESCING comment) — the repeats
+would never reach the wire as separate sends. `queue_repeated()` sidesteps this by queuing with no
+regionId at all, the same "never coalesced" idiom protocol messages already use, so all N copies
+append and drain one per flush.
+
+**LED re-enabled.** `LED_ENABLED` was a temporary diagnostic gate added to isolate whether the LED
+message was blanking the display; the probe confirmed the LED message genuinely lights the A encoder's
+ring on this hardware, with no display side effect. The gate (constant and early-return) is removed.
+
+**LONG press no longer folds MUTE into the volume write.** The combined write (`07 01 3C 00` — a real
+volume together with `MUTE=0`) was also ignored from MainStage; the plain 3-byte form (`07 01 3C`,
+`msg_master_volume_write()`, no MUTE byte at all) is the one proven to work. LONG now sends that plain
+reset write, and separately issues the repeated unmute as an ordinary mute-only write
+(`msg_master_volume_mute_write(MVOL_IGNORE_VOL, false)`), matching the SHORT-press shape.
+
+Pinned by Lua harness section 12b (`queue_repeated` produces N separate, non-coalesced entries) and
+the rewritten sections 68-69 (mute/LED assertions now expect `MUTE_LED_REPEATS` sends, and the LONG
+reset write is checked for the plain 3-byte shape).

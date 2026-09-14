@@ -121,6 +121,13 @@ BID_A_ENC = 0x0B -- SLButtonID.aEncoderButton; toggles Master Volume mute (handl
 -- docs/full-functionality-plan.md - the authoritative table lives upstream and is not vendored here.
 WLID_A_ENC = 0x0A
 
+-- The mute WRITE and the A encoder LED are each sent this many times per gesture, rather than once.
+-- Both are one-shot (unlike a volume turn, which re-sends every tick and so survives a drop for
+-- free); one dropped copy is otherwise unrecoverable - see
+-- docs/config-lua-history.md#mute-and-led-writes-are-dropped-from-mainstage-2026-09-14. 3 survives up
+-- to two drops. See queue_repeated()'s comment for how the repeats reach the wire as separate sends.
+MUTE_LED_REPEATS = 3
+
 -- Button press-event byte, e[9] of an IT_BUTTON frame
 PRESS_SHORT = 0x01
 PRESS_LONG = 0x02
@@ -685,6 +692,16 @@ function queue_message(msg, regionId)
 		end
 	end
 	table.insert(pendingMessages, msg)
+end
+
+-- Queues `count` fresh messages from `builder()`, one call per copy, all with regionId nil so
+-- PER-REGION COALESCING (queue_message's own comment above) never collapses them back into one -
+-- that would defeat the whole point of repeating a one-shot write. `builder` is called once per
+-- copy (not shared) to mirror set_display_mode's double-Clear-Screen idiom.
+function queue_repeated(builder, count)
+	for i = 1, count do
+		queue_message(builder())
+	end
 end
 
 function has_pending()
@@ -2065,9 +2082,8 @@ end
 -- a differing READ reply) and once at session start to establish the LED - see enter_active_session.
 function set_master_mute(muted)
 	masterMuted = muted
-	local ledMsg = msg_white_led(WLID_A_ENC, not muted)
-	slog('-> A ENCODER LED: ' .. dump_bytes(ledMsg) .. ' (' .. (muted and 'muted' or 'unmuted') .. ')')
-	queue_message(ledMsg, 'aEncLed')
+	queue_repeated(function() return msg_white_led(WLID_A_ENC, not muted) end, MUTE_LED_REPEATS)
+	slog('-> A ENCODER LED x' .. MUTE_LED_REPEATS .. ': ' .. (muted and 'muted' or 'unmuted'))
 end
 
 -- Builds, logs and queues a Master Volume READ to sync masterVolume with the hardware's current
@@ -2336,20 +2352,23 @@ function handle_sl_frame(e)
 end
 
 -- SHORT toggles mute alone (VOL=MVOL_IGNORE_VOL so the volume is untouched); LONG resets volume to
--- MVOL_SEED_DEFAULT AND unmutes in one write, satisfying the project's LONG-must-never-be-a-no-op
--- rule (see handle_zoom_button's own comment) since it always lands on a known volume/mute pair.
+-- MVOL_SEED_DEFAULT (plain write, no MUTE byte - see msg_master_volume_write's own comment) and
+-- separately unmutes, satisfying the project's LONG-must-never-be-a-no-op rule (see
+-- handle_zoom_button's own comment) since it always lands on a known volume/mute pair. The mute
+-- write itself is repeated via queue_repeated() - see MUTE_LED_REPEATS' declaration.
 function handle_a_encoder_button(pressKind)
 	if pressKind == PRESS_LONG then
 		masterVolume = MVOL_SEED_DEFAULT
-		local writeMsg = msg_master_volume_mute_write(MVOL_SEED_DEFAULT, false)
-		slog('-> A BUTTON LONG: reset+unmute ' .. dump_bytes(writeMsg))
+		local writeMsg = msg_master_volume_write(MVOL_SEED_DEFAULT)
+		slog('-> A BUTTON LONG: reset volume ' .. dump_bytes(writeMsg))
 		queue_message(writeMsg, 'mvol')
+		queue_repeated(function() return msg_master_volume_mute_write(MVOL_IGNORE_VOL, false) end, MUTE_LED_REPEATS)
+		slog('-> A BUTTON LONG: unmute x' .. MUTE_LED_REPEATS)
 		set_master_mute(false)
 	else
 		local newMuted = not masterMuted
-		local writeMsg = msg_master_volume_mute_write(MVOL_IGNORE_VOL, newMuted)
-		slog('-> A BUTTON SHORT: mute toggle ' .. dump_bytes(writeMsg))
-		queue_message(writeMsg, 'mvolMute')
+		queue_repeated(function() return msg_master_volume_mute_write(MVOL_IGNORE_VOL, newMuted) end, MUTE_LED_REPEATS)
+		slog('-> A BUTTON SHORT: mute toggle x' .. MUTE_LED_REPEATS .. ' -> ' .. tostring(newMuted))
 		set_master_mute(newMuted)
 	end
 	show_master_volume_popup()
