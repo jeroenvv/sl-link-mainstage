@@ -311,16 +311,72 @@ messages are deliberately never coalesced (two Identification Queries must both 
 this guard a keepalive queued-but-not-yet-flushed would get another one appended behind it on every
 subsequent tick, growing without bound.
 
+### Timer watchdog: a lost one-shot latches `timerPending` forever (2026-09-07)
+
+Captured on hardware: a run stopped dead at `timer tick #352` and never ticked again, while 83 further
+inbound SysEx frames were handled normally afterward (CC batches still went out). No keepalive followed,
+so the SL88 dropped the app after its ~5s timeout, and the script could not recover on its own —
+MainStage had to be restarted.
+
+Mechanism, read from the code rather than guessed: at tick #352 the queue was still non-empty, so
+`rearm_timer()` armed a `FLUSH_SOON_MS` one-shot and set `timerPending = true`. MainStage never
+delivered that one-shot — for reasons outside this script's visibility, the same way rule 6 assumes
+`settriggertimer` always fires but this run shows it sometimes doesn't. `rearm_timer()` returns early
+whenever `timerPending` is true, and the ONLY place that clears it is the top of
+`controller_timer_trigger`. With the one-shot lost, nothing was ever going to call that function again,
+so `timerPending` stayed true permanently and every subsequent `rearm_timer()` call — from the 83 frames
+that kept arriving — hit the early return and did nothing.
+
+Ruled out: a Lua error inside the tick handler throwing before it finished. `timerPending = false` is
+the first statement in `controller_timer_trigger`, before anything that could error, so an exception
+anywhere later in that function would still have cleared the flag.
+
+Fix: a frame-count watchdog, not a shorter timer (shortening `FLUSH_SOON_MS` would revive rule 6's
+notes-starve-the-clock failure for legitimate cases where a one-shot is genuinely still outstanding).
+`framesSinceTick` counts inbound events since the last tick, incremented at the top of
+`controller_midi_in` (every event, not just SL frames, so it also counts while nothing decodes) and
+reset to 0 by `controller_timer_trigger`. `rearm_timer()`'s `timerPending` guard now returns early only
+while `framesSinceTick < TIMER_WATCHDOG_FRAMES`; past that it falls through, force-arms a new one-shot,
+and resets the counter so it can't fire again on the very next frame.
+
+`TIMER_WATCHDOG_FRAMES = 300` never fired on hardware — the threshold was far too high relative to what
+actually separates the two regimes. A later pass across three captures measured the gap between
+consecutive HEALTHY ticks directly: across roughly 2,100 tick intervals it never exceeded 4 inbound
+frames. In the two captures where the clock died, 83 and 76 frames arrived after the final tick with no
+tick ever following. Healthy and pathological are separated by more than an order of magnitude (4 vs.
+76-83), so `TIMER_WATCHDOG_FRAMES` was retuned to **20** — comfortably above the observed healthy max,
+far below the observed failure range.
+
+Caveat that shapes the design: those counts come from log lines, and the script logs ONLY SysEx —
+note/CC musical traffic is invisible in the log but DOES increment `framesSinceTick`. So the real
+worst-case frame gap while the user is playing is unknown and could exceed 4. A threshold of 20 alone
+would risk rule 6 (re-arming during dense play cancels-and-restarts the pending one-shot and starves the
+clock) if a normal, still-outstanding one-shot ever coincided with that much uncounted note traffic.
+
+The distinguishing signal that makes a low threshold safe is queued, undrained output: in BOTH freezes
+there was queued display work (`pending=1`, `pending=2`) that could not drain — display messages are
+gated behind `displayFlushReady`, which only a tick grants, so a dead clock leaves the queue stuck.
+Playing notes with an idle display does not produce that state. `rearm_timer()`'s watchdog fallthrough
+is therefore gated on `has_pending()` in addition to the frame count: it may only force a re-arm when
+there is queued output stuck behind the dead clock. With nothing queued, the early return still applies
+regardless of `framesSinceTick`, so a long run of uncounted note traffic during a legitimate outstanding
+one-shot can never trip the watchdog.
+
+The `STATE_REIDENTIFY_WAIT` early return in `rearm_timer()` sits ABOVE this guard and is checked first,
+unconditionally — the watchdog must never shorten that wait (see `handle_identification_rejected`).
+
 ---
 
 ## Identification and instance-ID collisions
 
 MainStage tears the script down and re-initialises it repeatedly (observed: init → finalize → init →
 ... within seconds, partly because the script is loaded once per matched USB-MIDI interface). A
-MainStage-driven re-init resets `instanceID` back to `SL_INSTANCE_START` — but the SL88 still holds the
-*previous* incarnation's registration under that same id, because `controller_finalize` has no return
-path with which to send a Logout Request (see
-[`controller_finalize` sends no Logout Request](#controller_finalize-sends-no-logout-request)).
+MainStage-driven re-init resets `instanceID` back to `SL_INSTANCE_START` — and, historically, the SL88
+kept holding the *previous* incarnation's registration under that same id regardless, because
+`controller_finalize` sent no Logout Request. See
+[`controller_finalize` sends no Logout Request](#controller_finalize-sends-no-logout-request) for the
+current status — as of 2026-09-10 it sends one again, on the hypothesis that this collision source is
+now fixed at the root rather than merely worked around by the wait/retry below.
 
 The naive fix — bump the instance byte immediately on rejection — "solves" the rejection by registering
 as a *different* app, which silently loses the user's APP-list selection: this was the actual cause of
@@ -342,11 +398,43 @@ timeout has actually elapsed.
 
 ### `controller_finalize` sends no Logout Request
 
-An earlier version of `controller_finalize` sent a Logout Request. Because MainStage tears the script
-down and re-initialises it repeatedly, every one of those spurious teardowns actively removed the app
-from the SL88's APP list — guaranteeing the "showed up briefly, then disappeared" symptom on its own,
-independent of the timer bugs above. Staying quiet lets the APP-list entry survive a churn; if the
-script really is going away for good, the keyboard's own ~5s keepalive timeout removes it anyway.
+**Status (2026-09-10): reverted again, same day.** Retried sending the Logout Request (below) on the
+hypothesis that per-instance DeviceIDs (see
+[Per-instance starting id](#per-instance-starting-id-2026-09-10)) had fixed the root cause. On hardware
+this made things worse: an instance was seen APPROVED and then immediately logging
+`-> LOGOUT REQUEST from controller_finalize`, the app never appeared in the SL88's APP list, and the
+Master Volume popup stuck on `--` with a dead encoder downstream of the session never registering
+properly. Per-instance ids made the old failure mode worse, not better: a re-init used to reclaim the
+same id, so the APP-list entry effectively returned after a spurious teardown; now each incarnation
+derives a different id, so it never does. The *mechanism* is proven regardless — the device answered
+`00 03` LOGOUT CONFIRMATION, disproving the original "no return path" claim below — it's the effect on
+the APP list that fails. `controller_finalize` is back to sending nothing (see the function itself).
+
+**Prior status (2026-09-10, superseded by the above): sends one again.** As of this date,
+`controller_finalize` sends a Logout Request again — see
+`msg_system(SYS_LOGOUT_REQUEST)` returned from that function. Confirmed on hardware the same day: real
+identification traffic showed one incarnation APPROVED and its ghost's successor REJECTED, with the
+rejected one doing all the real work under an id it didn't own — a direct, reproduced instance of the
+collision this history section describes. This section's original claim that finalize "has no return
+path with which to send a Logout Request" was simply wrong: the Launchkey MK3 reference script (see
+`docs/mainstage-device-scripts.md` §10) returns MIDI from its own `controller_finalize` to leave DAW
+mode, and works. The fix here follows the same mechanism.
+
+**Original finding, and why the revert below no longer necessarily applies.** An earlier version of
+`controller_finalize` sent a Logout Request. Because MainStage tears the script down and re-initialises
+it repeatedly, every one of those spurious teardowns actively removed the app from the SL88's APP list
+— guaranteeing the "showed up briefly, then disappeared" symptom on its own, independent of the timer
+bugs above. Staying quiet let the APP-list entry survive a churn; if the script really was going away
+for good, the keyboard's own ~5s keepalive timeout removed it anyway.
+
+That revert happened while the session machinery was still broken: the keepalive was dying (see the
+timer watchdog and rule-6 fixes above) and identification approvals were being lost in MainStage's init
+window (see
+[Identification approval and rejection are lost in MainStage's init window](#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10)),
+so once a spurious teardown's logout removed the APP-list entry, nothing was left running to
+re-establish it. Both of those are now fixed. Whether the original failure mode still reproduces is a
+hypothesis, not a given — watch for the "showed up briefly, then disappeared" symptom specifically on
+the next hardware run of this change, and revert again if it does.
 
 ### Single instance confirmed on hardware (2026-08-28)
 
@@ -912,3 +1000,812 @@ the declaration and the branch, alongside five other unused symbols (`invalidate
 construction, it never fired. Left here as a reminder that a flag with no writer is worth grepping for
 before trusting what a comment claims a code path does: `screenDirty`'s own comment ("Used to keep the
 display self-healing") described intent, not actual behaviour, for the entire time it existed.
+
+---
+
+## Identification approval and rejection are lost in MainStage's init window (2026-09-10)
+
+Established on hardware with byte-level flush logging plus an independent CoreMIDI source sniffer,
+while chasing why Master Volume works from a standalone probe but not from the script.
+
+**The observation.** MainStage's documented init → finalize → init churn sends *two* Identification
+Requests, both as `03 6D`, because a re-init resets `instanceID` to `SL_INSTANCE_START` and
+`controller_finalize` deliberately sends no Logout Request (see
+[`controller_finalize` sends no Logout Request](#controller_finalize-sends-no-logout-request)). The
+SL88 answered both — the sniffer recorded `7F 01 ...` (APPROVED) for the first and
+`7F 02 00 ...` (REJECTED, reason 0 = id taken/reserved) for the second:
+
+```
+28 frames from the device, of which:
+ 1×  6D 7F 01 01 01 02 01 F7     IDENTIFICATION APPROVED
+ 1×  6D 7F 02 00 01 01 02 01 F7  IDENTIFICATION REJECTED (reason 0)
+25×  6D 7F 03 01 F7              Identification Query replies
+ 1×  6D 00 01 F7                 Login Confirmation
+```
+
+**Neither the approval nor the rejection appears in `/tmp/lua.log`.** `controller_midi_in` logs every
+inbound frame beginning `0xF0`, and it logged only the query replies and the login confirmation. The
+frames reached the Mac and did not reach the script: they arrive in the window after MainStage has
+wired up `outport` (the requests demonstrably went out) but before it begins delivering
+`controller_midi_in`.
+
+**The consequence is that the re-identification machinery is unreachable.**
+`handle_identification_rejected` is only ever called from the `7F 02` branch, so
+`STATE_REIDENTIFY_WAIT`, the derivation behind `REIDENTIFY_WAIT_MS = 6000`, and
+`MAX_SAME_ID_RETRIES` are all dead in practice — not wrong, just never entered. This also explains the
+long-standing note that `handle_login()` frequently never runs: the approval is lost the same way, and
+the session limps into `STATE_ACTIVE` through the `ID_QUERY` self-heal branch instead. Both behaviours
+had been attributed to the SL88 "remembering the host across runs"; the real cause is a delivery gap on
+the MainStage side.
+
+**Why this breaks Master Volume.** The live script believes it is identified as `03 6D`, while the
+SL88's registration for `03 6D` belongs to the first, now-finalized incarnation. The device keeps
+answering Identification Queries and sends a Login Confirmation for that id, but refuses Master Volume
+for it. Evidence that the id itself is fine: `Scripts/probe-mastervolume.swift` run with `--id2 6D`,
+solo with MainStage quit, got 6/6 reads answered and 4/4 writes confirmed by read-back. The same bytes
+from MainStage, with the contested registration, are ignored — the device never sends a `0x07` frame at
+all, confirmed by the sniffer, so this is a refusal at the device and not a decode gap on our side.
+
+**Rejected fix (at the time): send a Logout Request from `controller_finalize`.** Already tried and
+reverted for an independent reason recorded above — every spurious teardown then deletes the app from
+the SL88's APP list. Retried 2026-09-10 now that the delivery-gap fix above and the timer watchdog have
+landed — see
+[`controller_finalize` sends no Logout Request](#controller_finalize-sends-no-logout-request) for
+current status.
+
+**Chosen fix: stop treating an Identification Query reply as proof of identification.** The script
+re-sends the Identification Request until it sees an explicit `7F 01` approval. The point is not the
+resend by itself but that a resend lands *after* MainStage's inbound path is live, so whichever answer
+comes back is actually delivered — an approval promotes the session honestly, and a rejection finally
+reaches `handle_identification_rejected` and runs the recovery that was designed for it.
+
+**Fallback floor: revert to query-reply promotion once the resend budget is spent.** If
+`MAX_IDENTIFY_RESENDS` resends all go unanswered by an explicit `7F 01`, the fix above leaves the
+session stuck in `STATE_IDENTIFYING` with no keepalive going out — a silent, permanent failure of the
+whole integration. A dead session is worse than one missing Master Volume, so `identifyFallback` sets
+once the budget is exhausted and, from then on, restores the exact pre-fix behaviour: the timer branch
+resumes `send_keepalive()` and an `ID_QUERY` reply promotes a `STATE_IDENTIFYING` session via
+`enter_active_session()`. The `[sllink] identification never approved - falling back to query-reply
+promotion` log line is how to tell, from a hardware capture, which path a given run actually took.
+
+---
+
+## Master Volume writes go out unpaired (2026-09-10)
+
+`Scripts/probe-mastervolume.swift` gets every Master Volume read/write answered, sending each message
+alone. `flush_pending` never does that - it bundles the queued message with a trailing Identification
+Query into one array (see [the display/query flush shape](#the-display-query-flush-shape)), so a Master
+Volume write leaving `config.lua` is always paired with the query, unlike the probe's. The same
+"bundling drops a display message" failure mode is already established for Clear Screen (see
+[the double Clear Screen](#the-double-clear-screen)); worth eliminating for Master Volume too even
+though the identification-window fix above may already have been the real cause of the original symptom.
+
+**Change:** `flush_pending` omits the query when the message it is about to emit is `IT_MASTER_VOLUME`,
+so a write goes out alone, matching the probe.
+
+**Why the clock is safe.** Master Volume writes are queued under a single `'mvol'` regionId
+(`queue_message`'s per-region coalescing - see EID_A's handler), so at most one is ever waiting; a fast
+encoder sweep produces a replacement write per tick, not a growing backlog. Every encoder tick is
+itself an inbound SL frame, and `controller_midi_in` calls `rearm_timer()` unconditionally on every
+inbound frame (rule 6) - not just on query replies - so the sweep's own traffic keeps the clock running
+independent of the query. `flush_pending` also calls `request_quick_rearm()` whenever it drops the
+query for a Master Volume write: effective when `flush_pending` runs from `controller_midi_in`'s call
+chain (confirmed working, see [Quick-rearm](#quick-rearm-2026-08-21)), a harmless no-op when it runs
+from inside `controller_timer_trigger`, whose own `settriggertimer` call is already established as a
+no-op from that context.
+
+**Residual edge case, not newly introduced.** If a CC batch backlog (`CC_BATCH_CAP` overflow) leaves a
+Master Volume write stranded in `pendingMessages` until `controller_timer_trigger`'s own flush dequeues
+it, that flush has no fallback re-arm (same limitation as the double Clear Screen finding) and now sends
+no query either. This interaction predates this change - today it would ship the same stranded write
+bundled with the query, itself suspected undeliverable per the bundling pattern above - and only matters
+if the user goes completely idle immediately afterward. Not fixed here; flagged for anyone chasing an
+unexplained APP-list drop following a heavy multi-encoder sweep.
+
+**Reverted (2026-09-10).** Confirmed on hardware: pairing every Master Volume write with a READ (see
+[the section below](#master-volume-drop-detection-read-rate-limiting-and-the-mid-gesture-guard-2026-09-10))
+is what actually made the device answer - not this unpairing. Once the READ was added, the unpairing
+became actively harmful: during an A-encoder sweep most flushes ARE Master Volume messages, so dropping
+the query on each one crowded out the keepalive and the SL88 dropped the app after ~5s. `flush_pending`
+now always appends the
+query when `includeQuery` is true, Master Volume included, and the `request_quick_rearm()` call this
+change added is gone with it - the paired query is itself the re-arm mechanism.
+
+---
+
+## Reading instance tags from a log: dead incarnations, not concurrent instances (2026-09-10)
+
+Jeroen's observation while diagnosing the finalize/Logout Request issue above: a MainStage controller
+restart mid-test-session produces more than one instance tag in `/tmp/lua.log`, same as a genuine
+multi-instance scenario would. A tag count alone can't tell the two apart - a restarted controller's
+old tag is simply dead, not a second instance running concurrently with the first. Corroborate with
+`controller_initialize`/`controller_finalize` call counts and tick-number continuity (see
+[Single instance confirmed on hardware](#single-instance-confirmed-on-hardware-2026-08-28) for the
+method) before reading a log's tag count as a live instance count.
+
+**The tag itself is not collision-proof either.** `instanceTag` (`compute_instance_tag` in
+`config.lua`) mixes several object addresses and `collectgarbage('count')` because a single table
+address collided across separately-loaded Lua states often enough to make the harness test flaky.
+Mixing sources lowers the odds but cannot guarantee uniqueness - MainStage's sandbox has no clock and
+no seedable RNG, so two instances that reach the tag line via an identical allocation history could in
+principle still mix to the same value. Treat two identical tags in a log as weak evidence, not proof,
+that they're the same instance; corroborate as above.
+
+---
+
+## Per-instance starting id (2026-09-10)
+
+A hardware run caught two script instances both APPROVED as the same id, `03 6D` - distinguishable
+only by `instanceTag` in the log, indistinguishable to the SL88 itself: one DeviceID, two independent
+senders, both keepaliving it. Root cause: `SL_INSTANCE_START` was one fixed constant (`0x6D`), used
+both for a fresh instance's very first attempt and for the value `controller_initialize` resets
+`instanceID` to on every MainStage-driven re-init - every incarnation, concurrent or sequential,
+started identification from the exact same byte. A re-initialised incarnation racing its own
+still-registered ghost is the same failure by the same cause.
+
+**Change:** `instanceID`'s starting value is now `derive_instance_start(instanceTag)` - `instanceTag`
+mapped into `[SL_INSTANCE_MIN, SL_INSTANCE_MAX]` (`0x10`-`0x7E`, the same range
+`handle_identification_rejected`'s bump already wrapped within) by `n % (MAX - MIN + 1)`, offset by
+`MIN`. Both use sites (the module-level initial assignment and `controller_initialize`'s reset) call
+it, so a fresh incarnation - a genuinely new Lua state, per the "dead incarnations" finding above -
+gets a new `instanceTag` and therefore ordinarily a different starting id than its predecessor's
+ghost, and two concurrently-loaded instances ordinarily don't start identification from the same byte
+either.
+
+**Residual risk, not eliminated.** `instanceTag` was already established above as lowering collision
+odds without ruling them out; mapping it through a mod-111 reduction narrows the id space further and
+so cannot do better than the tag itself. `handle_identification_rejected`'s existing wait/retry/bump
+path - retry the SAME id after `REIDENTIFY_WAIT_MS`, only bump after `MAX_SAME_ID_RETRIES` failed
+retries - is unchanged and remains the backstop for the case two instances still land on the same
+derived id.
+
+**Logout Request becomes effective, not just transmitted - unconfirmed on hardware.**
+`controller_finalize`'s Logout Request (see the finalize entry above) was observed transmitted and
+confirmed (`00 03`) on the wire yet ineffective, because another live instance sharing the *same*
+DeviceID kept the registration alive with its own keepalives. With each instance now ordinarily
+holding a distinct DeviceID, nothing should be left to keep a finalized instance's registration alive
+after its Logout Request lands - so the request should now actually kill the registration, not merely
+be acknowledged. This is a claim about the SL88's registration table, which the offline harness cannot
+observe (it stubs `settriggertimer`/MIDI plumbing, not the keyboard); it needs a hardware run. Confirm
+by: (a) two concurrently-loaded instances' log lines showing different `instanceTag`s AND different
+starting `instanceID`s, and (b) a finalize -> re-init cycle whose next Identification Request is
+APPROVED on the first try with no REJECTED at all - repeated across several cycles - where today's
+bug would instead show a `03 6D`/`03 6D` collision and at least one REJECTED before the retry clears
+it.
+
+---
+
+## Master Volume drop detection, read rate limiting, and the mid-gesture guard (2026-09-10)
+
+Sending a Master Volume READ alongside every WRITE (`queue_master_volume_read('mvolRead')` in the
+`EID_A` handler) is what makes the SL88 answer - confirmed on hardware: READ replies started arriving
+(`<- MASTER VOLUME 67`) and the volume actually moved. This run also surfaced three problems, fixed
+together:
+
+**Superseded (2026-09-13).** The claim that pairing a READ is what makes writes take effect is wrong -
+see [the four-phase probe result](#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13).
+Writes work identically with no read in flight; what the READ actually did on this hardware was give
+the write a companion message that happened to change flush/timing behaviour, not confirm or enable it.
+
+**1. Query/Master-Volume pairing reverted** - see
+[Master Volume writes go out unpaired](#master-volume-writes-go-out-unpaired-2026-09-10)'s own
+"Reverted" note. The READ was the fix, not the unpairing; the unpairing became actively harmful once
+combined with it.
+
+**2. Active session drop detection.** Once the SL88 drops an app from its list, nothing previously
+noticed - the script kept believing it was `STATE_ACTIVE` and transmitted into the void forever.
+`controller_timer_trigger` now accumulates `timerArmedInterval` into `activeMsSinceQueryReply` on every
+tick while `STATE_ACTIVE`; any Identification Query reply resets it to zero
+(`handle_sl_frame`'s `ID_QUERY` branch). If it reaches `ACTIVE_QUERY_DROP_MS` (`2 * KEEPALIVE_MS`,
+6s) with no reply seen, the tick falls to `STATE_IDLE`, which the existing branch immediately below
+turns into a fresh `start_identification()` - reusing that path rather than calling it twice in the
+same tick.
+
+Accumulating *time* (via `timerArmedInterval`) rather than counting raw ticks matters because tick
+pacing is not constant: while a repaint or an encoder sweep drains, `rearm_timer()` picks
+`FLUSH_SOON_MS` (35ms) instead of `KEEPALIVE_MS` (3s) - see [the session
+clock](#the-session-clock-and-the-one-shot-timer). A tick-count threshold would either fire almost
+instantly during a fast sweep (false positive) or take far too long during idle keepalive pacing. In
+practice this is not even a risk during a *healthy* sweep: every tick's flush carries its own query
+(fix 1 above), so a connected keyboard answers almost immediately (~2ms round trip) and the
+accumulator resets before the next tick regardless of how fast ticks are arriving. Two consecutive
+full misses (6s) is not reachable by jitter alone; it means the keyboard has gone genuinely silent.
+
+Threshold reasoning: the SL88 drops a silent host after ~5s. One missed reply could be a single lost
+packet, so the detector waits for a second consecutive miss - `2 * KEEPALIVE_MS` = 6s - before
+concluding it's a real drop. This is the same margin-over-5s idea `LOGOUT_SILENT_TICKS` already uses
+(3 ticks, ~9s) but shorter, since here the goal is fast recovery from an already-confirmed problem
+rather than deliberately waiting out the drop.
+
+**3. Master Volume READ rate limiting.** Every `EID_A` tick used to queue both a write AND a read; with
+one message per flush the read queue was permanently backlogged, making the control feel sluggish.
+`mvolReadPending` now gates it: an `EID_A` tick only queues a new read if none is outstanding, or if
+`MVOL_READ_TIMEOUT_FRAMES` (10) SL frames have passed since the outstanding one was sent with no reply
+(a lost reply must not wedge the guard shut forever). The reply clears the flag
+(`handle_sl_frame`'s `IT_MASTER_VOLUME`/`MVOL_READ` branch). Counted in SL frames
+(`slFrameCounter`, incremented once per `handle_sl_frame` call) rather than ticks, for the same
+pacing-independence reason as fix 2.
+
+**4. Mid-gesture guard against a stale READ reply.** Hardware log showed masterVolume oscillating
+during a sweep (`07 01 42, 07 01 41, 07 01 42, 07 01 41`): a READ reply answering an OLDER request
+was landing after the `EID_A` handler had already applied a NEWER local delta, and clobbering it back
+down. `masterVolumeRead` (the device-reported value the popup displays) must keep updating from every
+reply regardless - that's the point of the READ - but `masterVolume` (the value being written) must
+not.
+
+Fix: `mvolLastGestureFrame` records `slFrameCounter` at the last `EID_A` tick. A `MVOL_READ` reply only
+overwrites `masterVolume` if `slFrameCounter - mvolLastGestureFrame > MVOL_GESTURE_WINDOW_FRAMES` (5) -
+i.e. at least 5 SL frames of quiet since the last local delta. "Mid-gesture" is defined purely as this
+short window since the last `EID_A` tick, deliberately simple: it doesn't try to match a reply to the
+specific request it answers, it just distrusts ANY reply landing soon after a local delta, which is
+exactly the situation that produced the oscillation. The window needs to survive a few more encoder
+ticks and their own (still in-flight) read replies arriving interleaved and out of order during
+continuous rotation, while opening quickly once the user actually stops so the display can resync -
+5 frames was chosen as a small multiple of that, not measured on hardware; retune here if a future
+capture shows it too short (residual oscillation) or too long (sluggish resync after stopping).
+
+**Fix 2 removed the same day.** A build containing the drop detector left MainStage feeling frozen,
+with audio pops, while completely idle - no user interaction at all. The re-identify loop (drop to
+`STATE_IDLE` -> `start_identification()` -> possible IDENTIFICATION REJECTED -> wait/retry/bump) is
+the suspected mechanism - the hardware log showed `re-identify retry 1/2` and `2/2` firing - but this
+is suspected, not proven: the debug capture for that run was lost when MainStage was restarted
+manually. `ACTIVE_QUERY_DROP_MS` and `activeMsSinceQueryReply` were removed entirely; fixes 1, 3, and
+4 above are unaffected. Consequence: the app no longer recovers on its own if the SL88 drops it from
+its APP list.
+
+---
+
+## Master Volume popup: seed from READ, track the write value (2026-09-10)
+
+Fix 4 above (the mid-gesture guard) kept `masterVolume` itself from oscillating, but the A popup
+displayed `masterVolumeRead` directly - the device's own last READ reply, not the value actually
+being written. On hardware this looked jumpy and unsmooth: the number on screen only moved when a
+reply happened to land, so its update rate depended on round-trip timing rather than the encoder.
+
+**Change:** the popup now shows `masterVolume` - the value being sent - on every tick, not
+`masterVolumeRead`. `masterVolumeRead` still updates from every READ reply as before, but now only
+feeds one thing: reseeding `masterVolume` at the *start* of a new gesture, so a turn still begins
+from the device's real value rather than a possibly-stale local guess. This also makes fix 4's own
+guard unnecessary - it existed only to keep a READ reply from clobbering `masterVolume` mid-gesture,
+and now READ replies never touch `masterVolume` at all, at any time. `mvolLastGestureFrame`/
+`MVOL_GESTURE_WINDOW_FRAMES` are removed.
+
+**Gesture boundary.** The script has no clock, so "start of a new gesture" is approximated the same
+way the popup's own idle-dismissal already is: `idleTicks`, incremented once per timer tick while
+nothing is draining, paced at `POPUP_TICK_MS` (~1s) whenever the A popup is active and idle (see
+`rearm_timer`'s `popupActive` branch and `check_popup_dismiss`). `mvolLastActivityIdleTick` records
+`idleTicks` at the last `EID_A` tick; a new tick counts as a new gesture once
+`idleTicks - mvolLastActivityIdleTick >= MVOL_GESTURE_IDLE_TICKS` (1). This reuses an existing,
+already-hardware-paced clock rather than adding a second one - the same reasoning `POPUP_DISMISS_IDLE_TICKS`
+already relies on. Real-time accuracy: while idle it lands close to 1s (one `POPUP_TICK_MS` period
+plus whatever small drain delay preceded it, typically tens of ms); it is not a raw tick or frame
+count that would otherwise run fast during an active sweep, since `idleTicks` deliberately does not
+advance while `has_pending()` is true.
+
+**No-reply-yet fallback.** If a gesture starts before any READ reply has ever arrived
+(`masterVolumeRead == nil` - plausible, since the READ queued at login is asynchronous),
+`masterVolume` keeps its current value instead of seeding to nil: `masterVolume = masterVolumeRead or
+masterVolume`. In practice this is the default 100 or whatever a previous gesture already
+accumulated.
+
+**Corrected (2026-09-10) - this fallback was the bug, see below.** It let the first tick WRITE the
+invented default.
+
+---
+
+## Never write an unconfirmed Master Volume (2026-09-10)
+
+Hardware log: the login-time Master Volume READ was never answered, but the very first A-encoder tick
+still wrote `masterVolume` (the hardcoded default, 100) to the device, jumping the audio board to full
+volume:
+
+```
+-> MASTER VOLUME READ  (sent at login - never answered)
+-> MASTER VOLUME WRITE ... 07 01 64      <- 0x64 = 100
+<- MASTER VOLUME 100
+```
+
+The trailing READ reply reported 100 only because the write had just put it there - not because 100
+was ever the device's real value. Confirmed on this hardware: the login-time READ goes unanswered,
+while READs issued during an EID_A gesture (`queue_master_volume_read('mvolRead')`) do get replies -
+so `masterVolumeRead` reliably becomes known within a tick or two of the user actually touching the
+encoder, just not before.
+
+**Fix.** The EID_A handler now branches on `masterVolumeRead == nil`: while unknown, it sends NO
+write at all (only keeps polling, same rate limit as before) and the popup shows the `--` placeholder
+(`popupValue = masterVolumeRead and masterVolume or nil`) rather than a guessed number. The
+[no-reply-yet fallback](#no-reply-yet-fallback) above - keep accumulating from the local guess - is
+removed; the old default value in `masterVolume` is never allowed to reach the wire while unconfirmed.
+
+**Suppressed deltas are discarded, not replayed.** Ticks while unknown update nothing - not even a
+local accumulator - so once `masterVolumeRead` arrives there is nothing queued up to apply. A new
+`mvolNeedsSeed` flag (true until the first known-value tick) forces that tick to seed `masterVolume`
+from `masterVolumeRead` regardless of `MVOL_GESTURE_IDLE_TICKS`, then clears; normal write behaviour
+resumes from there. Rejected alternative: apply the accumulated suppressed delta on top of the fresh
+device value once known. Discarding is safer - a delta computed against an invented starting point is
+itself meaningless, and the user simply turns the encoder again once the number appears.
+
+`MVOL_GESTURE_IDLE_TICKS` (the gesture re-seed boundary, still 1) and `POPUP_DISMISS_IDLE_TICKS` (the
+popup's own idle-dismiss threshold) are separate constants compared independently against `idleTicks`
+in unrelated call sites - this fix touches neither.
+
+---
+
+## Popup dismiss doubled to 2s (2026-09-10)
+
+`POPUP_DISMISS_IDLE_TICKS` raised from 1 to 2 (at `POPUP_TICK_MS` ~1s each, so ~1s -> ~2s) - the popup
+was disappearing too quickly to read. `MVOL_GESTURE_IDLE_TICKS` (the Master Volume gesture re-seed
+boundary) is a separate constant, confirmed correct at 1 and left unchanged - see [Never write an
+unconfirmed Master Volume](#never-write-an-unconfirmed-master-volume-2026-09-10) above.
+
+---
+
+## Seed Master Volume at 60 instead of refusing to write (2026-09-12)
+
+[Never write an unconfirmed Master Volume](#never-write-an-unconfirmed-master-volume-2026-09-10)
+traded one hazard for another. Hardware log from the very next run: 16 A-encoder frames reached the
+script, the guard correctly suppressed all 16 writes, but the accompanying READ - sent 4 times - was
+never answered either, `masterVolumeRead` stayed `nil` for the whole session, and the encoder was
+permanently dead (no write ever went out, so no popup value, and the keyboard eventually dropped the
+app). Cross-referencing every run on record: a Master Volume READ only ever gets answered while
+writes are also flowing - the login-time READ and this guard's READ-only polling both went
+unanswered, but READs during an ordinary write-carrying gesture always came back. The guard's own
+premise - wait for a confirmation - could only ever be satisfied by the thing it was refusing to do.
+
+**Fix.** `mvolNeedsSeed`'s branch is gone. The EID_A handler is back to one path: on a new gesture
+(same `MVOL_GESTURE_IDLE_TICKS` boundary as before - always true on the very first tick, since
+`mvolLastActivityIdleTick` starts far in the past) it seeds `masterVolume = masterVolumeRead or
+MVOL_SEED_DEFAULT` and writes unconditionally. `MVOL_SEED_DEFAULT = 60` is the user's choice of a
+safe mid-scale starting point - not 100, where a single click could have slammed the audio board to
+full output, the exact hazard the original guard existed to prevent. The popup shows `masterVolume`
+directly now (never the `--` placeholder in normal operation); `draw_popup_value(nil)` stays as
+defensive dead code for a caller that no longer exists.
+
+`mvolNeedsSeed` was removed rather than repointed at the new default: with the reseed condition
+already true on the very first tick (the idle-tick sentinel forces it independently, per its own
+"belt-and-suspenders" comment), the flag never changed observable behaviour even before this fix -
+confirmed by re-reading its own declaration comment, not just by inspection here.
+
+---
+
+## Popup entry skips Clear Screen (2026-09-12)
+
+Companion fix to the seed change above, same hardware run: a single A-encoder tick queued 11
+messages at once (2x Clear Screen + `popupBg` + 4 border strips + `popupLabel` + `popupKnob` +
+`popupValue` + the trailing sacrificial redraw, from `set_display_mode('popup')`, plus the Master
+Volume READ), and the SL88 dropped the app mid-drain of that burst.
+
+The popup's own content was never the avoidable part - a first paint has nothing in `drawn[]` to
+compare against, so `paint_popup_screen()` queuing all of it once is correct, not a memoization bug.
+The double Clear Screen and `invalidate_all()` are the actual excess: they exist for
+`set_display_mode()`'s list<->zoom switches, where the outgoing screen's content differs in ways
+Write Text's own self-clearing background box can't guarantee to fully cover. The popup is not that
+case - `popupBg` plus the 4 border strips are opaque and together cover exactly the popup's own
+rect, so nothing underneath needs erasing, and `invalidate_all()` on entry is provably a no-op for
+the popup's own region ids either way: they are unset on the very first popup ever, and the memo
+returns to unset every time `dismiss_popup()`'s own `set_display_mode()` call invalidates everything
+on the way out.
+
+**Fix.** New `enter_popup_mode()` (used by both `show_popup()` and `show_master_volume_popup()`'s
+first-call branch) sets `displayMode`, drops stale queued display work for the outgoing mode, calls
+`paint_popup_screen()`, and still ends with the trailing sacrificial redraw and `request_quick_rearm()`
+- everything `set_display_mode()` did except the double Clear Screen and `invalidate_all()`. First-tick
+burst: 11 -> 9. `dismiss_popup()` is unchanged - it still needs `set_display_mode()`'s full treatment
+to properly restore whatever mode the popup was covering.
+
+---
+
+## Master Volume READ reply does not track writes (2026-09-12) — OVERSTATED, SEE CORRECTION BELOW
+
+Hardware log, consecutive lines from a live session:
+
+```
+<- MASTER VOLUME READ reply vol=71 (masterVolume=66)
+-> MASTER VOLUME WRITE ... 07 01 41   (65)
+<- MASTER VOLUME READ reply vol=71 (masterVolume=65)
+-> MASTER VOLUME WRITE ... 07 01 46   (70)
+<- MASTER VOLUME READ reply vol=71 (masterVolume=72)
+```
+
+The device answered a fixed `vol=71` on every single READ while the writes swept 65 -> 70 -> 72, and
+the user confirmed the audio output audibly changed with each write. So the READ reply is not the
+device's current output level - what it actually reports is unknown and is now an open question.
+[Master Volume popup: seed from READ, track the write value](#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10)
+and [Seed Master Volume at 60 instead of refusing to write](#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12)
+both fed `masterVolume` from this reply at a gesture's start - seeding from a value that doesn't
+track our own writes drags the displayed/written volume back toward 71 whenever the user pauses and
+resumes, which is exactly the reported symptom.
+
+**Fix.** `masterVolume` is now tracked locally only: it starts at `MVOL_SEED_DEFAULT` (60) and
+thereafter changes ONLY by accumulated `EID_A` deltas, clamped to 0-100 - never reseeded from
+`masterVolumeRead`, at a gesture start or any other time. The popup shows this locally tracked value,
+same as before. The READ itself is still sent every `EID_A` tick (rate-limited as before) - it is
+what makes the device answer writes at all on this hardware, and `masterVolumeRead` still updates
+from every reply and stays in the log line, purely as a diagnostic now.
+
+**Superseded (2026-09-13).** "It is what makes the device answer writes at all" is wrong - see
+[the four-phase probe result](#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13):
+a 121-write sweep with zero reads took effect exactly. `config.lua` has since dropped the per-tick READ
+poll entirely (Change 1, same date); the single login-time READ is kept as a diagnostic only.
+
+**Removed as dead.** `mvolLastActivityIdleTick` and `MVOL_GESTURE_IDLE_TICKS` existed only to detect
+a gesture's start for the reseed above; with no reseed left, nothing reads either, so both are
+deleted rather than left as unused state.
+
+---
+
+## Popup entry always erases its full region first (2026-09-12)
+
+Same hardware run as the fix above: with Clear Screen skipped on popup entry
+([Popup entry skips Clear Screen](#popup-entry-skips-clear-screen-2026-09-12)), the popup's own
+`popupBg`/border/label/knob/value messages are queued together but drain one per timer tick (the
+project's own display pacing rule). Part of the patch screen stayed visible under the popup while
+that queue was still draining - `popupBg` plus the 4 border strips are only opaque once every one of
+those five messages has actually reached the device, and until then whatever was on screen before is
+still there in the ids that haven't landed yet.
+
+**Fix.** New `draw_popup_erase()`, called first thing in `enter_popup_mode()` (the shared entry path
+for both `show_popup()` and `show_master_volume_popup()`, so every current and future popup gets it
+for free): one filled Draw Rectangle over the WHOLE panel, `POPUP_X`/`POPUP_Y`/`POPUP_W`/`POPUP_H`
+(border included), in `POPUP_BG_COLOR`. Queued as its own message, first, so the panel is fully black
+from the very first message of the burst - nothing underneath can show through the border/label/
+knob/value messages that follow while they drain.
+
+**Memoization interaction.** `draw_rect()` memoizes by id, and the erase rect's own parameters never
+change between openings, so a naive `draw_rect('popupErase', ...)` call would be skipped as
+"unchanged" on the second and every later popup opening - the exact bug this fix exists to prevent,
+just moved one level up. `draw_popup_erase()` clears `drawn['popupErase']` and every id it overlaps
+(`popupBg`, the 4 border ids, `popupLabel`, `popupKnob`, `popupValue`) immediately before drawing, so
+all of them unconditionally resend on every popup entry regardless of prior state - the NON-OVERLAP
+RULE's own documented escape hatch for a caller that can't avoid overlap (see MARK: - Per-region
+memoization in `config.lua`). In the current control flow `dismiss_popup()`'s own
+`set_display_mode()` call already runs `invalidate_all()` on the way out, which would have cleared
+the same ids anyway - but `enter_popup_mode()` no longer depends on that as a side effect of a
+different function; the guarantee is now local and self-enforcing. Test 54 in the Lua harness proves
+this directly: it calls `enter_popup_mode()` twice in a row with `drawn[]` deliberately left
+unchanged in between, and asserts the erase and its overlapping ids resend both times.
+
+**Message budget.** The popup-entry burst goes from 9 to 10 (erase + `popupBg` + 4 border strips +
+label + knob + value + sacrificial redraw); the full first `EID_A` tick (popup entry plus the Master
+Volume write and read) goes from 11 to 12. Harness section 53's ceiling is raised accordingly - a
+deliberate, one-message increase, not a silently-widened bound.
+
+---
+
+## Master Volume write-backs do not all reach the device (2026-09-12) — OPEN, HYPOTHESIS 3 DISPROVED 2026-09-13
+
+**Update (2026-09-13).** Hypothesis 3 below is disproved -
+[the four-phase probe result](#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13)
+found a dense 10ms write stream, with no reads at all, sounds smooth on the device. The device is not
+the bottleneck at any density tested. Hypothesis 2 (one message per flush shared with the popup's own
+redraws) is now the leading explanation - see that section's Change 1, which drops the per-tick READ
+poll to free a flush slot for writes.
+
+Reported from hardware after the local-tracking and popup-erase fixes: the popup itself is smooth and
+shows the right value, but **the sound card's actual volume does not change smoothly** — it steps
+unevenly, as though only some of the writes land.
+
+**What is established:** the popup tracks `masterVolume` continuously and correctly, and `masterVolume`
+changes by one delta per encoder tick. So the gap is between what the script *intends* to send and what
+the device *acts on* — not a display or accumulation bug.
+
+**Leading suspects, none tested:**
+
+1. **Per-region coalescing drops intermediate values.** Master Volume writes are queued under the
+   `'mvol'` region id, which replaces-in-place. During a fast twist, many ticks coalesce into a single
+   queued write carrying only the newest value, and every intermediate value is discarded by design.
+   That is correct for keeping the queue bounded, but it means the device sees a coarse sequence of
+   jumps rather than every step — which would sound exactly like "not smooth".
+2. **One message per flush is too slow for the tick rate.** At `FLUSH_SOON_MS` (35ms) the drain rate is
+   ~28 messages/sec, shared with the popup's own redraws. A brisk encoder sweep generates ticks faster
+   than that, so writes are necessarily thinned.
+3. **The device may rate-limit or ignore closely-spaced writes.** **Disproved 2026-09-13** - a 10ms
+   write stream with no reads sounds smooth on the device; see
+   [the four-phase probe result](#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13).
+
+**Note the tension with the session-safety work:** coalescing and the one-per-flush budget are what
+stopped the queue saturating and getting the app dropped from the APP list. Any fix that sends *more*
+writes must not reintroduce that. The interesting direction is probably sending *fewer but better-timed*
+writes — e.g. a fixed-rate write of the latest value (~10/sec) rather than one per tick — so the device
+gets an even cadence instead of a burst-then-gap.
+
+**Related open question from the same day:** the READ reply is pinned at a constant (71 observed) and
+does not track writes, so it cannot be used to confirm what the device actually received. Until that is
+understood, there is no in-band way to verify which writes landed — the sniffer plus Jeroen's ear are
+the only observation path.
+
+**Resolved (2026-09-13).** The READ reply does track writes exactly (staleness 0, ~1ms) when probed
+directly against the device - see
+[the four-phase probe result](#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13).
+The staleness above was a MainStage host-path artifact, not a device limitation.
+
+### Next step: confirm the read-back against the probe (planned 2026-09-12)
+
+Jeroen's instruction for the next round: **use the Swift probe to establish whether the read-back is
+genuinely faulty**, rather than continuing to reason about it from the script's own log.
+
+This is sharper than it first appears, because the probe has already produced the *opposite* result on
+the same hardware. `Scripts/probe-mastervolume.swift`'s scripted sequence wrote 20, 60, 90 and 45, and
+each read-back returned exactly that value — 4/4, with the `07 00 <vol>` shape correctly failing as a
+negative control. Yet the script, on the same keyboard, logs a constant `vol=71` across a sweep of
+writes 65→70→72 that audibly changed the volume. Both cannot be describing the same device behaviour.
+
+**Already ruled out — byte position.** `midiEvent` is 0-indexed in MainStage's Lua host, the frame is
+`F0 00 20 1A 16 <id1> <id2> 07 00 <VOL> <MUTE> F7`, so `e[9]` is VOL; the probe's `payload.first`
+resolves to the same byte. Both parse correctly, so a decode off-by-one is not the explanation.
+
+**What the probe run should establish:**
+
+1. Does the read-back still track writes from the probe today, reproducing the earlier 4/4 result? If it
+   does, the divergence is real and specific to the script's session.
+2. If it does, what differs? Candidates not yet eliminated: the write cadence (the probe pauses ~500ms
+   between steps, the script writes on every encoder tick and coalesces), and whether a read issued
+   while several writes are still queued returns a pre-write value.
+3. Cadence is the most testable: add a mode to the probe that writes at the script's rate rather than
+   with pauses, and see whether the read-back goes constant. That would tie the constant reply and the
+   uneven volume stepping to a single cause — the device not keeping up with burst writes — which is
+   also the leading suspect for "not all write-backs arrive".
+
+Run the probe solo with MainStage quit, and remember that a run only means anything if the probe was
+explicitly selected on the keyboard during it: state carries between rapid successive runs.
+
+
+---
+
+## Correction: the read reply is sparse and stale, not constant (2026-09-12) — PARTIALLY SUPERSEDED, SEE BELOW
+
+The earlier section claiming the READ reply is "pinned at 71 and does not track writes" was **wrong, and
+wrong because of how it was measured** — it generalised from a `tail -12` window of one run that happened
+to sit in a run of identical values. A full-log check of the following run shows otherwise.
+
+**What the complete log actually shows:**
+
+- **Frames arrive whole.** Every inbound frame is a complete 11- or 12-byte `F0 … F7`. There are no
+  truncated fragments, so the CoreMIDI packet-splitting that broke the standalone probe earlier is NOT
+  happening in MainStage's Lua host. (Jeroen raised this as a hypothesis; it is ruled out.)
+- **Reply values vary widely** across a run: 15, 23, 29, 52, 64, 71, 96, 98.
+- **Replies are rare and badly stale.** Only a handful arrive across thousands of lines, and one reports
+  `vol=29` while `masterVolume` is 67.
+- **Writes are NOT being coalesced away.** Consecutive writes go out with no gaps —
+  `36 37 38 39 3A 3B 3C 3D 3E 3F 40 41 42 43 44 45` on the way up (54→69) and every step back down again.
+
+**This inverts the diagnosis of the uneven-stepping defect.** The leading suspect was per-region
+coalescing discarding intermediate values; the log disproves it. The script emits a clean, complete,
+dense stream and the device's audible response is still uneven, while its read replies lag far behind.
+That points at the **device** not keeping up with densely-spaced writes, not at our queue dropping them.
+
+**Superseded (2026-09-13).** Wrong again, same lesson as the method note below: measured through
+MainStage, not against the device. Probed directly, the device answers every read exactly and in
+~1ms even under a 10ms write stream - see
+[the four-phase probe result](#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13).
+The sparse/stale replies seen here were a MainStage host-path artifact.
+
+**Consequence for the fix direction:** sending writes *more* reliably cannot help — they are already all
+being sent. The promising direction is the opposite: write *less often* at an even cadence (e.g. the
+latest value ~10 times a second instead of once per encoder tick) and give the device time to act on
+each one. That also costs less queue pressure, so it does not fight the session-safety work.
+
+**Still open:** what the READ reply actually reports, given it lags this far behind. It may be a value
+sampled well before our recent writes, which would make it useless as a live reading but harmless as the
+in-flight companion that makes writes work at all.
+
+**Resolved (2026-09-13).** It reports the exact current value, with ~1ms latency, when probed directly -
+see [the four-phase probe result](#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13).
+It is not, and never was, needed as an "in-flight companion" for writes to work.
+
+**Method note.** Two findings in one day were overstated from narrow log windows — this one, and an
+earlier "vacuous assertion" call that turned out to be a mutation landing in a comment. Check a whole
+capture, or the complete set of distinct values, before writing a characterisation into this file.
+
+### The cadence experiment, for the probe (planned 2026-09-12) — RUN 2026-09-13, SEE RESULT BELOW
+
+Jeroen's question: can the "device cannot keep up with a dense write stream" hypothesis be tested with
+the Swift probe? Yes, and better than through MainStage, because the probe controls the one variable
+that matters — the interval between writes — while MainStage's rate is dictated by encoder ticks and
+the flush budget.
+
+**Design.** Add a sweep mode to `Scripts/probe-mastervolume.swift`: walk the volume across the same
+range twice in one session, changing only the inter-write interval.
+
+- **Dense phase:** a write every ~10ms, approximating the encoder tick rate the script produces.
+- **Paced phase:** the same values, a write every ~100ms.
+
+**Observation is Jeroen's ear** — smooth versus stepped — since the read reply lags too far behind to
+serve as the measurement. Two supporting signals the probe should record itself:
+
+1. **Measured elapsed time between sends**, logged per phase. The cadence must be verified, not assumed;
+   a "10ms" loop that actually runs at 40ms would invalidate the comparison.
+2. **Read replies received per phase.** The script's capture suggests replies become rare under dense
+   writes. If the probe reproduces that, it is a second independent signal pointing at the same cause,
+   and it does not depend on anyone's hearing.
+
+**Outcomes and what each means:**
+
+- Dense stepped, paced smooth → hypothesis confirmed; the fix is a write-cadence limit in `config.lua`
+  (send the latest value at a fixed rate rather than once per encoder tick), which also lowers queue
+  pressure and so does not fight the session-safety work.
+- Both smooth → the device is NOT the bottleneck, and the uneven stepping lives somewhere in MainStage's
+  own send path. That is a different investigation, and worth knowing before spending effort on pacing.
+- Both stepped → the steps are inherent to the audio board's volume resolution, not to timing at all;
+  nothing to fix in the script.
+
+**Positive control already in hand:** the probe's existing scripted sequence proves writes take effect
+and read-backs can track them, so a null result cannot be dismissed as "the probe was not working".
+
+Run it solo with MainStage quit, and select the probe on the keyboard during the run — state carries
+between rapid successive runs.
+
+---
+
+## Master Volume writes take effect without a paired read (probe four-phase result) (2026-09-13)
+
+This is the cadence experiment above, actually run with `Scripts/probe-mastervolume.swift --cadence`,
+standalone against the SL88 with a confirmed Login Confirmation, no MainStage involved. Four phases:
+
+- **Phase A/B (write+read sweeps, ~100ms and ~10ms cadence):** 121/121 reads answered in both; reply
+  latency ~1ms; staleness 0 — the reply always reports exactly the value last written.
+- **Phase C (reads only, no writes at all):** 8/8 answered.
+- **Phase D (writes only, no reads at all):** 121 writes swept 20→80→20; a read issued afterward
+  matched the sweep's end value exactly.
+- Jeroen confirmed both sweeps, and a denser ~10ms cadence (three times MainStage's own encoder tick
+  rate), sound smooth through the SL88's audio board.
+
+**Outcome: "Both smooth"** from [the cadence experiment's own predicted
+outcomes](#the-cadence-experiment-for-the-probe-planned-2026-09-12-run-2026-09-13-see-result-below) —
+the device is not the bottleneck at any density tested, and the uneven stepping heard through
+MainStage lives in MainStage's own send path.
+
+**This also disproves the write-needs-read belief** that has run since [the mid-gesture guard
+section](#master-volume-drop-detection-read-rate-limiting-and-the-mid-gesture-guard-2026-09-10):
+Phase D shows a write takes effect with no read anywhere near it, in flight or otherwise. Every
+"the READ is what makes writes work" claim in this file predating 2026-09-13 is wrong; it was a
+MainStage host-path artifact.
+
+**New leading hypothesis for the uneven audible stepping:** irregular write spacing, from
+one-message-per-flush contention between Master Volume writes and the popup's own redraws (see [the
+open write-backs section](#master-volume-write-backs-do-not-all-reach-the-device-2026-09-12-open-hypothesis-3-disproved-2026-09-13))
+— not device saturation, which is now ruled out. First step against it: `config.lua` no longer issues
+a Master Volume READ on every `EID_A` tick (it cost a flush slot for a diagnostic that was never
+required for the write to work); the single READ on entering an active session is kept, since it
+costs one message per session and remains useful for logging.
+
+**Caveat.** A run only means anything if the probe was actually selected on the keyboard during it —
+a run that returned 0 replies across every phase was discarded on exactly this basis, since phases
+already known to work also returned nothing that time.
+
+---
+
+## Master Volume write pacing: one per tick (2026-09-13)
+
+Confirms the hypothesis above and closes it out. A captured flush log during an A-encoder sweep showed
+four Master Volume writes leaving in a single timer tick, then a gap until the next:
+
+```
+FLUSH #359 tick=188 regionId=mvol
+FLUSH #360 tick=188 regionId=mvol
+FLUSH #361 tick=188 regionId=mvol
+FLUSH #362 tick=188 regionId=mvol
+```
+
+Cause: `flush_pending` is called both from `controller_timer_trigger` and once per inbound SL frame from
+`controller_midi_in`. A fast twist produces several inbound frames per tick, and a Master Volume WRITE
+was never gated the way a display message is - each of those calls dequeued the 'mvol' entry the
+instant a new one coalesced in, so the writes left in a burst rather than spread across the tick period.
+
+The device itself is not the bottleneck: the four-phase probe result above already showed 121/121
+writes landing correctly at a dense, EVENLY SPACED ~10ms cadence, and Jeroen confirmed that sweep sounds
+smooth. **The same number of writes, delivered in bursts instead of spread out, sounds stepped. This is
+about spacing, not throughput — sending more writes faster does not fix it, and should not be tried
+again as an "optimisation".**
+
+**Fix:** `mvolFlushReady`, a second pacing flag mirroring `displayFlushReady`'s existing shape (see the
+"Display pacing" entry above) - granted once per timer tick by `controller_timer_trigger`, consumed by
+`flush_pending` the instant it emits a Master Volume WRITE. The Master Volume READ and every protocol
+message (identification, keepalive, logout) are deliberately left ungated, same as they are for the
+display gate - the read is rare and diagnostic-only, and starving protocol traffic is what gets the app
+dropped from the SL88's APP list. Coalescing under the existing 'mvol' regionId is unchanged: a burst of
+encoder ticks still collapses to the newest value, which is exactly what the paced flush then sends.
+
+**Effective tick rate during a gesture.** A per-tick gate is only as responsive as the ticks are
+frequent. `show_master_volume_popup()`'s repeat-call branch (every EID_A tick after the first) calls
+`request_quick_rearm()` unconditionally, which shortens an outstanding `KEEPALIVE_MS`/`POPUP_TICK_MS`
+one-shot to `FLUSH_SOON_MS` (35ms) - confirmed by reading the code path, not assumed. So a gesture
+already ticks at ~35ms, not the ~3s keepalive cadence; pacing Master Volume to one write per tick paces
+it to roughly one write per 35ms, which is well within the dense cadence the probe proved sounds smooth.
+
+---
+
+## Recovering a silently dropped active session, bounded (2026-09-13)
+
+Hardware evidence, captured mid-session: the SL88 stopped answering Identification Queries entirely -
+no `7F 03 01` replies - while still sending unrelated traffic (`03 05 3F` encoder frames). No Logout
+Request, no Standby, no Rejection; the app's registration was simply gone from the keyboard's side.
+Because the session clock depends on the query's reply to re-arm the one-shot timer (see "The session
+clock and the one-shot timer" above), the script then went silent permanently - Jeroen's report: "app
+dropped out and did not come back". Root cause (why the keyboard de-selects the app) is still open;
+this only makes the script recover once it happens.
+
+**History.** A first version of this detector existed and was removed the same week - see "Master
+Volume drop detection..." above. It fell straight to `STATE_IDLE` after 6s of silence with no cooldown
+and no cap, and was pulled after a build containing it left MainStage feeling frozen with audio pops
+while idle. That capture was lost to a manual restart, so the mechanism is suspected, not proven, but
+credible: dropping to `STATE_IDLE` re-identifies, re-identifying can draw a Rejection, a Rejection
+retries/bumps, and with nothing bounding the cycle it can spin.
+
+**This version is bounded three ways, all designed to make that spin impossible:**
+
+1. **Threshold raised to `ACTIVE_QUERY_DROP_MS` = 10s** (was 6s). One missed reply at the ordinary
+   `KEEPALIVE_MS` (3s) cadence is normal jitter, not a drop; 10s is roughly 2x the SL88's own ~5s host
+   timeout, comfortably past a single miss without waiting so long that a real drop sits unnoticed.
+2. **`RECOVERY_COOLDOWN_MS` = 15s minimum between attempts.** Longer than the worst-case identify
+   cycle (`MAX_IDENTIFY_RESENDS` resends at `KEEPALIVE_MS` cadence, ~9s), so a fresh attempt is never
+   cut short by another trigger mid-cycle, and a recovery that does not stick cannot re-fire
+   immediately - the exact shape of the suspected freeze.
+3. **`MAX_RECOVERY_ATTEMPTS` = 3.** After three consecutive attempts with no intervening return to
+   `STATE_ACTIVE`, the detector latches `recoveryGivenUp` and logs it, then stays silent for the rest
+   of that script instance rather than retrying forever. A successful return to `STATE_ACTIVE`
+   (`enter_active_session`) resets the count - the cap tracks attempts that never worked, not how many
+   times a flaky link drops and recovers.
+
+**Mechanism.** `activeMsSinceQueryReply` accumulates `timerArmedInterval` (real elapsed ms, not a tick
+count - see `timerArmedInterval`'s own comment on why pacing is not constant) each tick while
+`STATE_ACTIVE`, and resets to 0 on any Identification Query reply (`handle_sl_frame`'s `ID_QUERY`
+branch resets it before even checking the result byte - a reply proves the round trip alive whatever
+it says) or on entering `STATE_ACTIVE`. On firing, `controller_timer_trigger` sets `state = STATE_IDLE`
+and lets the existing branch immediately below (`if state == STATE_IDLE then start_identification()`)
+take it from there, rather than calling `start_identification()` a second time from two places.
+
+**Does not fight the timer watchdog (`TIMER_WATCHDOG_FRAMES`).** That watchdog and this one watch
+different signals for different failures: `TIMER_WATCHDOG_FRAMES` counts inbound MIDI *frames* to
+detect MainStage losing the local one-shot itself (`rearm_timer`'s own watchdog), and its fix is to
+re-arm the same timer. This detector counts elapsed *milliseconds* while `STATE_ACTIVE` to detect the
+remote keyboard going silent, and its fix is to re-identify - it never touches `timerPending`,
+`framesSinceTick`, or calls `settriggertimer` at all, so the two cannot double-fire or race each
+other.
+
+## Recovery did not fire; MainStage's churn masked it (2026-09-13)
+
+First hardware run with the bounded recovery watchdog. The session dropped and the app came back — **but
+not because of the watchdog.** The log contains no `recovery watchdog` lines at all.
+
+What actually happened: MainStage tore the script down and re-initialised it, as it routinely does. Four
+distinct instance tags appear in one run (`c805ac/7B`, `bd422c/78`, `42f32c/24`, `2a7a4c/43`), each a
+fresh Lua state deriving a different instance byte from its own tag, each identifying successfully. The
+user saw two APP-list entries at once, then the app working again under a new id.
+
+**Why the watchdog didn't fire:** the dropped instance was almost certainly finalised by MainStage before
+`ACTIVE_QUERY_DROP_MS` (10s) elapsed, so it never reached the threshold. The watchdog is not disproved —
+it was never exercised. Treat it as untested on hardware, not as working.
+
+**Newly visible cost of per-instance DeviceIDs.** Deriving the instance byte from `instanceTag` means
+**every re-initialisation registers as a new app**, so the SL88's APP list accumulates entries across
+MainStage's ordinary churn. Before per-instance ids, every incarnation collided on one id — bad for
+identification, but it did yield a single entry. This is the same trade-off recorded under "Identification
+and instance-ID collisions": bumping the instance byte registers as a different app and loses the user's
+selection.
+
+**The unexplored option remains the one noted there:** derive the instance byte from something stable per
+*interface* rather than per Lua state — the `portName` passed to `controller_midi_in` is the obvious
+candidate, since it differs between the two matched USB-MIDI interfaces but is identical across
+re-initialisations of the same one. That would give distinct ids to genuinely concurrent instances while
+keeping one entry per interface across churn. Not attempted; `portName` is only available once the first
+inbound frame arrives, which is after identification is first sent, so it needs thought.
+
+User's assessment of the current state: "workable for now."
+
+### Concurrent instances: no action, they self-clean (decided 2026-09-13)
+
+The run above showed **4 `controller_initialize` calls and 0 `controller_finalize`** — four concurrent Lua
+states, each with its own derived DeviceID, all identifying successfully. Two drove real sessions (2482
+and 509 log lines); two did almost nothing (6 and 4 lines).
+
+Per-instance DeviceIDs are what made this visible: previously every instance collided on one id, so
+exactly one was approved and the rest stayed inert. Unique ids fixed the collision and let all of them
+register.
+
+**Decision: leave it.** Jeroen's call, from watching the keyboard: the idle instances stop ticking, stop
+keepaliving, and the SL88 drops them from the APP list on its own once it considers them dead. The
+duplicate entries are transient. The "elect one active instance, others stay passive" option (the
+`portName` discriminator, and CLAUDE.md's standing "decide whether the second instance should stay
+passive" question) is therefore NOT being implemented — revisit only if duplicate entries or contention
+become a real problem in use.

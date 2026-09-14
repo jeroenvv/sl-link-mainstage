@@ -239,9 +239,30 @@ is **a single lamp, not a segmented ring** — it can express state through colo
 a value.
 
 **Master Volume** (`0x07`, ↔): `<R/W> <VOL> <MUTE>`. This is the SLMK2's **USB audio board** volume, not
-your application's. `R/W = 1` writes; `VOL` is **0–100 as a percentage** (>100 ignored); any non-zero
-`MUTE` mutes. `R/W = 0` with `VOL` omitted reads — the SLMK2 replies with current volume and mute, so
-call it at startup to sync. `MUTE` may be omitted for backwards compatibility.
+your application's. `VOL` is **0–100 as a percentage**; any non-zero `MUTE` mutes. The R/W byte, not the
+message length, decides what a frame means, and the three legal frames are not symmetric — see
+[the upstream answer](https://github.com/fatarsrl/sl-link/issues/2) for the authoritative statement:
+
+| Direction | Bytes | Meaning |
+|:---|:---|:---|
+| Host → SL | `07 01 <VOL> [MUTE]` | **Write.** At least `VOL` must be present. Omitting `MUTE` leaves the current mute status untouched; to change mute alone, send `VOL > 0x64` so the volume is ignored. |
+| Host → SL | `07 00 [anything]` | **Read request.** The firmware ignores every byte past the R/W byte when it is `0x00`, so a payload here is silently discarded — this is the trap that makes a mistyped write look like a dead message type. |
+| SL → Host | `07 00 <VOL> <MUTE>` | **Read reply**, and the payload is mandatory in this direction. The hardware *must* answer a read request; if it does not, the session is not actually logged in. |
+
+So `R/W = 0` carrying a payload is the *reply*, not a write. A capture that shows the keyboard emitting
+`07 00 <VOL> <MUTE>` is showing you the second half of someone else's read, not an alternative write
+format.
+
+The keyboard never changes its own volume in response to the A encoder — **owning the volume is the
+host's job**. Studiologic's own Numa Player does it by answering every A-encoder tick with a read
+request, then writing back the incremented value; the maintainer explicitly calls this *not* the
+preferred design. Keep the value in host state, write on every tick, and read only after a **Login
+Confirmation** — that one read is what catches a volume the user changed by hand while outside SL-Link
+mode.
+
+Master Volume has no special handshake, but it does have a precondition: identified, keeping alive,
+**and logged in**, where logged in means a System Login Confirmation was actually received. Both
+directions are fully supported on firmware 1.1.2.
 
 ## 7. Where hardware disagrees with the spec
 
@@ -251,9 +272,9 @@ length or a "reserved" claim.**
 | Spec says | Hardware does |
 |:---|:---|
 | Identification Approved is a bare 10 bytes; Login Confirmation carries `MAJ MIN REV SL` | **The opposite.** Approved arrives 14 bytes *with* the firmware/model payload; Login Confirmation arrives bare |
-| Host never receives A Encoder (`EID 0x05`) / A Encoder Button (`BID 0x0B`) — reserved for USB audio | They **do** arrive, as ordinary messages, with no accompanying volume traffic |
+| Host never receives A Encoder (`EID 0x05`) / A Encoder Button (`BID 0x0B`) — reserved for USB audio | They **do** arrive, as ordinary messages. No volume traffic accompanies them because the keyboard does not act on them at all: applying A to the audio board's volume is the host's job (§6) |
 | (silent on whether LONG_PRESSION reaches the host) | LONG **is** delivered for ordinary buttons |
-| DeviceID is one 14-bit random value | Reference implementations use `(HOST_ID, instance)` — and the SL88 accepts it |
+| DeviceID is one 14-bit random value | The spec is right and the `examples/` plugins are stale — confirmed upstream. Bytes 5 and 6 *together* are the DeviceID, regenerated per session; "HostID"/"InstanceID" is retired nomenclature the examples still use. The hardware cannot tell the difference — it is purely an anti-collision mechanism — so `(HOST_ID, instance)` is accepted, but do not treat the examples as the reference for identification |
 
 **Generalise from this: trailing bytes are optional more often than documented.** The spec itself marks
 some as optional (Master Volume's `MUTE`, Hardware Settings' `HST`). Accept known variant lengths
@@ -362,4 +383,5 @@ startup are indistinguishable from failures.
 - [ ] Encoder delta = `tick - 0x40`, added directly, no added acceleration
 - [ ] LONG press handled, never dropped; A encoder/button never discarded
 - [ ] Drawing memoized per non-overlapping region
-- [ ] Master Volume understood as the *audio board's*, 0–100 percent
+- [ ] Master Volume understood as the *audio board's*, 0–100 percent, written with `R/W = 1` (`R/W = 0`
+      is a read request whose payload the firmware discards) and only once logged in

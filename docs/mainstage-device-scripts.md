@@ -62,6 +62,44 @@ do not need to unplug the device if it is already connected.
 requires `MIDIDeviceCreate`, which returns `paramErr` (-50) for any non-driver process. So a script
 cannot be pointed at a virtual port your own app publishes — it must match real hardware.
 
+**2026-09-05, confirmed on hardware:** **`model` is a matching key, not a label. It must equal the
+device's reported `kMIDIPropertyModel`, and a mismatch fails completely silently — the script simply
+never loads, with no error anywhere.** Hit this renaming this project's device from `SL` to `SL88` —
+the SL88 MK2 reports `model: SL` over CoreMIDI (`Scripts/list-midi.swift` prints a connected device's
+reported manufacturer/model, which is how to find the value generic matching needs), so `model =
+'SL88'` no longer matched anything. Three things were tried to keep the friendlier name and all three
+failed:
+
+1. `model = 'SL88'` alone — never loaded, zero `[sllink]` lines.
+2. `model = 'SL88'` plus correct active `usb_vendor_id`/`usb_product_id` (verified against `ioreg`) —
+   still never loaded, across two restarts. **USB IDs are an additional filter, not a substitute for
+   manufacturer/model matching.**
+3. `model = 'SL88'` plus `compatibleModels = { 'SL' }` — still never loaded, 91 seconds after launch.
+   **`compatibleModels` does not participate in device matching**, at least not in any way that lets
+   `model` differ from the hardware's reported model.
+
+Neither USB IDs nor `compatibleModels` is an escape hatch. `model` must equal the hardware's reported
+`kMIDIPropertyModel` exactly.
+
+**Confirmed:** the containing `.device` folder name must also equal `model`, which must equal the
+hardware's reported `kMIDIPropertyModel`. A fourth negative isolated it: `model = 'SL'` restored (USB
+IDs commented back out, no `compatibleModels`) — the exact configuration that worked all morning —
+still never loaded while the folder stayed named `SL88.device`. All four attempts, compactly:
+
+1. `model = 'SL88'` alone — never loaded.
+2. `model = 'SL88'` plus correct active USB IDs — never loaded.
+3. `model = 'SL88'` plus `compatibleModels = { 'SL' }` — never loaded.
+4. `model = 'SL'` (the known-working config) but folder still `SL88.device` — never loaded.
+
+The device's presented name is dictated entirely by its firmware; it cannot be relabelled from a
+device script, and every failure mode above is silent — the script simply never loads, with no error
+anywhere. Folder name, `model` and the hardware's reported model must all agree; there is no escape
+hatch. The device stays `SL.device` with `model = 'SL'`.
+
+Lesson from a separate mix-up the same day: a static finding must name the MainStage version it came
+from, and that version must be the one actually running — two installed copies can otherwise produce
+findings that silently describe the wrong app.
+
 ## 2. `controller_info` — the `items` table
 
 Each item describes one physical control and makes it mappable in MainStage.
@@ -72,7 +110,10 @@ Each item describes one physical control and makes it mappable in MainStage.
 ```
 
 `MIDI_LSB`, `MIDI_MSB` and `MIDI_Wildcard` are globals MainStage injects — placeholders in the `midi`
-pattern for "the value goes here" and "match anything".
+pattern for "the value goes here" and "match anything". Hardware logging (2026-09-05) showed their
+actual runtime values are the **strings** `'aa'`, `'bb'` and `'??'` respectively; `MIDI_CtrChange` also
+exists and is `176` (`0xB0`). The offline harness had stubbed the three as the number `0`, which was
+wrong.
 
 Vocabulary actually used across the 98 bundled scripts:
 
@@ -116,6 +157,216 @@ Caveats on the above: the branch polarity was inferred from control flow in the 
 a named symbol, and the parser's target class was not confirmed via an `isKindOfClass:` check. What
 would confirm it: sending MSB-then-LSB on channel 1 with no Program Change from a **real** external
 MIDI port, not an injected substitution.
+
+### The complete key vocabulary, read out of the binary
+
+`controller_info()`'s parser lives in `LogicMainStage.framework` (MainStage and Logic Pro share the
+control-surface code; this framework was named `LogicPro.framework` in older MainStage versions such
+as 3.7.1), not in MainStage's own binary. `strings` on
+`/Applications/MainStage.app/Contents/Frameworks/LogicMainStage.framework/Versions/A/LogicMainStage`
+(version 4.3.1, the one actually running) finds one contiguous string table holding every key the
+parser recognises, interleaved with its own error strings (`LUA: controller_info() returned a
+non-table 'item' object in the items table`, `LUA: controller_info() didn't return a table`, `LUA:
+Script incompatible with application '%@'`) — that co-location is what ties this list to the Lua
+parser rather than to some unrelated plist schema.
+
+Top-level keys, in the order the table stores them (usage counts are `grep -rl` over the 98 bundled
+scripts under `MIDI Device Scripts/`, §1; "—" means not independently counted):
+
+| Key | Scripts | Note |
+|:---|---:|:---|
+| `model`, `manufacturer`, `items` | 98 | required; documented above |
+| `usb_vendor_id` / `usb_product_id` | 4 / — | documented above (§1 counts 3 as *active* — `M-Audio/Axiom 25 #1`, `M-Audio/Oxygen 25 #1`, `M-Audio/Oxygen 49 #1`; the 4th is commented out, in `Arturia/KeyLab 88.device/config.lua:70` — `--usb_vendor_id = 7285,`) |
+| `preset_name` | 53 | documented above |
+| `auto_passthrough` | 10 | documented above |
+| `device_request` / `device_reply` | 3 / 0 | `device_request` documented above (SysEx inquiry); `device_reply` **unproven** |
+| `patchselector` | 2 | documented above |
+| `compatibleModels` | 0 | **unproven** |
+| `logicpro` / `logicprox` | — / 3 | presumably app-targeting flags, parallel to `action_<app>` below; **unproven** |
+| `supports_feedback` | 5 | **unproven** — presumably declares `controller_midi_out` support |
+| `always_update` | 0 | **unproven** |
+| `ignore_notes` | 2 | **unproven** — presumably suppresses passing Note events through |
+| `device_inquiry` | 37 | the most-used key with no documented meaning here; **unproven** |
+| `action_` (bare prefix) | 0 | root of the `action_<app>` family — see below |
+| `action` | 0 | a distinct, singular per-item key, sitting next to `objectType`/`midiType` in the table; **unproven** |
+| `assignments` / `alertAssignments` | 0 / 0 | sub-vocabulary below; **unexplored** |
+| `copyright` | — | documented above |
+| `OSC_pattern` | 0 | **unproven** |
+| `dBToFader` / `dbToFader` | 0 / 0 | both cases present in the binary — the parser evidently accepts either; **unproven** |
+| `replacingPlugInModel` / `replacingPlugInManufacturer` | 1 / 0 | from the table's second copy (re-locate via the anchor string in 4.3.1's binary rather than an offset, since offsets differ between versions); `replacingPlugInModel` associates the script with a plug-in for `PreferPlugIn()` (Roland `A-PRO`'s own comment); `replacingPlugInManufacturer` **unproven** |
+
+Per-item keys: `objectType` and `midiType` sit immediately after `action` in the table. The ones the 98
+scripts actually use — `name`, `label`, `midi`, `inport`, `outport`, `startKey`, `numberKeys` — are
+already covered above; this list adds nothing new there.
+
+So most of this vocabulary is unexercised by Apple's own scripts and unproven by this project — only
+`device_inquiry`, `supports_feedback`, `usb_vendor_id`, `logicprox` and `ignore_notes` see any use at
+all, and none of those uses has been decoded here.
+
+**`assignments` / `alertAssignments` sub-vocabulary.** The same string table continues straight into a
+second block that reads like Logic's control-surface assignment model exposed to Lua: `controlID`,
+`paramName`, `shortParamName`, `OSCValueChange`, `OSCTouched`, `OSCLabel`, `OSCValueString`,
+`midiTouched`, `gotoMarker`, `alertButton`, `liveLoopsColumn`, `globalObj`, `clockPart`,
+`faderBankTrack`, `CSTrack`, `track`, `output`, `master`, `audio`, `instr`, `extMIDI`, `trackParam`,
+`isMIDIPlugIn`, `boundManuf`, `boundSubID`, `boundPlugInID`, `keyCmd`, `CSGroupObj`, `bankType`,
+`viewFilter`, `groupObj`, `groupParam`, `flipGroup`, `textFeedback`, `fbType`, `valueFormat`,
+`valueMode`, `minVal`, `maxVal`, `minMaxOnly`, `selfFeedback`, `exclusive`, `keyRepeat`, `multiply`,
+`ignoreTrim`, `objOffset`, `paramOffset`, `zone`, `mode`, `control`. Flagged as a lead worth returning
+to, **not** as something known to work from a device script — zero of the 98 bundled scripts touch any
+of it.
+
+### `action_<app>`: binding a control to a MainStage command with no MIDI-Learn
+
+Arturia's shipped `KeyLab 88 mk3.device/config.lua` (v1.4) declares seven items carrying an
+`action_mainstage` field and **no** `objectType`:
+
+```lua
+{ name = "Play Stop", midiType = "Momentary", midi = {MIDI_CtrChange, 21, MIDI_LSB},
+  inport = 'DAW', outport = 'DAW', action_mainstage = 'PlayStop' },
+```
+
+The seven values it uses: `Metronome`, `PanicFull`, `PlayStop`, `Record`, `TapTempo`, `Undo`, `Redo`.
+
+The literal string `action_mainstage` appears **nowhere** in MainStage 4.3.1's binaries or resources
+(verified by a recursive binary-safe grep of the whole app bundle; also absent from 3.7.1's binaries).
+The bare prefix `action_` **does**,
+inside the key table above, next to the sibling keys `logicpro`/`logicprox`. **Inference, not fact:**
+the key is composed at runtime as `action_` followed by the lower-cased application name — MainStage
+passes `applicationName = "MainStage"` to `controller_initialize` (seen in this project's own
+`/tmp/lua.log`), which would compose to exactly `action_mainstage`. Untested on hardware as of this
+writing.
+
+The values are MainStage **command IDs**, not free text. The full set — 138 lines, ~127 commands
+across 11 groups — lives in
+`/Applications/MainStage.app/Contents/Resources/en.lproj/WsCommands.plist` (4.3.1; `plutil -p` to read
+it; re-dump after a MainStage update, since the ID→menu mapping is not otherwise documented). All
+seven Arturia names match an ID there exactly. The groups most relevant to this project:
+
+| ID | Menu name |
+|:---|:---|
+| **Actions** | |
+| `NextPatch` | Next Patch |
+| `PreviousPatch` | Previous Patch |
+| `NextSet` | Next Set |
+| `PreviousSet` | Previous Set |
+| `Metronome` | Toggle Metronome |
+| `MasterMute` | Toggle Master Mute |
+| `Panic` | Panic |
+| `PanicFull` | Panic with External |
+| `PlayStop` | Play/Stop |
+| `Record` | Record |
+| `TapTempo` | Tap Tempo |
+| `ResetComparePatch` | Reset/Compare Patch |
+| `SelectionFollowsMIDI` | Selection follows incoming MIDI |
+| `MapParameter` | Map Parameter |
+| `NewAssignment` | New Assignment |
+| `AssignAndMap` | Assign and Map |
+| `ArticulationMIDIRemote` | Toggle Articulation MIDI Remote |
+| **Edit** | |
+| `BeginSelectPatch` | Begin Select Patch |
+| `Undo` | Undo |
+| `Redo` | Redo |
+| **View** | |
+| `ToggleFullScreen` | Enter / Exit Full Screen |
+| `TogglePatchList` | Toggle Patch List |
+| `ViewPerform` | Perform Mode |
+| `ViewLayout` | Layout Mode |
+| `ViewEdit` | Edit Mode |
+| **File** | |
+| `SaveConcert` | Save Concert |
+
+Why this matters here: `NextPatch`/`PreviousPatch` bound via `action_mainstage` would remove the
+one-time MIDI-Learn per concert that the whole 34-CC map currently requires, and would give a
+*relative* patch-navigation primitive for free — see `docs/mainstage-integration.md`, "Next thing to
+try: a relative control instead of an absolute one".
+
+The command table above is retained regardless of the result below — the IDs are a property of
+MainStage's own command dispatch, not of this field, so they remain valid input to any future route
+that does reach them.
+
+**VERIFIED NEGATIVE (2026-09-05, MainStage 4.3.1, real SL88 MK2).** Two rounds, both inert.
+
+Round 1 tested `action_<app>`/`action` in isolation:
+
+| CC source | Channel | Key | `objectType` | Command | Fired |
+|:--|:--|:--|:--|:--|:--|
+| script-injected (CC 74) | 16 | `action_mainstage` | absent | Metronome | no |
+| script-injected (CC 58) | 16 | `action_mainstage` | absent | Metronome | no |
+| script-injected (CC 58) | 1 | `action_mainstage` | absent | ToggleChannelStrips | no |
+| script-injected (CC 57) | 1 | `action` | absent | ToggleInspectors | no |
+| real hardware CC 1 (mod wheel) | 1 | `action_mainstage` | `Wheel` | Metronome | no |
+| real hardware CC 16 (stick 2) | 1 | `action` | absent | TogglePatchList | no |
+
+Why this is a sound negative rather than a missed signal:
+
+- Every injected CC was confirmed emitted with its exact declared number, via a log line added for
+  this spike that prints the CC numbers in each batch (`[sllink] CC batch: 1 CC(s) [74=127], 3
+  bytes`). An earlier round of this same spike produced a false negative precisely because that line
+  did not exist — the gesture performed emitted CC 58 while the item under test was bound to CC 74,
+  and nothing in the log showed the mismatch.
+- The two real-hardware CCs were confirmed arriving in MainStage's own **Window > MIDI Message
+  Monitor**.
+- For CC 1 and CC 16 the script's `controller_midi_in` returns `nil` — the falsy path, already
+  documented above as the condition MainStage's own parsers require (it is what `patchselector`
+  needs). So the real-hardware rows are the best-case configuration, not a degraded one.
+- A variant emitting no CC at all was also run and produced nothing, as predicted. That result is
+  **vacuous** — MainStage had no MIDI to match, so it rules nothing in or out.
+
+Round 1 has a confound: all six of those items omitted `objectType` and used invented names on
+channel 16, so a missing `objectType` or the channel could in principle have been the reason, not
+`action_<app>` itself. Round 2 closed that gap by mirroring Arturia's shipped KeyLab mk3 declarations
+onto SL88 gestures **byte-for-byte** — same CC numbers (49/50/51/52 for Previous/Next Patch and Set,
+91/92/94/95 for Knob1-4, 113 for Fader9, 20-23/27/43-44 for the transport and DAW commands), the same
+MIDI channel 1 (`0xB0`), the same `objectType`/`midiType`, the same item names (`PreviousPatch`,
+`NextPatch`, `Knob1`, `Fader9`), and the same `action_mainstage` presence or absence per control:
+
+| Variable | Values tried |
+|:--|:--|
+| item `name` | invented (`Spike A1`), exact command ID (`NextPatch`, `Metronome`), Arturia's spaced names (`Play Stop`) |
+| `objectType` | absent, `Button`, `Knob`, `VFader` |
+| `action_<app>` | absent, present |
+| CC number | ours (40-74), Arturia's exact numbers |
+| channel | 16 and 1 |
+| CC origin | script-injected, and real hardware CC 1 / CC 16 |
+
+Result: no binding of any kind. Every gesture emitted its intended CC — confirmed in the log, e.g.
+`[sllink] CC batch: 1 CC(s) [49=127]` and a clean absolute sweep `[113=64]`..`[113=72]` — and nothing
+in MainStage responded.
+
+Incidental finding from building the mirror: `MIDI_CtrChange` is simply the number `176` (`0xB0`), so
+`MIDI_CtrChange` and `0xB0 + CC_CHANNEL` with `CC_CHANNEL = 0` are the identical value — the spelling
+difference between Arturia's script and ours is cosmetic, not a protocol difference.
+
+The mirror also moved the CC map to channel 1 to match Arturia exactly; this project's CC map stays
+on **channel 16** rather than adopting that. Channel 1 is the channel the SL88 itself uses for notes,
+mod wheel, Stick 1 Y and sustain, so synthetic control CCs there risk colliding with musical traffic a
+patch is listening to. Channel 16 is deliberate isolation, not an arbitrary choice inherited from
+elsewhere.
+
+Supporting static evidence, already above: the literal `action_mainstage` appears nowhere in
+MainStage 4.3.1's binaries (only the bare `action_` prefix, in `LogicMainStage.framework`'s key
+table; also absent from 3.7.1's binaries), and zero of the 98 bundled MainStage scripts use it.
+
+**Do not overstate this.** The honest conclusion is: inert in MainStage 4.3.1 across every path
+reachable from a device script, now including a byte-for-byte mirror of a real vendor script's
+declarations. It is NOT established as inert everywhere — the key table lives in
+`LogicMainStage.framework`, so this may be a Logic Pro feature MainStage does not implement, and
+Logic Pro is not installed on this machine, so that remains untested rather than disproven.
+
+**Conclusion.** A MainStage device script cannot bind a control to a built-in command. `action_<app>`
+is inert, item `name` is not a binding key, and mirroring a working vendor script's declarations
+exactly does not help. The one-time MIDI-Learn per concert is unavoidable — and it is unavoidable for
+Arturia too.
+
+**Corrected understanding of Arturia's nav buttons.** It would be tempting to read a working KeyLab's
+Previous/Next Patch buttons as evidence the device script has some mechanism this one lacks. It does
+not: Arturia's own script contains no mechanism to change a patch at all — no Program Change, no Bank
+Select; `SCROLL_TYPE` is redraw bookkeeping only, not patch navigation. A KeyLab whose nav buttons
+work is relying on an assignment stored in that user's own MainStage setup, not on anything the
+device script provides. MainStage itself ships no default controller-assignment presets — checked:
+the only mapping resources in the app bundle are GM instrument mappings. Arturia's shipped
+KeyLab mk3 script declares seven `action_<app>` items, which under this result do nothing under
+MainStage.
 
 ## 3. Callbacks
 

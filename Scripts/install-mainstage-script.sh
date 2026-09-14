@@ -4,8 +4,8 @@
 # Matched by usb_vendor_id/usb_product_id against the real SL88 MK2, not
 # generically against a virtual endpoint - see the MATCHING note at the top
 # of config.lua for why. The manufacturer/model directory names below are
-# therefore the SL88's own identity (STUDIOLOGIC/SL), not a separate
-# bridge-only identity.
+# therefore the SL88's own identity as reported by its firmware
+# (STUDIOLOGIC/SL), not a separate bridge-only identity.
 #
 # MainStage only loads device scripts from a folder under the user's Library, and nothing
 # populates that folder automatically - this script has to be run by hand (or by whatever install

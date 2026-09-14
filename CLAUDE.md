@@ -64,6 +64,15 @@ reports rather than relaying it unchecked.
 **Keep commit messages short.** Subject line plus a few lines at most. Extended reasoning, evidence
 tables and rejected hypotheses belong in `docs/`, which the commit can reference.
 
+**Keep forensic narrative out of production code.** `config.lua` carries genuinely load-bearing
+invariants and those comments must stay - but many comments reproduce dated experiment histories that
+already live in `docs/config-lua-history.md`. The dividing line is purpose, not length: the rule a
+future edit could silently break belongs next to the code, in a line or two, with a
+`-- see docs/config-lua-history.md#anchor` pointer. Captured log excerpts, byte dumps, chronology and
+rejected hypotheses belong in `docs/`. A reader of `config.lua` needs to know what they must not break,
+not to relive the investigation that established it - and duplicating it means two copies that drift.
+When trimming such a comment, relocate its content rather than dropping it.
+
 **Use the skills.** `.claude/skills/test-mainstage-script` (hardware deploy/verify loop) and
 `.claude/skills/lua-harness` (offline verification before spending a hardware round-trip).
 
@@ -163,8 +172,9 @@ with the published spec. Read that rather than re-deriving from the spec.
 Project-specific notes that live only here:
 
 - **Implemented:** Identification, System (device notification, login confirmation/recall, logout,
-  standby, restart), Display (rect/text/bitmap), Buttons, Encoders. **Out of scope:** device icon
-  upload, Master Volume, Hardware/Pedal Settings queries, White/RGB LED control.
+  standby, restart), Display (rect/text/bitmap), Buttons, Encoders, Master Volume (the A encoder
+  drives the audio board's volume; the host owns the value and writes it). **Out of scope:** device
+  icon upload, Hardware/Pedal Settings queries, White/RGB LED control.
 - **Plot Bitmap draws from the SL88's internal bitmap library** (Groups/Icons, no pixel upload
   needed) — see `docs/implementing-sl-link.md` §5 for the group table; verified on hardware, Knob
   group renders as a filling 13-step ring gauge, used by the encoder value popup.

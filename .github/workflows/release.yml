@@ -152,12 +152,45 @@ jobs:
           new_version="$(tr -d '[:space:]' < VERSION)"
           echo "version=$new_version" >> "$GITHUB_OUTPUT"
 
+      - name: Update CHANGELOG.md
+        # Keeps CHANGELOG.md current without a human step: prepend the new version's section (the
+        # same commit-subject list the release notes use) under the [Unreleased] heading, leaving
+        # that heading in place and empty for the next cycle.
+        if: steps.last_tag.outputs.has_tag == 'true' && steps.script_changed.outputs.changed == 'true'
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          release_date="$(date -u +%Y-%m-%d)"
+
+          {
+            echo "## [$version] - $release_date"
+            echo
+            cut -f2 /tmp/commits-since-last-tag.tsv | sed 's/^/- /'
+          } > /tmp/changelog-section.md
+
+          # Real if/then, not `grep -q ... && ...`, for the same set -e reason as the bump-decision
+          # step above. If the [Unreleased] heading is missing, append instead of failing the release
+          # - a malformed insert point should not block shipping.
+          if grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+            awk -v section_file=/tmp/changelog-section.md '
+              { print }
+              /^## \[Unreleased\]/ && !inserted {
+                print ""
+                while ((getline line < section_file) > 0) print line
+                inserted = 1
+              }
+            ' CHANGELOG.md > /tmp/changelog-new.md
+          else
+            echo "No [Unreleased] heading found in CHANGELOG.md - appending instead."
+            cat CHANGELOG.md /tmp/changelog-section.md > /tmp/changelog-new.md
+          fi
+          mv /tmp/changelog-new.md CHANGELOG.md
+
       - name: Commit version bump
         if: steps.last_tag.outputs.has_tag == 'true' && steps.script_changed.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add VERSION MainStageScript/STUDIOLOGIC/SL.device/config.lua
+          git add VERSION MainStageScript/STUDIOLOGIC/SL.device/config.lua CHANGELOG.md
           git commit -m "chore: release v${{ steps.version.outputs.version }}" -m "[skip ci]"
           git push origin HEAD:main
 

@@ -185,6 +185,10 @@ route instead.
 
 What's open, drawn from what's already tracked in this file and in `docs/config-lua-history.md`:
 
+- ~~**Master Volume does not work, and the next step is a MIDI proxy**~~ — **RESOLVED 2026-09-10.**
+  Master Volume works. The device requires a READ issued alongside the WRITE; a write on its own is
+  ignored. The MIDI proxy was never needed. See "Master Volume needs a live login" below and commit
+  `f2d9f3e`. Still unexplained: the login-time READ goes unanswered while gesture READs are answered.
 - **Two hardware paths remain unproven** (see "Refactor verification" above): Zoom LONG press (the
   force-full-repaint path in `handle_zoom_button`), and the re-identification wait path
   (`STATE_REIDENTIFY_WAIT`, `handle_identification_rejected`), which needs a deliberate DeviceID
@@ -234,16 +238,19 @@ None of these is committed as *the* next stage — this is the open candidate li
   2026-08-20 — it is *not* a keepalive or timeout problem. MainStage tears the script down and
   re-initialises it mid-session (4 finalize/initialize cycles in one run, while `state=active`). Each
   re-init resets `instanceID` to `SL_INSTANCE_START` (`0x6D`), but the SL88 still holds the previous
-  incarnation's registration under `0x6D` because **no logout is sent on teardown** — a script can
-  only transmit by returning MIDI from a callback, and `controller_finalize` has no return path. The
+  incarnation's registration under `0x6D` because **no logout is sent on teardown**. (The original
+  reason given here — that `controller_finalize` has no return path — was **wrong**, disproven on
+  hardware 2026-09-10: a Logout Request returned from `controller_finalize` reached the device, which
+  answered `00 03` LOGOUT CONFIRMATION. It is not sent because doing so logs the app out of the APP
+  list on every one of MainStage's spurious teardowns. See `config-lua-history.md`.) The
   keyboard therefore answers `IDENTIFICATION REJECTED (reason 00)`, the script bumps to `0x6E`, and
   re-registers **as a different app**, which is why the user's APP-list selection is lost. A second
   script instance — possible if MainStage loads one per USB-MIDI interface — would compound this by
   also starting at `0x6D`; the one hardware run measured so far ran as a single instance instead (see
   `docs/config-lua-history.md#single-instance-confirmed-on-hardware-2026-08-28`).
 
-  Untested fix to try first: on rejection, **retry the same instance ID after a pause of more than
-  5 s** rather than immediately bumping. The SL88 drops a host that goes silent for ~5 s, so the
+  **SHIPPED 2026-09-10** (was "untested fix to try first"): on rejection, **retry the same instance ID
+  after a pause of more than 5 s** rather than immediately bumping. The SL88 drops a host that goes silent for ~5 s, so the
   stale registration should expire and the identity can be reclaimed instead of a new app being
   created. Deriving the instance byte from something stable per interface (the `portName` passed to
   `controller_midi_in`) would additionally stop the two instances colliding with each other.
@@ -354,13 +361,41 @@ next inbound SL frame** (in practice, usually within one Identification Query/re
 that heartbeat keeps inbound frames arriving even with no further user input) — before that frame's
 own event is handled.
 
-### Encoders send absolute position, not relative ticks
+### Encoders send relative deltas (changed 2026-09-05)
 
-Encoders send their tracked value **absolutely**, 0–127, which MIDI Learns like an ordinary knob.
-`CC_ENCODER_RELATIVE` exists in `config.lua` as a documented escape hatch to switch to relative
-increments (65 = up one tick, 63 = down one) instead, but it is **not implemented** — flipping it
-alone does nothing, since the accumulate-and-clamp path and `queue_cc`'s replace-in-place coalescing
-both assume absolute values.
+The six `CC_TURN` encoders (`ENC1-4_TURN`, `ENCB_TURN`, `JOY_ROTATE`) emit each tick's signed delta
+rather than the tracked absolute position, using MainStage's `Relative2C` (two's complement, 7-bit)
+`midiType`: `+1` on the wire as `0x01`, `-1` as `0x7F`, clamped to `-63..63` then `% 128`-encoded.
+`encoderValue` is still tracked internally 0–127 — the encoder value popup's ring gauge reads it —
+only what's *emitted* changed.
+
+**Confirmed on hardware (2026-09-05)**: the `Relative2C` byte encoding above was verified by
+remapping the B encoder to a relative control in MainStage 4.3.1 against a real SL88 MK2 - smooth
+bidirectional movement, confirming the two's-complement encoding rather than merely inferring it
+from the name.
+
+**Fixed 2026-09-05**: `queue_cc`'s per-control coalescing (see "Momentary buttons" above) replaces
+rather than sums a pending value — harmless for the old absolute encoding, but a relative delta needs
+two ticks for the same control before a flush to SUM rather than lose the first tick's motion.
+`queue_relative_cc`/`flush_pending_cc` now accumulate the delta in signed `pendingDelta` and only
+clamp/encode it at emit time; `queue_cc`/`pendingCC` are unchanged and still used for every absolute
+control. See `Tests/lua/harness.lua`'s "Relative CC coalescing" checks.
+
+`JOY_ROTATE` (CC 50) goes through the same `handle_sl_frame` encoder branch and now joins `CC_TURN`:
+`controller_info()` declares it `objectType='Knob'`, `midiType='Relative2C'`, matching the other five
+turn gestures instead of the stale `Button`/`Momentary` it kept when this file's encoding first
+changed.
+
+### Stick layout corrected (confirmed by Jeroen, 2026-09-05)
+
+**Confirmed:** the SL88 has two physical sticks. Stick 1 is an XY stick whose X axis is pitch bend by
+default. Stick 2 is the modulation stick. The previous `controller_info()` item names had modulation
+and "Stick 2" transposed — guessed from captured CC numbers without knowing which physical stick
+produced them. Renamed, wire bytes unchanged: `0xE0` (pitch bend) is now `Stick 1 X`, `0xB0,0x01`
+(CC 1) is now `Stick 2 Mod`, `0xB0,0x10` (CC 16) is now `Stick 1 Y`.
+
+**Confirmed on hardware (2026-09-05):** that CC 16 specifically carries Stick 1's Y axis, verified
+in MainStage's MIDI Message Monitor by moving Stick 1 vertically and observing CC 16 move.
 
 ### Status: Confirmed on hardware (2026-08-22)
 
@@ -474,3 +509,296 @@ this branch:
 - **Zoom LONG press** (the force-full-repaint path in `handle_zoom_button`).
 - **The re-identification wait path** (`STATE_REIDENTIFY_WAIT`, `handle_identification_rejected`) —
   needs a deliberate DeviceID collision.
+
+## `action_<app>` spike: verified inert (2026-09-05)
+
+Tested whether `controller_info()` items' undocumented `action_<app>`/`action` fields could invoke a
+MainStage command (`NextPatch`/`PreviousPatch`/etc.) directly, bypassing MIDI entirely. If it had
+worked, it would have removed the one-time MIDI-Learn per concert that "Every control emits a
+mappable CC" (above) currently requires, and given a relative patch/set-navigation primitive for
+free.
+
+**Result: inert on every reachable path** — six configurations tried (script-injected CCs on two
+channels, and two genuine hardware CCs with `controller_midi_in` returning `nil`), none fired the
+bound command. Byte-level detail, the full evidence table and the Logic-Pro caveat live in
+[`mainstage-device-scripts.md`](mainstage-device-scripts.md#2-controller_info--the-items-table) §2 —
+not repeated here.
+
+What this means for this project: `action_<app>` is not a route to patch navigation. The CC map plus
+one-time MIDI-Learn per concert ("Every control emits a mappable CC", above) remains the only working
+mechanism. The parked `feature/joystick-browse` branch's relative-commit idea is unaffected — it
+already builds on the CC/assignment-layer route from "Round 5" above and never depended on
+`action_<app>`.
+
+This spike is also a concrete instance of this project's standing rule to prove a signal is
+observable before trusting a negative result (see the three-findings list at the top of this file for
+the pattern). Its first round produced a false negative: the gesture performed emitted a different CC
+than the item under test was bound to, and nothing in the log showed the mismatch, so the "no command
+fired" result was uninterpretable. Adding a log line that prints the CC numbers in each batch
+(`[sllink] CC batch: 1 CC(s) [74=127], 3 bytes`) closed that gap and made the second round's negative
+trustworthy.
+
+## Logout, Master Volume and login findings (2026-09-05)
+
+Hardware: MainStage 4.3.1, SL88 MK2 firmware 1.1.2.
+
+**1. Cancel button logs out — but only by withholding the keepalive.** BID `0x0F` is Cancel,
+confirmed (frames `01 0F 01` short, `01 0F 02` long). A host-initiated System Logout Request (`00 02`)
+is sent correctly — byte-identical to the archived Swift implementation's `systemLogoutRequest` — and
+the SL88 **never replies with a Logout Confirmation** and does not leave the app. What actually works
+is going silent: the upstream spec says the keepalive must be sent more often than once per 5 seconds
+or the SL88 drops the app from the APP list. `STATE_LOGGED_OUT` withholds the Device Notification for
+`LOGOUT_SILENT_TICKS` ticks while still emitting the Identification Query (which keeps the one-shot
+session clock alive, per rule 6). Measured: **short press ~9s to drop, long press (force, no request
+sent) slightly less.** Both then re-identify and the app returns to the APP list.
+
+Note the timing trap found and fixed before this worked: `rearm_timer()` picks the tick interval
+dynamically (`FLUSH_SOON_MS` 35ms while draining, `POPUP_TICK_MS` 1000ms during a popup), so a tick
+*count* is not a duration. `STATE_LOGGED_OUT` now pins `KEEPALIVE_MS`, `request_quick_rearm()` refuses
+to shorten while logged out, and logout dismisses the popup and drops queued display first. Without
+all three, three ticks could be ~105ms and the keyboard never drops the app.
+
+**2. Master Volume (ItemType `0x07`) does not work on this hardware — unresolved.** Encoder A drives
+it in the script and the popup updates correctly, but the keyboard's own volume never changes. The
+outbound bytes are exactly right; logged verbatim:
+`[sllink] -> MASTER VOLUME WRITE: F0 00 20 1A 16 03 6D 07 01 64 00 F7`
+(`07` item type, `01` = write, `64` = 100%, `00` = unmuted). 129 such writes in one session, no
+effect. Reads (`07 00`) get no reply either. Cross-checked against the upstream spec
+(`fatarsrl/sl-link` `docs/hardware-io.md` at `4c0824d`), which confirms this exact layout — R/W=1
+writes, VOL 0-100 as a percentage, MUTE optional — and documents **no preconditions** about login or
+app state. The archived Swift app never implemented Master Volume, so there is no reference to
+compare against. This is unexplained; remaining hypotheses are that the SL88 MK2 does not implement
+`0x07` despite the spec, or that it applies only when the USB audio board is actually in use. Neither
+is asserted as fact.
+
+**3. `handle_login()` frequently never runs — anything hung off it is unreliable.** A 20-tick session
+showed `state=active` throughout with zero login lines. The SL88 remembers the host across runs and
+then sends neither Identification Approved nor Login Confirmation; the session reaches ACTIVE via the
+Identification-Query reply path instead. `state = STATE_ACTIVE` is assigned in three places and only
+`handle_login()` queued the Master Volume read, so the read never went out. General hazard:
+session-entry work belongs on every transition into ACTIVE, not on the login message.
+
+**4. Encoder A does reach the host** — 162 EID `0x05` frames in one session, confirming
+`docs/implementing-sl-link.md` §7's existing note against the spec's "reserved" claim. Earlier
+captures showing zero were simply sessions where A was not turned; the note needed no correction.
+
+**5. Incidental:** `MIDI_CtrChange` is the number `176` (`0xB0`), so Arturia's `MIDI_CtrChange` and
+our `0xB0 + CC_CHANNEL` with channel 0 are the identical value.
+
+**Still open:** encoder pickup of mapped parameter values via `controller_midi_out(midiEvent, name,
+valueString, color)` is designed but not implemented — it is the route to Q3/Q6 in
+`docs/full-functionality-plan.md` and to a popup showing the real parameter name and value.
+
+## Master Volume: upstream issue filed, Numa Player capture (2026-09-06)
+
+**Filed upstream: <https://github.com/fatarsrl/sl-link/issues/2>** — the authoritative answer is
+expected there.
+
+**Key evidence — Numa Player capture**, `/tmp/numa-sniff-keep.log` (in `/tmp`, will not survive a
+reboot). Sniffing CoreMIDI sources while Studiologic's own Numa Player drove the volume: each
+encoder-A tick is followed ~3ms later by `F0 00 20 1A 16 7E 60 07 00 <VOL> <MUTE> F7`, VOL stepping
+with the knob — 81 ticks, 81 volume reports. Under identical conditions with our script active: 133
+encoder-A ticks, **zero** `0x07` frames. This was read as a spec disagreement — the device's own traffic
+uses `R/W = 00` *with* a VOL payload, where `docs/hardware-io.md` describes `R/W = 0` as a read with
+VOL omitted. **That conclusion was wrong; see "Master Volume: answered upstream" below.** The frame is
+the hardware's read *reply*, and only half the exchange was visible to a source-only sniffer.
+
+**Ruled out today, each on hardware:** audio board missing (`SL AUDIO` exists as a Core Audio
+device); audio board not in use (routing MainStage's output through it changed nothing); host
+identity (`SL_HOST_ID = 0x7E`, matching Numa Player, produced neither volume reports nor logout
+confirmations — reverted); message shape (`07 01 <vol> <mute>`, `07 01 <vol>`, `07 00 <vol> <mute>`
+all ignored, 100+ sends each).
+
+**Still unexamined, and the only route left:** Numa Player's *outbound* bytes.
+`Scripts/sniff-all-sl-ports.swift` watches CoreMIDI **sources** only and structurally cannot see a
+host→device send. Seeing them needs a MIDI proxy (a virtual destination Numa Player is pointed at,
+logged and forwarded to the real `LINK`) or Snoize MIDI Monitor's spy driver.
+
+**A real bug found and fixed along the way:** `handle_login()` frequently never runs — the SL88
+remembers the host across runs and sends neither Approved nor Login Confirmation, so the session
+reaches ACTIVE via the Identification-Query reply path instead. `enter_active_session()` now does the
+session-entry work on every transition into ACTIVE. Before this fix the Master Volume read had never
+once been sent.
+
+**Current code state:** `msg_master_volume_write` now emits `07 00 <vol> 00` (mirroring the device's
+observed format), not the spec's `07 01`. **Neither form works.** Left as-is pending the issue —
+noted here so the current form is not mistaken for known-good. *(Superseded — see the next section.)*
+
+## Master Volume: answered upstream (2026-09-08)
+
+Andrea (FSL, hardware side) answered <https://github.com/fatarsrl/sl-link/issues/2>. The protocol
+consequences are folded into `docs/implementing-sl-link.md` §6 and §7; what belongs here is what it
+says about *our* investigation, including the parts of it that were wrong.
+
+**The capture was read backwards.** `07 00 <VOL> <MUTE>` arriving from the keyboard is a **read
+reply**, not a write — the hardware must answer a read request with the payload present. Numa Player's
+sequence is read request → this reply → `07 01 <VOL>` write; our sniffer watches CoreMIDI *sources*
+only, so it recorded the middle message of three and we mistook it for the whole exchange. There was
+never a spec disagreement here. The general lesson is the one already on file as
+`verify-observability-before-negatives`: a half-visible channel produces confident, wrong readings, and
+"the device's own traffic uses this format" is only trustworthy when both directions are visible.
+
+**`R/W = 0x00` is why the current code does nothing.** The firmware discards every byte past the R/W
+byte when it is `0x00`, so `07 00 <vol> 00` is a read request with junk attached, not a write. Mirroring
+the device was the wrong instinct: the two directions are not symmetric.
+
+**The keyboard does not own the volume — the host does.** Turning A produces an encoder message and
+nothing else; the audio board's volume only moves because a host writes it. That retires the standing
+puzzle in `docs/implementing-sl-link.md` §7 about A arriving "with no accompanying volume traffic":
+there was never supposed to be any.
+
+**The remaining suspect for `07 01` also being ignored is login state.** The precondition Andrea states
+is identified + keeping alive + **logged in**, where logged in specifically means a System Login
+Confirmation was received. Finding 3 in the 2026-09-05 section above records that `handle_login()`
+frequently never runs — the SL88 remembers the host across runs and sends neither Approved nor Login
+Confirmation, and the session reaches ACTIVE through the Identification-Query reply path instead.
+`enter_active_session()` makes our *own* state machine reach ACTIVE either way, but it cannot make the
+keyboard consider us logged in. So the `07 01` attempts recorded on 2026-09-06 may have been sent in a
+state where the firmware was entitled to ignore them.
+
+**The read is the observability probe.** The hardware *must* answer `07 00` with a payload. So a run
+that sends the read and gets no `0x07` back is positive evidence that the session is not logged in —
+which is a far better signal than "the volume did not change". Check for the read reply first; only
+if it arrives is a silent write a real write bug.
+
+**DeviceID nomenclature is retired, and `examples/` is stale on it.** Bytes 5 and 6 together are the
+DeviceID, regenerated per session; `HostID`/`InstanceID` is old documentation. Andrea confirmed the
+reference JUCE plugins still use the old static mechanics and are therefore not a reference for
+identification — one for `revalidate-findings-against-reference-implementations`. The hardware cannot
+distinguish a random DeviceID from a fixed one (it is only anti-collision), so `SL_HOST_ID = 0x03` plus
+an in-script instance byte stays valid and needs no change.
+
+**Still owed upstream:** Andrea asked whether the documentation reads as misleading on DeviceID and on
+host/device-vs-hardware nomenclature, and offered to look at a full SysEx capture.
+
+## Master Volume: the login-state hypothesis is retired (2026-09-10) — WRONG, SEE CORRECTION BELOW
+
+> **This section's conclusion was later disproved on the same day.** Login *is* required for Master
+> Volume; see "Master Volume needs a live login — earlier retirement was wrong (2026-09-10)" at the end
+> of this file. The run recorded below did hold a Login Confirmation and still failed, which remains
+> unexplained and is now attributed to MainStage's two script instances holding different DeviceIDs.
+> The rest of this section's observations stand; only its verdict does not.
+
+Andrea's answer left one suspect standing — that the `07 01` writes had been sent while the keyboard
+did not consider us logged in. Tested directly today. **It was not the cause.**
+
+**A real bug was in the way first.** `enter_active_session()` early-returned when already ACTIVE, and
+on hardware the session reaches ACTIVE via the Identification-Query self-heal path *before* the user
+selects the app. So the volume READ only ever went out in the un-logged-in state, and a later genuine
+Login Confirmation could not re-send it. Fixed: `queue_master_volume_read()` is factored out, and
+`handle_login()` — which runs only on a real login frame — forces a read when the self-heal path had
+already promoted the session. Harness test 35 asserts both halves (a genuine login queues exactly one
+read; a self-heal reaffirmation queues none) and was mutation-tested in both directions.
+
+**The run, with the fix in place.** All of Andrea's stated preconditions held simultaneously and were
+each visible in the log: identified (`03 6D`), keepalive running (one Identification Query per tick,
+replies arriving), and genuinely logged in — `F0 00 20 1A 16 03 6D 00 01 F7`, a System Login
+Confirmation, at which point `handle_login()` ran and queued the read:
+
+```
+<- SYSEX on port=LINK: F0 00 20 1A 16 03 6D 00 01 F7
+<- LOGIN - session active
+-> MASTER VOLUME READ: F0 00 20 1A 16 03 6D 07 00 F7
+```
+
+The queue drained to 0, and across 20+ subsequent inbound frames **no `0x07` frame arrived**. In an
+earlier phase of the same run, ~15 well-formed `07 01 <vol>` writes went out in the logged-in state
+(`07 01 1B` down to `07 01 0D`) and Jeroen confirmed the output level did not move.
+
+**The observation path is sound this time** — the standing worry from
+`verify-observability-before-negatives`. Inbound SL Link frames are demonstrably visible: the login
+confirmation and every Identification-Query reply were logged through the same path a `07` reply would
+take. The one residual gap is outbound: `FLUSH` lines record byte counts, not bytes, and the 10-byte
+read is indistinguishable from the 10-byte keepalive, so "the read was sent" rests on queue-depth
+accounting rather than on seeing those bytes leave.
+
+**Ruled out today, on hardware:** login state (above); audio board missing or idle — `SL AUDIO`
+(STUDIOLOGIC) is present in Core Audio *and* is MainStage's configured output with speakers confirmed
+working, so a working write would have been audible.
+
+**What the Numa capture means now.** Re-read against Andrea's answer, the 2026-09-06 capture says more
+than it first appeared: 81 encoder-A ticks each produced a `07 00 <VOL> <MUTE>` reply ~3ms later. If
+that frame is a read *reply*, then Numa Player issues a **read on every tick** and writes afterwards —
+read-modify-write per tick, not a host that owns the value and pushes it. Jeroen independently proposed
+exactly this. It cannot be built here yet: it depends on the read being answered, which is the thing
+that does not happen.
+
+**The only route left is unchanged, and now it is the whole task:** capture Numa Player's *outbound*
+bytes. `sniff-all-sl-ports.swift` watches CoreMIDI sources and structurally cannot see a host→device
+send, so this needs a MIDI proxy — a virtual destination Numa Player is pointed at, which logs and
+forwards to the real `LINK` — or Snoize MIDI Monitor's spy driver. Every hypothesis reachable from our
+own side has now been tested and eliminated; what distinguishes Numa Player's session from ours is
+visible only in what it sends.
+
+**Owed upstream:** today's result is new information for
+<https://github.com/fatarsrl/sl-link/issues/2> — a read issued with a confirmed Login Confirmation in
+hand still goes unanswered. Andrea offered to look at a full SysEx capture; the proxy above would
+produce one.
+
+## Master Volume works on hardware — from a standalone probe (2026-09-10)
+
+`Scripts/probe-mastervolume.swift` drives its own SL Link session with no MainStage involved, and
+**Master Volume works completely**: reads answered 6/6, and `07 01 <vol>` writes at 20, 60, 90 and 45
+each confirmed by a read-back returning exactly that value. The `07 00 <vol>` shape correctly did
+*not* write (value unchanged) — it is only ever a reply, as Andrea said. A Login Confirmation was
+received during the run.
+
+**So the message form `config.lua` already sends is correct**, and the device honours it. Everything
+previously concluded about Master Volume being rejected was measurement error.
+
+**The probe's first run lied, and the lesson is the familiar one.** CoreMIDI delivered every SL Link
+frame **split across two packets** (`F0 00 20 1A 16 03` then `2B 07 00 3C 00 F7`). The probe decoded
+whole packets only, so both halves failed the header check, every frame logged as "not an SL Link
+frame", the `0x07` capture never matched, and the Login Confirmation detector never fired — producing
+a verdict table reading 0/11 replies and "logged in: no" when the device had in fact answered every
+read with the right value and the user had selected the app. The raw RX lines contained the answer the
+whole time. Fixed by buffering from `0xF0` to `0xF7` across packets before decoding. This is
+`verify-observability-before-negatives` a third time: the negative was in the decoder, not on the wire.
+
+**What is now unexplained is narrower and sharper:** the probe and `config.lua` send the same Master
+Volume bytes over an identically-shaped session, and only the probe is answered. Differences checked
+and eliminated: message shape (identical), login state (both logged in), keepalive type (`config.lua`
+sends the same `00 00` System Device Notification, line 2114, not only the Identification Query).
+
+**Leading hypothesis: the read never actually leaves MainStage.** The device answers a read in ~2ms,
+6/6, so a sent read that drew no reply is hard to credit. `config.lua`'s evidence that it was sent is
+only queue-depth accounting — `FLUSH` lines log byte *counts*, and the 10-byte read is
+indistinguishable from the 10-byte keepalive. **Next experiment:** log the actual bytes of protocol
+messages at flush time, run MainStage, and see whether `07 00` appears on the wire at all.
+
+
+
+
+## Master Volume needs a live login — earlier retirement was wrong (2026-09-10)
+
+Established with `Scripts/probe-mastervolume.swift` and, critically, a control run. Supersedes the
+verdict of "the login-state hypothesis is retired" above.
+
+**The result.** With the probe selected on the SL88's APP list, so a real System Login Confirmation
+arrives: reads answered 6/6, writes confirmed by read-back 4/4, negative control PASS. Run again with
+no selection and after a Logout Request has cleared the previous one: 0/6 and 0/4. The maintainer's
+stated precondition was correct.
+
+**How the wrong conclusion was reached, and it is worth remembering.** A probe run that reported
+"logged in: no" got 6/6 anyway, which looked like proof that login was irrelevant. It was not: that run
+reused DeviceID `6D` seconds after a run that *had* been logged in, so the keyboard still held `6D` as
+its selected app. The probe's own login detector, which only watches for a `00 01` frame during that
+run, could not see an inherited selection. **The state was carried between runs, and nothing reset it.**
+Four hypotheses were killed by controls today — bundled Identification Query, DeviceID contention, app
+name, and a supposed cooldown — and this one was very nearly *accepted* for want of one.
+
+Practical rule for anyone testing Master Volume: a run is only meaningful if the probe was explicitly
+selected on the keyboard during that run, or was deliberately not selected AND the previous run's
+selection was cleared. Rapid successive runs on the same DeviceID inherit state.
+
+**What remains unexplained.** MainStage's own session received a genuine `<- LOGIN - session active`
+and its Master Volume reads still went unanswered. So login is necessary but does not by itself account
+for the MainStage failure. Prime suspect: MainStage loads the script once per matched USB-MIDI
+interface, and with the identification fix in place those instances now take *different* DeviceIDs —
+`03 6D` and `03 6E` were both live and visible to the probe in the same run. Both register under the
+name "MainStage", but only one can be the entry the user actually selects, so A-encoder writes issued by
+the unselected instance would be ignored exactly as observed, while the selected instance's healthy
+login appears in the same shared stdout and makes the session look fine.
+
+**Next check:** whether the SL88's APP list shows two "MainStage" entries, and whether selecting the
+other one makes the A encoder work.
