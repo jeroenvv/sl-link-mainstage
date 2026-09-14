@@ -699,6 +699,27 @@ do
 	check('every message paint_popup_screen queues fits within FLUSH_BUDGET', allWithinBudget)
 end
 
+-- The Master Volume popup (popupCcNumber == nil) adds a 9th message: the "PUSH TO MUTE/UNMUTE" hint,
+-- absent on every mapped-encoder popup (see docs/config-lua-history.md#a-encoder-button-mute-2026-09-14).
+do
+	drawn = {}
+	pendingMessages = {}
+	popupControlName, popupCcNumber, popupValue = 'Main Volume', nil, 60
+
+	paint_popup_screen()
+
+	check(
+		'paint_popup_screen on the Master Volume popup queues the base 8 + the mute hint = 9 messages',
+		#pendingMessages == 9
+	)
+
+	local allWithinBudget = true
+	for i = 1, #pendingMessages do
+		if #pendingMessages[i] > FLUSH_BUDGET then allWithinBudget = false end
+	end
+	check('every message the Master Volume popup queues fits within FLUSH_BUDGET', allWithinBudget)
+end
+
 -- MARK: - 20. Popup label names the physical encoder AND its CC number
 --
 -- draw_popup_label's text is 'ENC 1 - CC 59'-shaped (name .. ' - CC ' .. ccNumber). Decoded back
@@ -1081,16 +1102,21 @@ do
 	popupPreviousMode = 'zoom'
 	displayMode = 'popup'
 
+	local savedMasterMuted = masterMuted
+
 	pendingMessages = {}
 	masterVolume = 50
+	masterMuted = true
 	handle_sl_frame(encoder_frame(EID_A, 0x41)) -- delta +1
 	check('EID_A tick queues exactly one Master Volume write', #mvol_messages() == 1)
 	check('EID_A +1 tick updates masterVolume to 51', masterVolume == 51)
+	check('EID_A tick never touches masterMuted (a volume turn must not disturb mute)', masterMuted == true)
 	checkHex(
 		'EID_A +1 tick queues the exact Master Volume write vector (MVOL_WRITE, no MUTE byte)',
 		mvol_messages()[1],
 		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 33 F7'
 	)
+	masterMuted = savedMasterMuted
 
 	-- Clamp at 100: starting at 100, a further +5 must not exceed it.
 	pendingMessages = {}
@@ -2293,9 +2319,11 @@ end
 -- back up to 10 - a deliberate, deliberately-raised ceiling, not a regression. The per-tick Master
 -- Volume READ that used to add an 11th message is gone (2026-09-13, see
 -- docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13),
--- so the ceiling drops back to 11 (10 display + the write). This section pins both the first-tick
--- ceiling and that a following tick never grows the queue further, so either regression is caught
--- without needing hardware.
+-- so the ceiling dropped to 11 (10 display + the write); the A button's mute hint line
+-- (2026-09-14, see docs/config-lua-history.md#a-encoder-button-mute-2026-09-14) adds one more display
+-- message on the Master Volume popup specifically, bringing it to 12. This section pins both the
+-- first-tick ceiling and that a following tick never grows the queue further, so either regression is
+-- caught without needing hardware.
 do
 	local savedPending, savedDrawn, savedMasterVolume, savedMasterVolumeRead, savedPopupActive,
 		savedDisplayMode, savedIdleTicks =
@@ -2314,12 +2342,12 @@ do
 	idleTicks = 10
 
 	-- (a) First tick shows a fresh popup: erase + bg + 4 border + label + knob + value + sacrificial
-	-- = 10, plus the write = 11 at most. A regression back to set_display_mode's double Clear Screen,
-	-- a dropped erase-rect invalidation forcing a repeat resend, or the per-tick READ poll coming
-	-- back, would push this past 11.
+	-- = 10, plus the mute hint (Master Volume popup only) = 11, plus the write = 12 at most. A
+	-- regression back to set_display_mode's double Clear Screen, a dropped erase-rect invalidation
+	-- forcing a repeat resend, or the per-tick READ poll coming back, would push this past 12.
 	handle_sl_frame(encoder_frame(0x41)) -- delta +1
 	local firstTickCount = #pendingMessages
-	check('first tick of a gesture queues at most 11 messages total', firstTickCount <= 11)
+	check('first tick of a gesture queues at most 12 messages total', firstTickCount <= 12)
 
 	-- (b) A second tick that only moves the value coalesces into the SAME queued entries (write,
 	-- knob, value all replace in place) rather than growing the queue - this is what makes a
@@ -3270,6 +3298,174 @@ do
 		changedIcons == BMP_KNOB_LEVELS)
 
 	drawn, pendingMessages, popupMax = savedDrawn, savedPending, savedMax
+end
+
+-- MARK: - 68. A encoder button (BID_A_ENC): SHORT toggles mute, LONG resets and unmutes
+--
+-- SHORT writes VOL=MVOL_IGNORE_VOL (>0x64, so the firmware ignores it) with the flipped MUTE byte -
+-- msg_master_volume_write() itself is untouched and still never carries MUTE (section 27's five
+-- assertions pin that absence; this uses the separate msg_master_volume_mute_write() builder).
+-- LONG writes MVOL_SEED_DEFAULT and MUTE=0 together in one message. Both also update the A encoder's
+-- LED (WLID_A_ENC). See docs/implementing-sl-link.md §6 and
+-- docs/config-lua-history.md#a-encoder-button-mute-2026-09-14.
+do
+	local function button_frame(bid, pressKind)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, bid, pressKind, 0xF7)
+	end
+
+	local function messages_with_region(regionId)
+		local out = {}
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == regionId then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+
+	local savedMasterVolume, savedMasterMuted, savedPending, savedPopupActive, savedDisplayMode,
+		savedPopupPreviousMode, savedTimerPending =
+		masterVolume, masterMuted, pendingMessages, popupActive, displayMode,
+		popupPreviousMode, timerPending
+
+	-- Pre-seat the popup as already showing (same trick as section 25's Master Volume write test)
+	-- so show_master_volume_popup()'s call at the end of handle_a_encoder_button takes the lightweight
+	-- 'already active' branch instead of the full mode-switch machinery - irrelevant to what these
+	-- checks are about.
+	popupActive = true
+	displayMode = 'popup'
+	popupPreviousMode = 'zoom'
+	timerPending = false
+
+	-- (a) SHORT while unmuted: toggles to muted, volume untouched, LED goes off.
+	pendingMessages = {}
+	masterVolume = 77
+	masterMuted = false
+	handle_sl_frame(button_frame(BID_A_ENC, PRESS_SHORT))
+	check('A button SHORT does not change masterVolume', masterVolume == 77)
+	check('A button SHORT flips masterMuted to true', masterMuted == true)
+	local muteWrites = messages_with_region('mvolMute')
+	check('A button SHORT queues exactly one mute write', #muteWrites == 1)
+	checkHex(
+		'...carrying VOL=MVOL_IGNORE_VOL (0x7F, ignored since > 0x64) and MUTE=1',
+		muteWrites[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 7F 01 F7'
+	)
+	local ledWrites = messages_with_region('aEncLed')
+	check('A button SHORT queues exactly one LED write', #ledWrites == 1)
+	checkHex(
+		'...carrying WLID_A_ENC and state=0 (off, muted)',
+		ledWrites[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 02 0A 00 F7'
+	)
+
+	-- (b) SHORT again while muted: toggles back to unmuted, LED goes on.
+	pendingMessages = {}
+	handle_sl_frame(button_frame(BID_A_ENC, PRESS_SHORT))
+	check('A second SHORT flips masterMuted back to false', masterMuted == false)
+	muteWrites = messages_with_region('mvolMute')
+	checkHex(
+		'...and the mute write now carries MUTE=0',
+		muteWrites[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 7F 00 F7'
+	)
+	ledWrites = messages_with_region('aEncLed')
+	checkHex(
+		'...and the LED write now carries state=1 (on, unmuted)',
+		ledWrites[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 02 0A 01 F7'
+	)
+
+	-- (c) LONG: resets volume to MVOL_SEED_DEFAULT AND unmutes, in one combined write - satisfies the
+	-- project's LONG-must-never-be-a-no-op rule (see config.lua's handle_zoom_button comment) unconditionally.
+	pendingMessages = {}
+	masterVolume = 20
+	masterMuted = true
+	handle_sl_frame(button_frame(BID_A_ENC, PRESS_LONG))
+	check('A button LONG resets masterVolume to MVOL_SEED_DEFAULT', masterVolume == MVOL_SEED_DEFAULT)
+	check('A button LONG unmutes', masterMuted == false)
+	local resetWrites = messages_with_region('mvol')
+	check('A button LONG queues exactly one combined write', #resetWrites == 1)
+	checkHex(
+		'...carrying VOL=MVOL_SEED_DEFAULT (0x3C) and MUTE=0 together',
+		resetWrites[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 3C 00 F7'
+	)
+	ledWrites = messages_with_region('aEncLed')
+	check('A button LONG (from muted) also queues the LED write', #ledWrites == 1)
+	checkHex(
+		'...carrying state=1 (on, unmuted)',
+		ledWrites[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 02 0A 01 F7'
+	)
+
+	-- (d) LONG while already unmuted: the reset write still goes out, and the LED is still resent
+	-- (LONG's set_master_mute(false) call is unconditional, not gated on a prior comparison) - proves
+	-- the LED does not silently vanish just because mute did not actually change.
+	pendingMessages = {}
+	masterVolume = 99
+	masterMuted = false
+	handle_sl_frame(button_frame(BID_A_ENC, PRESS_LONG))
+	ledWrites = messages_with_region('aEncLed')
+	check('A button LONG resends the LED even when mute was already false', #ledWrites == 1)
+
+	masterVolume, masterMuted, pendingMessages, popupActive, displayMode, popupPreviousMode, timerPending =
+		savedMasterVolume, savedMasterMuted, savedPending, savedPopupActive, savedDisplayMode,
+		savedPopupPreviousMode, savedTimerPending
+end
+
+-- MARK: - 69. A READ reply's MUTE byte seeds masterMuted; an absent one leaves it unchanged
+--
+-- Mirrors section 27's tolerance test for the trailing MUTE byte being optional
+-- (docs/implementing-sl-link.md §7), but for the READ func specifically, where this project actually
+-- consumes MUTE (a WRITE echo still ignores it - section 27 continues to pin that).
+do
+	local function mvol_read_frame(vol, mute)
+		if mute == nil then
+			return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, vol, 0xF7)
+		end
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, vol, mute, 0xF7)
+	end
+
+	local function messages_with_region(regionId)
+		local out = {}
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == regionId then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+
+	local savedMasterMuted, savedMasterVolumeRead, savedPending =
+		masterMuted, masterVolumeRead, pendingMessages
+
+	-- (a) READ reply WITH MUTE=1 seeds masterMuted true from a false starting point, and sends the LED.
+	pendingMessages = {}
+	masterMuted = false
+	handle_sl_frame(mvol_read_frame(50, 1))
+	check('READ reply with MUTE=1 seeds masterMuted true', masterMuted == true)
+	check('...and queues the LED write reflecting it', #messages_with_region('aEncLed') == 1)
+
+	-- (b) READ reply WITH MUTE=0 seeds masterMuted false from a true starting point.
+	pendingMessages = {}
+	masterMuted = true
+	handle_sl_frame(mvol_read_frame(50, 0))
+	check('READ reply with MUTE=0 seeds masterMuted false', masterMuted == false)
+	check('...and queues the LED write reflecting it', #messages_with_region('aEncLed') == 1)
+
+	-- (c) READ reply WITHOUT a MUTE byte leaves masterMuted at whatever it already was (the assumed
+	-- default, per docs/implementing-sl-link.md §7's optional-trailing-byte rule) - and queues no LED
+	-- write, since nothing changed.
+	pendingMessages = {}
+	masterMuted = false
+	handle_sl_frame(mvol_read_frame(50, nil))
+	check('READ reply without a MUTE byte leaves masterMuted at its default (false)', masterMuted == false)
+	check('...and queues no LED write, since nothing changed', #messages_with_region('aEncLed') == 0)
+
+	-- (d) Same, but starting muted - confirms the fallback is 'leave as-is', not 'force unmuted'.
+	pendingMessages = {}
+	masterMuted = true
+	handle_sl_frame(mvol_read_frame(50, nil))
+	check('READ reply without a MUTE byte leaves a pre-existing true value untouched', masterMuted == true)
+
+	masterMuted, masterVolumeRead, pendingMessages = savedMasterMuted, savedMasterVolumeRead, savedPending
 end
 
 -- MARK: - Summary

@@ -82,7 +82,8 @@ SL_INSTANCE_MAX = 0x7E
 
 -- Item types
 IT_SYSTEM = 0x00
-IT_BUTTON = 0x01 -- handled for BID_ZOOM (see handle_zoom_button) and every BID in BUTTON_CC; other BIDs are logged only
+IT_BUTTON = 0x01 -- handled for BID_ZOOM, BID_A_ENC (see handle_zoom_button/handle_a_encoder_button) and every BID in BUTTON_CC; other BIDs are logged only
+IT_LED = 0x02 -- White LED, Host -> SL only: <WLID> <state 0|1> - see docs/implementing-sl-link.md §6
 IT_ENCODER = 0x03 -- handled for every EID in ENCODER_CC, plus EID_A (drives Master Volume directly)
 IT_DISPLAY = 0x04
 IT_MASTER_VOLUME = 0x07
@@ -91,6 +92,9 @@ IT_IDENTIFICATION = 0x7F
 -- Master Volume R/W flag (item type IT_MASTER_VOLUME's own function byte).
 MVOL_READ = 0
 MVOL_WRITE = 1
+-- Any VOL > 0x64 makes the write ignore the volume byte, so MUTE alone can be changed - see
+-- docs/implementing-sl-link.md §6.
+MVOL_IGNORE_VOL = 0x7F
 
 -- Button IDs, matching the spec's button ID table (see docs/implementing-sl-link.md).
 BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
@@ -109,6 +113,13 @@ BID_ZONE2_ENC = 0x01 -- encoders' PUSH buttons - a different namespace from the 
 BID_ZONE3_ENC = 0x02 -- rotation IDs below, which share the same 0x00-0x03 numbering
 BID_ZONE4_ENC = 0x03 -- under a different itemType (IT_BUTTON vs IT_ENCODER)
 BID_B_ENC = 0x0C -- SLButtonID.bEncoderButton
+BID_A_ENC = 0x0B -- SLButtonID.aEncoderButton; toggles Master Volume mute (handle_a_encoder_button) -
+	-- spec calls this reserved for USB audio, but A traffic reaches the host, see
+	-- docs/implementing-sl-link.md §7
+
+-- White LED id for the A encoder's ring (IT_LED). PROBABLE, NOT CERTAIN: sourced from
+-- docs/full-functionality-plan.md - the authoritative table lives upstream and is not vendored here.
+WLID_A_ENC = 0x0A
 
 -- Button press-event byte, e[9] of an IT_BUTTON frame
 PRESS_SHORT = 0x01
@@ -412,6 +423,11 @@ masterVolume = MVOL_SEED_DEFAULT -- 0-100 percentage: the value being SENT, chan
 	-- docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13.
 masterVolumeRead = nil -- last VOL from an actual READ reply (07 00); diagnostic/logging only, never
 	-- feeds masterVolume - see the anchor above.
+
+-- A encoder button mute state. Not persisted (no io/os in the sandbox) - re-established each session
+-- from the login READ reply's MUTE byte, falling back to this default (unmuted) if none arrives. See
+-- docs/config-lua-history.md#a-encoder-button-mute-2026-09-14.
+masterMuted = false
 
 -- Gates EVERY settriggertimer call (rule 6 in the banner above): true whenever a one-shot is
 -- currently outstanding. rearm_timer() only calls settriggertimer when this is false, and sets it
@@ -959,6 +975,29 @@ function msg_master_volume_read()
 	return m
 end
 
+-- A write that also carries MUTE explicitly - unlike msg_master_volume_write(), which always omits
+-- it. Used by the A button: pass MVOL_IGNORE_VOL to change mute alone, or a real vol to change both
+-- at once (the LONG-press reset). See docs/implementing-sl-link.md §6.
+function msg_master_volume_mute_write(vol, muted)
+	local m = sl_header()
+	table.insert(m, IT_MASTER_VOLUME)
+	table.insert(m, MVOL_WRITE)
+	table.insert(m, vol)
+	table.insert(m, muted and 1 or 0)
+	table.insert(m, SL_END)
+	return m
+end
+
+-- White LED write (IT_LED): on/off only, no colour or brightness - see docs/implementing-sl-link.md §6.
+function msg_white_led(wlid, on)
+	local m = sl_header()
+	table.insert(m, IT_LED)
+	table.insert(m, wlid)
+	table.insert(m, on and 1 or 0)
+	table.insert(m, SL_END)
+	return m
+end
+
 function msg_clear_screen(r, g, b)
 	local m = sl_header()
 	table.insert(m, IT_DISPLAY)
@@ -1238,8 +1277,13 @@ ROW_COLORS = {
 -- rearm_timer's popupActive branch.
 POPUP_TICK_MS = 1000
 
+-- The Master Volume popup's extra "PUSH TO MUTE/UNMUTE" row: 21px is SIZE_SMALL's one *measured*
+-- glyph height (see SIZE_SMALL's declaration), plus a real gap above it.
+POPUP_MUTE_HINT_H = 21
+POPUP_MUTE_HINT_GAP = 8
+
 POPUP_W = 280
-POPUP_H = 140 -- shrunk from 200: value moved inside the ring, freeing the row it used to occupy below
+POPUP_H = 140 + POPUP_MUTE_HINT_H + POPUP_MUTE_HINT_GAP -- base panel + room for the mute hint row
 POPUP_X = math.floor((SCREEN_WIDTH - POPUP_W) / 2)
 POPUP_Y = math.floor((SCREEN_HEIGHT - POPUP_H) / 2)
 POPUP_PAD = 10 -- inset for the label/value text, so neither touches the panel's side edges
@@ -1256,6 +1300,9 @@ POPUP_CENTER_X = POPUP_X + POPUP_W / 2 -- the panel is itself screen-centred, so
 POPUP_KNOB_X = math.floor(POPUP_CENTER_X - BMP_ICON_W / 2) -- horizontally centred (screen-centred, see above); floored - BMP_ICON_W is odd, so the raw centring math lands on a half-pixel
 POPUP_KNOB_Y = POPUP_Y + 22 -- clears the border's inner top edge (+4) with headroom
 POPUP_LABEL_Y = POPUP_KNOB_Y + BMP_ICON_H + 12 -- below the ring, 12px gap under it
+-- Third band, Master Volume popup only: below the label (same ~27px SIZE_MEDIUM estimate as above)
+-- plus POPUP_MUTE_HINT_GAP.
+POPUP_HINT_Y = POPUP_LABEL_Y + 27 + POPUP_MUTE_HINT_GAP
 
 -- Knob icon's inner hole width - UNMEASURED, an eyeball fit against hardware pending a real
 -- measurement (see docs/config-lua-history.md#value-moved-inside-the-ring-2026-09-14). Must stay
@@ -1333,7 +1380,7 @@ end
 -- MARK: - Per-region memoization above): a caller that can't avoid overlap must clear all the
 -- shared ids' drawn[] entries together so they resend as one unit.
 POPUP_ERASE_OVERLAP_IDS = { 'popupBg', 'popupBorderTop', 'popupBorderBottom', 'popupBorderLeft',
-	'popupBorderRight', 'popupLabel', 'popupKnob', 'popupValue' }
+	'popupBorderRight', 'popupLabel', 'popupKnob', 'popupValue', 'popupMuteHint' }
 
 -- Default entry behaviour for every popup (called once by enter_popup_mode(), never by a mid-session
 -- repaint): one filled rect over the WHOLE panel (border included), queued first, so the previous
@@ -1376,6 +1423,17 @@ function draw_popup_value(value)
 	local text = value and tostring(value) or '--'
 	draw_text('popupValue', text, POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
 		ALIGN_CENTER, SIZE_MEDIUM, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
+		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
+end
+
+-- Master Volume popup only (show=true when popupCcNumber is nil - see draw_popup_label above).
+-- Non-zero maxWidth text is self-clearing (same idiom as draw_popup_label), so a control switch
+-- mid-popup that turns the hint off draws blank text over it once rather than leaving it stale - see
+-- paint_popup_screen's call site.
+function draw_popup_mute_hint(show)
+	local text = show and 'PUSH TO MUTE/UNMUTE' or ''
+	draw_text('popupMuteHint', text, POPUP_CONTENT_X, POPUP_HINT_Y, POPUP_CONTENT_W,
+		ALIGN_CENTER, SIZE_SMALL, 120, 120, 120,
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
@@ -1445,6 +1503,11 @@ function paint_popup_screen()
 	draw_popup_label(popupControlName, popupCcNumber)
 	draw_popup_knob(popupValue)
 	queue_popup_value()
+	if popupCcNumber == nil then
+		draw_popup_mute_hint(true)
+	elseif drawn['popupMuteHint'] ~= nil then
+		draw_popup_mute_hint(false) -- clear a stale hint left by a Master Volume popup before a control switch
+	end
 end
 
 -- Call from handle_sl_frame's IT_ENCODER branch, right after encoderValue[eid] is updated, for
@@ -1997,6 +2060,16 @@ function handle_identification_rejected(reason)
 	start_identification()
 end
 
+-- Sets masterMuted and (re)sends the A encoder's LED to match - on/off only, see
+-- docs/implementing-sl-link.md §6. Called for every real state change (button toggle, LONG reset,
+-- a differing READ reply) and once at session start to establish the LED - see enter_active_session.
+function set_master_mute(muted)
+	masterMuted = muted
+	local ledMsg = msg_white_led(WLID_A_ENC, not muted)
+	slog('-> A ENCODER LED: ' .. dump_bytes(ledMsg) .. ' (' .. (muted and 'muted' or 'unmuted') .. ')')
+	queue_message(ledMsg, 'aEncLed')
+end
+
 -- Builds, logs and queues a Master Volume READ to sync masterVolume with the hardware's current
 -- value. Split out so handle_login can force one even when enter_active_session() is a no-op.
 -- Diagnostic only, issued once per session (see docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13) -
@@ -2021,6 +2094,7 @@ function enter_active_session()
 	framesSinceQueryReply = 0
 	recoveryAttempts = 0
 	queue_master_volume_read()
+	set_master_mute(masterMuted) -- establish the LED for this session; the READ reply may correct it
 	return true
 end
 
@@ -2176,14 +2250,22 @@ function handle_sl_frame(e)
 		end
 	elseif itemType == IT_MASTER_VOLUME then
 		-- e[9] is VOL; a trailing MUTE byte may or may not follow (docs/implementing-sl-link.md §7 -
-		-- trailing bytes are optional more often than the spec documents) - ignored either way.
+		-- trailing bytes are optional more often than the spec documents).
 		local vol = e[9]
 		if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
 		if func == MVOL_READ then
-			-- Diagnostic/logging only - never feeds masterVolume. See
+			-- vol is diagnostic/logging only - never feeds masterVolume. See
 			-- docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13.
 			masterVolumeRead = vol
-			slog('<- MASTER VOLUME READ reply vol=' .. vol .. ' (masterVolume=' .. masterVolume .. ')')
+			-- MUTE (e[10]) seeds masterMuted if present; absent (e[10] is SL_END instead) leaves the
+			-- default established by enter_active_session's own set_master_mute call.
+			local muteByte = e[10]
+			if muteByte ~= nil and muteByte ~= SL_END then
+				local muted = muteByte ~= 0
+				if muted ~= masterMuted then set_master_mute(muted) end
+			end
+			slog('<- MASTER VOLUME READ reply vol=' .. vol .. ' mute=' .. tostring(muteByte) ..
+				' (masterVolume=' .. masterVolume .. ', masterMuted=' .. tostring(masterMuted) .. ')')
 		else
 			masterVolume = vol
 			slog('<- MASTER VOLUME WRITE echo vol=' .. vol)
@@ -2194,6 +2276,8 @@ function handle_sl_frame(e)
 		local ccButton = BUTTON_CC[bid]
 		if bid == BID_ZOOM then
 			handle_zoom_button(pressKind)
+		elseif bid == BID_A_ENC then
+			handle_a_encoder_button(pressKind)
 		elseif bid == BID_CANCEL then
 			if pressKind == PRESS_LONG then
 				force_logout()
@@ -2249,6 +2333,26 @@ function handle_sl_frame(e)
 		slog('<- unhandled itemType=' .. string.format('0x%02X', itemType)
 			.. ' frame=' .. dump_event(e))
 	end
+end
+
+-- SHORT toggles mute alone (VOL=MVOL_IGNORE_VOL so the volume is untouched); LONG resets volume to
+-- MVOL_SEED_DEFAULT AND unmutes in one write, satisfying the project's LONG-must-never-be-a-no-op
+-- rule (see handle_zoom_button's own comment) since it always lands on a known volume/mute pair.
+function handle_a_encoder_button(pressKind)
+	if pressKind == PRESS_LONG then
+		masterVolume = MVOL_SEED_DEFAULT
+		local writeMsg = msg_master_volume_mute_write(MVOL_SEED_DEFAULT, false)
+		slog('-> A BUTTON LONG: reset+unmute ' .. dump_bytes(writeMsg))
+		queue_message(writeMsg, 'mvol')
+		set_master_mute(false)
+	else
+		local newMuted = not masterMuted
+		local writeMsg = msg_master_volume_mute_write(MVOL_IGNORE_VOL, newMuted)
+		slog('-> A BUTTON SHORT: mute toggle ' .. dump_bytes(writeMsg))
+		queue_message(writeMsg, 'mvolMute')
+		set_master_mute(newMuted)
+	end
+	show_master_volume_popup()
 end
 
 -- SHORT toggles the display mode; LONG forces a full repaint of whichever mode is currently
