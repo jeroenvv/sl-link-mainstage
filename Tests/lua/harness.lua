@@ -1127,6 +1127,19 @@ do
 		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 35 F7'
 	)
 
+	-- A genuine mid-range decrease (not just the floor clamp tested above, which starts already at 0
+	-- and so never demonstrates an actual decrease): a negative delta away from either boundary must
+	-- lower masterVolume and the queued write must carry that lower value.
+	pendingMessages = {}
+	masterVolume = 50
+	handle_sl_frame(encoder_frame(EID_A, 0x3B)) -- delta -5
+	check('a negative EID_A delta actually decreases masterVolume (50 - 5 = 45)', masterVolume == 45)
+	checkHex(
+		'...and the queued write carries the decreased value (VOL=45, 0x2D), no MUTE byte',
+		mvol_messages()[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 2D F7'
+	)
+
 	-- EID_A no longer queues a Master Volume READ per tick (see
 	-- docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13):
 	-- a write takes effect with no read anywhere near it, so the per-tick poll and its rate limit are
@@ -2676,6 +2689,88 @@ do
 		reidentifyRetriesLeft, logoutTicksLeft =
 		savedState, savedPending, savedSinceReply, savedCooldown, savedAttempts, savedGivenUp,
 		savedArmedInterval, savedResends, savedFallback, savedRetries, savedLogoutTicks
+end
+
+-- MARK: - 59. Popup value box lies entirely within the knob's rectangle
+--
+-- The value is drawn INSIDE the ring now (see docs/config-lua-history.md#value-moved-inside-the-
+-- ring-2026-09-14), so its Write Text box must never extend past the icon's bounds - Write Text's
+-- background box fills the whole maxWidth, and painting past the icon's edges puts an opaque bar
+-- through the ring itself.
+check('popup value box left edge is inside the knob rect', POPUP_VALUE_X >= POPUP_KNOB_X)
+check('popup value box right edge is inside the knob rect',
+	POPUP_VALUE_X + POPUP_VALUE_W <= POPUP_KNOB_X + BMP_ICON_W)
+check('popup value box top edge is inside the knob rect', POPUP_VALUE_Y >= POPUP_KNOB_Y)
+check('popup value box bottom edge is inside the knob rect',
+	POPUP_VALUE_Y + POPUP_VALUE_GLYPH_H <= POPUP_KNOB_Y + BMP_ICON_H)
+
+-- MARK: - 60. Drawing the knob invalidates a memoized popupValue when the icon changes
+--
+-- THE TRAP (docs/config-lua-history.md#value-moved-inside-the-ring-2026-09-14): the Knob bitmap fully
+-- replaces the pixels beneath it, and only redraws roughly every ~10 units of value while the value
+-- text changes on every tick - a knob redraw is not always paired with a value change. If
+-- draw_popup_value's memo were left untouched, a knob repaint at an unchanged value text would wipe
+-- the number until the value itself next changed. draw_popup_knob() must clear drawn['popupValue']
+-- whenever the icon it is about to draw differs from the one last drawn.
+do
+	local savedDrawn, savedPending, savedMax = drawn, pendingMessages, popupMax
+	popupMax = 127
+
+	-- (a) First draw at icon 0 (value 0): the value's memo starts populated.
+	drawn, pendingMessages = {}, {}
+	draw_popup_knob(0)
+	draw_popup_value(64) -- text unrelated to the knob's value on purpose, isolating the memo check
+	check('popupValue memo is populated after the first draw', drawn['popupValue'] ~= nil)
+
+	-- (b) Redrawing the knob at a value that selects the SAME icon (still icon 0) must NOT touch the
+	-- value's memo - this is the ordinary per-id memoization path, unrelated to the trap.
+	draw_popup_knob(1)
+	check('popupValue memo survives a knob redraw that keeps the same icon',
+		drawn['popupValue'] ~= nil)
+
+	-- (c) Redrawing the knob at a value that selects a DIFFERENT icon (value 127 -> icon 12) MUST
+	-- clear the value's memo, even though draw_popup_value has not been called again yet - this is
+	-- the actual regression guard: prove the invalidation happens inside draw_popup_knob() itself.
+	draw_popup_knob(127)
+	check('popupValue memo is cleared when the knob icon actually changes',
+		drawn['popupValue'] == nil)
+
+	-- (d) The practical consequence: calling draw_popup_value again after that must queue a message
+	-- rather than being skipped as unchanged.
+	pendingMessages = {}
+	draw_popup_value(64)
+	check('popupValue resends after a knob redraw changed the icon', #pendingMessages == 1)
+
+	-- (e) A DECREASING icon transition must also invalidate the memo. Every case above only ever
+	-- raises the icon, so mutating the guard's `~=` to `<` (fire only when the icon increases) would
+	-- slip through undetected - this drives the icon down from full to a nonzero mid-level instead.
+	pendingMessages = {}
+	draw_popup_value(64)
+	check('popupValue memo is populated before the decreasing-icon case', drawn['popupValue'] ~= nil)
+	local midValue = math.floor(popupMax / 2)
+	local midIcon = popup_knob_icon(midValue)
+	draw_popup_knob(midValue)
+	check('a decreasing icon (full -> mid-level) still clears the popupValue memo, not just an increase',
+		drawn['popupValue'] == nil and midIcon < BMP_KNOB_LEVELS - 1 and midIcon > 0)
+	pendingMessages = {}
+	draw_popup_value(64)
+	check('popupValue resends after a decreasing knob icon change', #pendingMessages == 1)
+
+	-- (f) Returning to icon 0 from a nonzero icon must also invalidate the memo. Comparing the
+	-- bitmap tuple's GROUP field (always BMP_GROUP_KNOB, constant) instead of its ICON field would
+	-- collapse the guard to "current icon ~= 0", which happens to match every case above (none of
+	-- them lands back on icon 0) but fails here.
+	pendingMessages = {}
+	draw_popup_value(64)
+	check('popupValue memo is populated before the return-to-zero case', drawn['popupValue'] ~= nil)
+	draw_popup_knob(0)
+	check('returning to icon 0 from a nonzero icon still clears the popupValue memo',
+		drawn['popupValue'] == nil)
+	pendingMessages = {}
+	draw_popup_value(64)
+	check('popupValue resends after the knob icon returns to 0', #pendingMessages == 1)
+
+	drawn, pendingMessages, popupMax = savedDrawn, savedPending, savedMax
 end
 
 -- MARK: - Summary
