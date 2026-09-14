@@ -35,6 +35,12 @@ end
 local configPath = arg[1] or 'MainStageScript/STUDIOLOGIC/SL.device/config.lua'
 dofile(configPath)
 
+-- Baseline "a READ reply has landed at least once" state for the rest of the suite. masterVolumeRead
+-- no longer feeds masterVolume at all (see
+-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12), so this is
+-- just a plausible logging value - sections that care about it manage it themselves (save/restore).
+masterVolumeRead = 50
+
 -- MARK: - Helpers (SKILL.md)
 
 -- MainStage passes inbound MIDI events as 0-indexed tables; frame(...)
@@ -1000,7 +1006,7 @@ end
 --
 -- SHORT sends a Logout Request (the keyboard never confirms it - see request_logout()'s comment) and
 -- LONG skips straight to silence (force_logout()) since the request is ignored anyway. Both end in
--- STATE_LOGGED_OUT, which controller_timer_trigger's own branch (section 27) suspends the keepalive
+-- STATE_LOGGED_OUT, which controller_timer_trigger's own branch (section 29) suspends the keepalive
 -- for.
 do
 	local function button_frame(bid, pressKind)
@@ -1043,7 +1049,138 @@ do
 	state = savedState
 end
 
--- MARK: - 27. STATE_LOGGED_OUT suspends the keepalive, then resumes identification
+-- MARK: - 27. EID_A drives Master Volume (IT_MASTER_VOLUME), not a CC
+--
+-- EID_A ticks bypass ENCODER_CC entirely: they clamp/store masterVolume (0-100) and queue a Master
+-- Volume write under its own 'mvol' regionId so a fast twist's many ticks coalesce to one queued
+-- write (see queue_message's PER-REGION COALESCING comment) - not one per tick. Assertions filter
+-- pendingMessages down to the 'mvol' entry so the popup's own display traffic (a separate concern,
+-- covered by the existing per-region memoization tests) doesn't interfere.
+do
+	local function encoder_frame(eid, tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, eid, tickByte, 0xF7)
+	end
+
+	local function mvol_messages()
+		local out = {}
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == 'mvol' then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+
+	local savedPopupActive, savedDisplayMode, savedMasterVolumeRead =
+		popupActive, displayMode, masterVolumeRead
+	-- Pre-seat the popup as already showing (the 'repeat call' branch) so show_master_volume_popup
+	-- doesn't run the full mode-switch machinery on every sub-test below - kept separate from what
+	-- this section actually tests (the Master Volume write itself).
+	popupActive = true
+	popupPreviousMode = 'zoom'
+	displayMode = 'popup'
+
+	pendingMessages = {}
+	masterVolume = 50
+	handle_sl_frame(encoder_frame(EID_A, 0x41)) -- delta +1
+	check('EID_A tick queues exactly one Master Volume write', #mvol_messages() == 1)
+	check('EID_A +1 tick updates masterVolume to 51', masterVolume == 51)
+	checkHex(
+		'EID_A +1 tick queues the exact Master Volume write vector (MVOL_WRITE, no MUTE byte)',
+		mvol_messages()[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 33 F7'
+	)
+
+	-- Clamp at 100: starting at 100, a further +5 must not exceed it.
+	pendingMessages = {}
+	masterVolume = 100
+	handle_sl_frame(encoder_frame(EID_A, 0x45)) -- delta +5
+	check('masterVolume clamps at 100', masterVolume == 100)
+	checkHex(
+		'clamped write at 100 carries VOL=100 (0x64), not 105, no MUTE byte',
+		mvol_messages()[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 64 F7'
+	)
+
+	-- Clamp at 0: starting at 0, a further -5 must not go negative.
+	pendingMessages = {}
+	masterVolume = 0
+	handle_sl_frame(encoder_frame(EID_A, 0x3B)) -- delta -5
+	check('masterVolume clamps at 0', masterVolume == 0)
+	checkHex(
+		'clamped write at 0 carries VOL=0, not negative, no MUTE byte',
+		mvol_messages()[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 00 F7'
+	)
+
+	-- Several A ticks before a flush must coalesce to ONE queued write carrying the latest value -
+	-- proving the 'mvol' regionId actually coalesces rather than piling up (queue_message's
+	-- PER-REGION COALESCING only fires when regionId is given; this is the check that it was).
+	pendingMessages = {}
+	masterVolume = 50
+	handle_sl_frame(encoder_frame(EID_A, 0x41)) -- 50 -> 51
+	handle_sl_frame(encoder_frame(EID_A, 0x41)) -- 51 -> 52
+	handle_sl_frame(encoder_frame(EID_A, 0x41)) -- 52 -> 53
+	check('three EID_A ticks before a flush leave exactly one queued Master Volume write', #mvol_messages() == 1)
+	check('...carrying the latest value (53), not an intermediate one', masterVolume == 53)
+	checkHex(
+		'...and its bytes reflect VOL=53 (0x35), no MUTE byte',
+		mvol_messages()[1],
+		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 35 F7'
+	)
+
+	-- EID_A no longer queues a Master Volume READ per tick (see
+	-- docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13):
+	-- a write takes effect with no read anywhere near it, so the per-tick poll and its rate limit are
+	-- gone. The single session-entry read is covered by sections 30/32/35.
+	local function mvol_read_messages()
+		local out = {}
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == 'mvolRead' then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+
+	pendingMessages = {}
+	handle_sl_frame(encoder_frame(EID_A, 0x41))
+	check('EID_A tick queues no Master Volume read', #mvol_read_messages() == 0)
+
+	popupActive, displayMode =
+		savedPopupActive, savedDisplayMode
+
+	-- Inbound Master Volume reply updates masterVolume - tolerant of the trailing MUTE byte being
+	-- present or absent (docs/implementing-sl-link.md §7: trailing bytes are optional more often than
+	-- documented).
+	masterVolume = 0
+	masterVolumeRead = nil
+	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_WRITE, 65, 0, 0xF7))
+	check('inbound Master Volume WITH trailing MUTE byte decodes VOL correctly', masterVolume == 65)
+	check('...but a WRITE-shaped frame (func=MVOL_WRITE) is not a READ reply, so masterVolumeRead stays nil',
+		masterVolumeRead == nil)
+
+	masterVolume = 0
+	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_WRITE, 42, 0xF7))
+	check('inbound Master Volume WITHOUT trailing MUTE byte decodes VOL correctly', masterVolume == 42)
+
+	masterVolumeRead = savedMasterVolumeRead
+end
+
+-- MARK: - 28. popup_knob_icon scales by popupMax, not a hardcoded 127
+--
+-- Master Volume's popup uses popupMax=100 (see show_master_volume_popup); the ring must still hit
+-- its full icon at the control's own maximum, whether that's 127 (CC encoders) or 100 (Master
+-- Volume).
+do
+	local savedMax = popupMax
+
+	popupMax = 127
+	check('popup_knob_icon at popupMax=127 returns the full icon', popup_knob_icon(127) == BMP_KNOB_LEVELS - 1)
+
+	popupMax = 100
+	check('popup_knob_icon at popupMax=100 returns the full icon', popup_knob_icon(100) == BMP_KNOB_LEVELS - 1)
+
+	popupMax = savedMax
+end
+
+-- MARK: - 29. STATE_LOGGED_OUT suspends the keepalive, then resumes identification
 --
 -- request_logout()/force_logout() (section 26) move to STATE_LOGGED_OUT. controller_timer_trigger's
 -- STATE_LOGGED_OUT branch must not call send_keepalive() - that silence is what lets the SL88's own
@@ -1089,7 +1226,34 @@ do
 		savedState, savedTimerPending, savedLogoutTicksLeft, savedPending, savedArmed
 end
 
--- MARK: - 28. STATE_LOGGED_OUT suspends display traffic and pins the tick at KEEPALIVE_MS
+-- MARK: - 30. handle_login() queues the Master Volume read with the exact expected bytes
+do
+	local savedState, savedPending = state, pendingMessages
+
+	patchName, setName, currentConcert = 'Test Patch', 'Test Set', 'Test Concert'
+	pendingMessages = {}
+	handle_login()
+
+	local reads = {}
+	for i = 1, #pendingMessages do
+		local m = pendingMessages[i]
+		if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then
+			reads[#reads + 1] = m
+		end
+	end
+	check('handle_login() queues exactly one Master Volume read', #reads == 1)
+	if #reads == 1 then
+		checkHex(
+			'handle_login()\'s Master Volume read carries the exact expected bytes',
+			reads[1],
+			'F0 00 20 1A 16 03 ' .. id2() .. ' 07 00 F7'
+		)
+	end
+
+	state, pendingMessages = savedState, savedPending
+end
+
+-- MARK: - 31. STATE_LOGGED_OUT suspends display traffic and pins the tick at KEEPALIVE_MS
 --
 -- Two reinforcing halves of the fix (see request_logout()'s and rearm_timer()'s comments): (a)
 -- entering STATE_LOGGED_OUT with a popup up must dismiss it and drop whatever display traffic is
@@ -1155,9 +1319,88 @@ do
 		savedState, savedPopupActive, savedDisplayMode, savedPopupPreviousMode, savedPending, savedTimerPending, savedArmed, savedTimerArmedInterval
 end
 
--- MARK: - 29. handle_login()/handle_restart() still repaint unconditionally, even on a
--- reaffirmation - the enter_active_session() idempotency guard covers only its own session-transition
--- bookkeeping, not the repaint the call sites are responsible for.
+-- MARK: - 32. enter_active_session(): every transition into STATE_ACTIVE queues one Master Volume
+-- read, and a reaffirmation while already active queues no further read
+--
+-- Covers the fix for the hardware bug where handle_login() alone never ran (the SL88 remembers the
+-- host across runs and skips APPROVED/LOGIN entirely - see enter_active_session()'s comment), so the
+-- ID_QUERY self-heal path in handle_sl_frame is the one that actually fires in practice.
+do
+	local savedState, savedPending = state, pendingMessages
+
+	local function mvol_reads()
+		local reads = {}
+		for i = 1, #pendingMessages do
+			local m = pendingMessages[i]
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then
+				reads[#reads + 1] = m
+			end
+		end
+		return reads
+	end
+
+	-- controller_midi_in() flushes what it queues before returning (see flush_pending's "one message
+	-- per flush" rule), so by the time this function returns pendingMessages is already empty - the
+	-- queued read must be found in the returned flush output instead.
+	local function mvol_reads_in(bytes)
+		local reads = {}
+		for _, m in ipairs(split_messages(bytes or {})) do
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then
+				reads[#reads + 1] = m
+			end
+		end
+		return reads
+	end
+
+	-- (a) ID_QUERY reply path: STATE_LISTED (already APPROVED) -> STATE_ACTIVE queues exactly one
+	-- read. STATE_IDENTIFYING must NOT be promoted this way - see
+	-- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
+	state = STATE_LISTED
+	pendingMessages = {}
+	local out = controller_midi_in(qreply(), 'LINK')
+	local reads = mvol_reads_in(out and out.midi)
+	check('ID_QUERY reply into STATE_ACTIVE queues exactly one Master Volume read', #reads == 1)
+	if #reads == 1 then
+		checkHex(
+			'ID_QUERY reply\'s Master Volume read carries the exact expected bytes',
+			reads[1],
+			'F0 00 20 1A 16 03 ' .. id2() .. ' 07 00 F7'
+		)
+	end
+	check('ID_QUERY reply into STATE_ACTIVE actually sets state', state == STATE_ACTIVE)
+
+	-- (b) A second reaffirmation while already STATE_ACTIVE queues NO further read - the ID_QUERY
+	-- reply path can be reached on every keepalive round-trip, so this is the case that would flood
+	-- the outbound queue without enter_active_session()'s idempotency guard.
+	pendingMessages = {}
+	out = controller_midi_in(qreply(), 'LINK')
+	check('a second ID_QUERY reply while already active queues no further read', #mvol_reads_in(out and out.midi) == 0)
+
+	-- (c) handle_restart() queues one read on a genuine transition into active.
+	state = STATE_STANDBY
+	pendingMessages = {}
+	handle_restart()
+	reads = mvol_reads()
+	check('handle_restart() queues exactly one Master Volume read', #reads == 1)
+	if #reads == 1 then
+		checkHex(
+			'handle_restart()\'s Master Volume read carries the exact expected bytes',
+			reads[1],
+			'F0 00 20 1A 16 03 ' .. id2() .. ' 07 00 F7'
+		)
+	end
+
+	-- (d) handle_restart() reaffirming an already-active session queues no further read either.
+	pendingMessages = {}
+	handle_restart()
+	check('a second handle_restart() while already active queues no further read', #mvol_reads() == 0)
+
+	state, pendingMessages = savedState, savedPending
+end
+
+-- MARK: - 33. handle_login()/handle_restart() still repaint unconditionally, even on a
+-- reaffirmation - the enter_active_session() idempotency guard covers only the volume read, not the
+-- repaint the call sites are responsible for.
 do
 	local savedState, savedPending, savedLastPaintedPatch = state, pendingMessages, lastPaintedPatch
 
@@ -1185,7 +1428,7 @@ do
 	state, pendingMessages, lastPaintedPatch = savedState, savedPending, savedLastPaintedPatch
 end
 
--- MARK: - 30. rearm_timer() watchdog: recovers a one-shot MainStage never delivered
+-- MARK: - 34. rearm_timer() watchdog: recovers a one-shot MainStage never delivered
 --
 -- If timerPending latches true forever (the one-shot MainStage was supposed to fire never
 -- arrives), rearm_timer() must force a re-arm after TIMER_WATCHDOG_FRAMES inbound events - but only
@@ -1237,7 +1480,58 @@ do
 		savedState, savedTimerPending, savedFramesSinceTick, savedArmed, savedPending, savedPopupActive
 end
 
--- MARK: - 31. Identification resend while identifying, and the ID_QUERY self-heal no longer fakes
+-- MARK: - 35. A genuine login confirmation still resyncs Master Volume when the self-heal path
+-- already made the session ACTIVE; a self-heal reaffirmation alone still queues nothing.
+--
+-- Reproduces the hardware bug: ID_QUERY self-heal reaches STATE_ACTIVE before the user selects the
+-- app, so the keyboard ignores that READ; the real SYS_LOGIN_CONFIRMATION arrives later while state
+-- is already STATE_ACTIVE, and enter_active_session()'s idempotency guard used to swallow it.
+-- Inspects pendingMessages directly rather than a flush's .midi output: handle_login() queues its
+-- repaint (display messages) BEFORE the volume read, and flush_pending sends only one queued
+-- message per call, so a single controller_midi_in round-trip would return the display message
+-- and leave the read still queued rather than proving it absent.
+do
+	local savedState, savedPending = state, pendingMessages
+
+	local function mvol_reads()
+		local reads = {}
+		for i = 1, #pendingMessages do
+			local m = pendingMessages[i]
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then
+				reads[#reads + 1] = m
+			end
+		end
+		return reads
+	end
+
+	-- Self-heal reaffirming an already-ACTIVE session (enter_active_session()'s own idempotency
+	-- guard, exercised end-to-end via ID_QUERY in test 32) must still queue no read.
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	enter_active_session()
+	check('enter_active_session() reaffirming an already-ACTIVE session queues no read',
+		#mvol_reads() == 0)
+
+	-- A genuine login confirmation arriving while the self-heal path already made the session
+	-- ACTIVE - exactly the hardware sequence - must still queue exactly one read.
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	handle_login()
+	local reads = mvol_reads()
+	check('a genuine login confirmation while already ACTIVE queues exactly one Master Volume read',
+		#reads == 1)
+	if #reads == 1 then
+		checkHex(
+			'that Master Volume read carries the exact expected bytes',
+			reads[1],
+			'F0 00 20 1A 16 03 ' .. id2() .. ' 07 00 F7'
+		)
+	end
+
+	state, pendingMessages = savedState, savedPending
+end
+
+-- MARK: - 36. Identification resend while identifying, and the ID_QUERY self-heal no longer fakes
 -- an approval - see
 -- docs/config-lua-history.md#identification-approval-and-rejection-are-lost-in-mainstages-init-window-2026-09-10.
 do
@@ -1295,9 +1589,7 @@ do
 		keepalives_in(out and out.midi) == 1)
 
 	-- (b) An explicit 7F 01 APPROVED reply moves out of STATE_IDENTIFYING (to STATE_LISTED) and stops
-	-- the resend - the branch that resends only fires while state == STATE_IDENTIFYING. The ordinary
-	-- ID_QUERY self-heal (legitimate from STATE_LISTED) is what then promotes to STATE_ACTIVE,
-	-- matching the real hardware sequence.
+	-- the resend - the branch that resends only fires while state == STATE_IDENTIFYING.
 	state = STATE_IDENTIFYING
 	identifyResendsLeft = MAX_IDENTIFY_RESENDS
 	pendingMessages = {}
@@ -1307,6 +1599,8 @@ do
 	out = controller_timer_trigger()
 	check('no identify-resend fires once APPROVED (state == STATE_LISTED)',
 		id_requests_in(out and out.midi) == 0)
+	-- Once approved, the ordinary ID_QUERY self-heal (still legitimate from STATE_LISTED - see test
+	-- 32) is what actually promotes to STATE_ACTIVE, matching the real hardware sequence.
 	pendingMessages = {}
 	controller_midi_in(qreply(), 'LINK')
 	check('an ID_QUERY reply after APPROVED promotes STATE_LISTED to STATE_ACTIVE', state == STATE_ACTIVE)
@@ -1362,7 +1656,124 @@ do
 		savedReidentifyRetriesLeft, savedArmed, savedTimerPending
 end
 
--- MARK: - 32. Per-instance log tag
+-- MARK: - 37. flush_pending ALWAYS appends the trailing query when includeQuery is true, Master
+-- Volume included - the omission experiment (docs/config-lua-history.md
+-- #master-volume-writes-go-out-unpaired-2026-09-10) is REVERTED: it wasn't what made Master Volume
+-- work (a paired READ was), and dropping the query starved the session clock during an A-encoder
+-- sweep, since most flushes in a sweep are Master Volume messages.
+do
+	local savedPending, savedFlushReady = pendingMessages, displayFlushReady
+	local query = msg_identification_query()
+
+	-- (a) A Master Volume write goes out PAIRED with the query, like any other message.
+	pendingMessages = {}
+	queue_message(msg_master_volume_write(77), 'mvol')
+	local out = flush_pending(true)
+	check('a Master Volume flush returns output', out ~= nil and out.midi ~= nil)
+	if out then
+		local msgs = split_messages(out.midi)
+		check('a Master Volume flush carries two messages (write + query)', #msgs == 2)
+		check('...the write first', #msgs == 2 and item_type_of(msgs[1]) == IT_MASTER_VOLUME)
+		check('...ending with the Identification Query', #msgs == 2 and hex(msgs[#msgs]) == hex(query))
+	end
+
+	-- (b) A display message still carries the query too - the existing invariant (section 2),
+	-- confirming the revert didn't touch this path either.
+	pendingMessages = {}
+	displayFlushReady = true
+	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:mvol-query-regression')
+	out = flush_pending(true)
+	check('a display flush still returns output', out ~= nil and out.midi ~= nil)
+	if out then
+		local msgs = split_messages(out.midi)
+		check('a display flush still carries two messages (display + query)', #msgs == 2)
+		check('...ending with the Identification Query',
+			#msgs == 2 and hex(msgs[#msgs]) == hex(query))
+	end
+
+	pendingMessages, displayFlushReady = savedPending, savedFlushReady
+end
+
+-- MARK: - 38. flush_pending no longer special-cases Master Volume for the clock - the paired query
+-- above IS the re-arm mechanism now, so the request_quick_rearm() call this section used to check
+-- (added alongside the unpairing experiment, section 37's note) is gone; a Master Volume flush must
+-- leave an outstanding one-shot untouched, exactly like any other paired flush.
+do
+	local savedState, savedPending, savedTimerPending, savedTimerArmedInterval, savedArmed =
+		state, pendingMessages, timerPending, timerArmedInterval, armed
+
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	queue_message(msg_master_volume_write(50), 'mvol')
+
+	-- Simulate the common case: an outstanding one-shot already armed at the long KEEPALIVE_MS
+	-- interval, same as a quiet session would have before this write was queued.
+	timerPending = true
+	timerArmedInterval = KEEPALIVE_MS
+	armed = nil
+
+	flush_pending(true)
+
+	check(
+		'a Master Volume flush does NOT shorten an outstanding KEEPALIVE_MS one-shot (no special-case rearm)',
+		armed == nil
+	)
+	check('...and timerArmedInterval is left untouched', timerArmedInterval == KEEPALIVE_MS)
+
+	state, pendingMessages, timerPending, timerArmedInterval, armed =
+		savedState, savedPending, savedTimerPending, savedTimerArmedInterval, savedArmed
+end
+
+-- MARK: - 39. A fast A-encoder sweep cannot starve the clock or pile up Master Volume writes
+--
+-- Each tick is itself an inbound SL frame, and controller_midi_in calls rearm_timer()
+-- unconditionally on every one (rule 6) independent of whether that tick's own flush carried a
+-- query; the 'mvol' regionId coalesces every tick to a single queued write (section 27), so that
+-- queue never grows with tick count - bounded regardless of how many ticks land, which is the
+-- property this section checks. No per-tick READ is queued any more (see
+-- docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13),
+-- so the backlog is exactly <= 1, not just bounded. show_master_volume_popup is stubbed out - its
+-- own display traffic is a separate concern (section 27/28) that would otherwise obscure this
+-- section's own assertions.
+do
+	local savedState, savedPending, savedTimerPending, savedTimerArmedInterval, savedArmed,
+		savedMasterVolume, savedMvolFlushReady =
+		state, pendingMessages, timerPending, timerArmedInterval, armed, masterVolume, mvolFlushReady
+
+	local originalShowMVPopup = show_master_volume_popup
+	show_master_volume_popup = function() end
+
+	local function encoder_frame(tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
+	end
+
+	state = STATE_ACTIVE
+	masterVolume = 50
+	pendingMessages = {}
+	timerPending = false
+	-- Left true throughout: this section checks the backlog stays bounded and the clock stays armed
+	-- REGARDLESS of the write-pacing gate's state, not the gate's own behaviour - see section 54 for
+	-- that.
+	mvolFlushReady = true
+
+	for _ = 1, 20 do
+		controller_midi_in(encoder_frame(0x41), 'LINK') -- delta +1 each tick
+	end
+
+	check(
+		'20 rapid A-encoder ticks settle at a bounded backlog (never more than one leftover message)',
+		#pendingMessages <= 1
+	)
+	check('masterVolume reflects all 20 ticks (50 + 20)', masterVolume == 70)
+	check('the clock is armed by the time the sweep ends (rearm_timer ran every tick)', timerPending == true)
+
+	show_master_volume_popup = originalShowMVPopup
+	state, pendingMessages, timerPending, timerArmedInterval, armed, masterVolume, mvolFlushReady =
+		savedState, savedPending, savedTimerPending, savedTimerArmedInterval, savedArmed, savedMasterVolume,
+		savedMvolFlushReady
+end
+
+-- MARK: - 40. Per-instance log tag
 --
 -- MainStage runs one script instance per matched USB-MIDI interface, all sharing one stdout - see
 -- the instanceTag/compute_instance_tag comment in config.lua. Checks the [sllink tag/id] prefix
@@ -1397,12 +1808,12 @@ do
 			compute_instance_tag(0x1000, 0x2000, 0x3000, 0x4000, 13.5))
 end
 
--- MARK: - 33. Per-instance starting instanceID (derive_instance_start)
+-- MARK: - 41. Per-instance starting instanceID (derive_instance_start)
 --
 -- Each instance used to start at the literal SL_INSTANCE_START (0x6D); now it derives its starting
 -- instanceID from its own instanceTag instead (see docs/config-lua-history.md, "Per-instance
 -- starting id"). Exercises derive_instance_start directly with simulated tag inputs - the same
--- allocator-independent pattern section 32 already uses for compute_instance_tag - rather than
+-- allocator-independent pattern section 40 already uses for compute_instance_tag - rather than
 -- comparing two real cross-process instanceTags/instanceIDs.
 do
 	local sampleTags = { '000000', '000001', '00007e', '00007f', '0000ff', '123456', 'abcdef', 'ffffff', '800000' }
@@ -1428,9 +1839,9 @@ do
 		instanceID >= SL_INSTANCE_MIN and instanceID <= SL_INSTANCE_MAX)
 end
 
--- MARK: - 34. Rejection still retries the SAME id before bumping, and the bump wraps in range
+-- MARK: - 42. Rejection still retries the SAME id before bumping, and the bump wraps in range
 --
--- Complements section 31 (which covers the first same-id retry against a live rejected frame): this
+-- Complements section 36 (which covers the first same-id retry against a live rejected frame): this
 -- calls handle_identification_rejected directly to also reach the exhausted-budget bump, confirming
 -- it still wraps correctly using the new SL_INSTANCE_MIN/MAX constants. Preserves the existing
 -- ordering exactly - see handle_identification_rejected's own comment and
@@ -1468,7 +1879,335 @@ do
 		savedReidentifyRetriesLeft, savedArmed, savedTimerPending
 end
 
--- MARK: - 35. STATE_REIDENTIFY_WAIT's ID_QUERY reply never promotes on a stale identifyFallback
+-- MARK: - 43. A popup shows the value being SENT (masterVolume), not the last READ reply
+--
+-- Reply timing made the displayed number jumpy on hardware (see
+-- docs/config-lua-history.md#master-volume-popup-seed-from-read-track-the-write-value-2026-09-10) - the popup
+-- now always shows masterVolume, the locally accumulated to-be-sent value, and never masterVolumeRead
+-- directly. masterVolumeRead no longer feeds masterVolume at all, not even at a gesture's start -
+-- see docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12 and
+-- section 46.
+do
+	local savedMasterVolume, savedMasterVolumeRead, savedPopupValue, savedPopupMax, savedPopupActive,
+		savedDisplayMode, savedPopupPreviousMode, savedArmed, savedTimerPending, savedTimerArmedInterval =
+		masterVolume, masterVolumeRead, popupValue, popupMax, popupActive, displayMode, popupPreviousMode,
+		armed, timerPending, timerArmedInterval
+
+	-- Pre-seat the popup as already showing (same 'repeat call' shortcut as section 27) so
+	-- show_master_volume_popup() only exercises the value it sets, not the full mode-switch
+	-- machinery - a separate, already-covered concern.
+	popupActive = true
+	popupPreviousMode = 'zoom'
+	displayMode = 'popup'
+
+	-- (a) No READ reply ever received: the popup shows masterVolume directly, same as any other
+	-- tick - MVOL_SEED_DEFAULT means there is always a real value being sent, never a placeholder.
+	-- See docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12.
+	masterVolume = 77
+	masterVolumeRead = nil
+	show_master_volume_popup()
+	check('before any READ reply, the A popup still shows masterVolume (77), not a placeholder',
+		popupValue == 77)
+
+	-- (b) A genuine READ reply (func=MVOL_READ) updates masterVolumeRead...
+	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, 33, 0, 0xF7))
+	check('a READ-shaped inbound frame (func=MVOL_READ) sets masterVolumeRead from its VOL byte',
+		masterVolumeRead == 33)
+
+	-- ...but the popup keeps showing masterVolume, unperturbed by the reply that just landed.
+	show_master_volume_popup()
+	check('after a READ reply, the A popup still shows masterVolume (77), not the reply value (33)',
+		popupValue == 77)
+
+	-- (c) No live caller passes nil any more (MVOL_SEED_DEFAULT replaced the placeholder), but the
+	-- defensive fallback must still render as icon 0 (empty), not a crash or a misleading full ring.
+	check('popup_knob_icon(nil) renders as icon 0 (empty ring), not a crash or a full ring',
+		popup_knob_icon(nil) == 0)
+
+	-- (d) Same defensive coverage for draw_popup_value: '--', never the string "nil".
+	local savedDrawn, savedPending = drawn, pendingMessages
+	drawn, pendingMessages = {}, {}
+	draw_popup_value(nil)
+	check('draw_popup_value(nil) queues exactly one draw', #pendingMessages == 1)
+	if #pendingMessages == 1 then
+		checkHex(
+			'...matching the exact bytes of Write Text "--" at the popup value\'s own position/colours',
+			pendingMessages[1],
+			hex(msg_write_text('--', POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W, ALIGN_CENTER, SIZE_MEDIUM,
+				POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
+				POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3]))
+		)
+	end
+	drawn, pendingMessages = savedDrawn, savedPending
+
+	masterVolume, masterVolumeRead, popupValue, popupMax, popupActive, displayMode, popupPreviousMode,
+		armed, timerPending, timerArmedInterval =
+		savedMasterVolume, savedMasterVolumeRead, savedPopupValue, savedPopupMax, savedPopupActive,
+		savedDisplayMode, savedPopupPreviousMode, savedArmed, savedTimerPending, savedTimerArmedInterval
+end
+
+-- MARK: - 44. A Master Volume READ reply landing between EID_A ticks never resurrects a queued read
+--
+-- See docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13.
+-- Sections 27/39 cover the plain no-read-ever-queued case.
+do
+	local savedPending, savedPopupActive, savedDisplayMode, savedMasterVolumeRead =
+		pendingMessages, popupActive, displayMode, masterVolumeRead
+
+	popupActive = true
+	popupPreviousMode = 'zoom'
+	displayMode = 'popup'
+
+	local function encoder_frame(tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
+	end
+	local function read_reply_frame(vol)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, vol, 0xF7)
+	end
+	local function mvol_read_messages()
+		local out = {}
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == 'mvolRead' then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+
+	pendingMessages = {}
+	handle_sl_frame(encoder_frame(0x41))
+	handle_sl_frame(read_reply_frame(60))
+	pendingMessages = {}
+	handle_sl_frame(encoder_frame(0x41))
+	check('a READ reply landing between ticks does not bring the read poll back',
+		#mvol_read_messages() == 0)
+
+	pendingMessages, popupActive, displayMode, masterVolumeRead =
+		savedPending, savedPopupActive, savedDisplayMode, savedMasterVolumeRead
+end
+
+-- MARK: - 45. A Master Volume READ reply never overwrites masterVolume, only masterVolumeRead
+--
+-- Superseded design: masterVolume used to be re-trusted from a READ reply once
+-- MVOL_GESTURE_WINDOW_FRAMES had passed since the last EID_A tick (see
+-- docs/config-lua-history.md#master-volume-drop-detection-read-rate-limiting-and-the-mid-gesture-guard-2026-09-10).
+-- Now the popup shows masterVolume directly (section 43), so a READ reply landing at ANY time -
+-- mid-gesture or long after - must never perturb it. Section 46 goes further: not even a fresh
+-- gesture's start reseeds from it any more - see
+-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
+-- masterVolumeRead keeps updating from every reply regardless.
+do
+	local savedMasterVolume, savedMasterVolumeRead, savedPopupActive, savedDisplayMode =
+		masterVolume, masterVolumeRead, popupActive, displayMode
+
+	popupActive = true
+	popupPreviousMode = 'zoom'
+	displayMode = 'popup'
+
+	local function encoder_frame(tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
+	end
+	local function read_reply_frame(vol)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, vol, 0xF7)
+	end
+
+	-- (a) An EID_A tick advances masterVolume locally.
+	masterVolume = 50
+	handle_sl_frame(encoder_frame(0x41)) -- delta +1 -> 51
+	check('EID_A tick sets masterVolume to the local delta (51)', masterVolume == 51)
+
+	-- (b) A READ reply lands immediately after (classic "mid-gesture" timing) - masterVolume is
+	-- untouched, masterVolumeRead updates.
+	handle_sl_frame(read_reply_frame(40))
+	check('a READ reply right after an EID_A tick does NOT overwrite masterVolume', masterVolume == 51)
+	check('...but still updates the device-reported masterVolumeRead', masterVolumeRead == 40)
+
+	-- (c) A second READ reply, with no further gesture activity in between, STILL does not overwrite
+	-- masterVolume - only masterVolumeRead. Old design re-trusted the reply here; current design never
+	-- does, at any time - see section 46.
+	handle_sl_frame(read_reply_frame(35))
+	check('a second READ reply with no EID_A tick in between still does NOT overwrite masterVolume',
+		masterVolume == 51)
+	check('...masterVolumeRead updates regardless', masterVolumeRead == 35)
+
+	masterVolume, masterVolumeRead, popupActive, displayMode =
+		savedMasterVolume, savedMasterVolumeRead, savedPopupActive, savedDisplayMode
+end
+
+-- MARK: - 46. EID_A never reseeds masterVolume from masterVolumeRead - tracked locally only
+--
+-- Hardware log: a Master Volume READ reply answered a fixed 71 across a whole sweep of writes that
+-- took audible effect (65 -> 70 -> 72), so the reply cannot be the device's current output level -
+-- see docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
+-- masterVolume now changes ONLY by accumulated EID_A deltas, never reseeded from masterVolumeRead at
+-- a gesture start or otherwise - this supersedes section 46's old premise (idle-tick gesture
+-- boundaries no longer exist: MVOL_GESTURE_IDLE_TICKS and mvolLastActivityIdleTick are both removed).
+do
+	local savedMasterVolume, savedMasterVolumeRead, savedIdleTicks,
+		savedPopupActive, savedDisplayMode =
+		masterVolume, masterVolumeRead, idleTicks,
+		popupActive, displayMode
+
+	popupActive = true
+	popupPreviousMode = 'zoom'
+	displayMode = 'popup'
+
+	local function encoder_frame(tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
+	end
+
+	-- (a) A tick right after a fresh READ reply landed does not snap to the reply's value (80) - it
+	-- only ever adds its own delta to masterVolume (50 + 1 = 51).
+	idleTicks = 10
+	masterVolume = 50
+	masterVolumeRead = 80
+	handle_sl_frame(encoder_frame(0x41)) -- delta +1
+	check('a tick right after a READ reply does not reseed from it (50 + 1 = 51, not 80 + 1)',
+		masterVolume == 51)
+
+	-- (b) Pause (a long idle gap - what used to cross the old gesture boundary) during which a READ
+	-- reply lands with yet another value: resuming still just accumulates onto the last local value.
+	idleTicks = idleTicks + 50
+	masterVolumeRead = 99
+	handle_sl_frame(encoder_frame(0x41)) -- delta +1
+	check('resuming after a long idle pause does not reseed (51 + 1 = 52, not 99 + 1)',
+		masterVolume == 52)
+
+	-- (c) A second pause/resume cycle, accumulating a different delta, confirms this holds across
+	-- more than one gap - not just the first.
+	idleTicks = idleTicks + 50
+	masterVolumeRead = 1
+	handle_sl_frame(encoder_frame(0x45)) -- delta +5
+	check('a second pause/resume cycle still only accumulates the delta (52 + 5 = 57, not 1 + 5)',
+		masterVolume == 57)
+
+	masterVolume, masterVolumeRead, idleTicks,
+		popupActive, displayMode =
+		savedMasterVolume, savedMasterVolumeRead, savedIdleTicks,
+		savedPopupActive, savedDisplayMode
+end
+
+-- MARK: - 47. masterVolumeRead == nil is not a special case: EID_A still writes, reads, and shows
+-- the real accumulated value
+--
+-- The superseded "refuse to write while unconfirmed" design left the READ forever unanswered and the
+-- encoder permanently dead (see
+-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12) and
+-- was replaced by seeding-from-read, now itself removed (section 46's anchor). masterVolumeRead ==
+-- nil takes no special branch at all any more: a tick behaves exactly the same as with any other
+-- masterVolumeRead value.
+do
+	local savedMasterVolume, savedMasterVolumeRead, savedIdleTicks,
+		savedPending, savedPopupActive, savedDisplayMode, savedDrawn =
+		masterVolume, masterVolumeRead, idleTicks, pendingMessages,
+		popupActive, displayMode, drawn
+
+	local function encoder_frame(tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
+	end
+	local function mvol_write_messages()
+		local out = {}
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == 'mvol' then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+	local function mvol_read_messages()
+		local out = {}
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == 'mvolRead' then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+	local function popup_value_text()
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == 'popupValue' then
+				local chars, msg = {}, pendingMessages[i]
+				for j = 24, #msg do
+					if msg[j] == 0x00 then break end
+					chars[#chars + 1] = string.char(msg[j])
+				end
+				return table.concat(chars)
+			end
+		end
+		return nil
+	end
+
+	drawn = {}
+	pendingMessages = {}
+	idleTicks = 10
+	masterVolume = 60
+	masterVolumeRead = nil
+	popupActive = false
+	displayMode = 'zoom'
+
+	-- (a) No READ reply has ever arrived: the tick still accumulates its delta, DOES write (and
+	-- queues no read - that per-tick poll is gone, see section 44's anchor), and the popup shows the
+	-- real value, never a placeholder.
+	handle_sl_frame(encoder_frame(0x45)) -- delta +5
+	check('with masterVolumeRead nil, a tick still accumulates its delta (60 + 5 = 65)',
+		masterVolume == 65)
+	check('...and DOES send a Master Volume write', #mvol_write_messages() == 1)
+	check('...and queues no Master Volume read', #mvol_read_messages() == 0)
+	check('...and the popup shows the real accumulated value (65), not a placeholder',
+		popup_value_text() == tostring(65))
+
+	-- (b) A further tick still just accumulates, still with no read queued.
+	pendingMessages = {}
+	handle_sl_frame(encoder_frame(0x41))
+	check('masterVolumeRead nil: a further tick still queues no read', #mvol_read_messages() == 0)
+
+	-- (c) A READ reply lands: masterVolumeRead updates (section 45's invariant), but masterVolume is
+	-- untouched - it was never waiting on this reply for anything but logging.
+	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, 70, 0xF7))
+	check('a READ reply sets masterVolumeRead', masterVolumeRead == 70)
+	check('...but does not touch masterVolume (still 66)', masterVolume == 66)
+
+	masterVolume, masterVolumeRead, idleTicks, pendingMessages,
+		popupActive, displayMode, drawn =
+		savedMasterVolume, savedMasterVolumeRead, savedIdleTicks, savedPending,
+		savedPopupActive, savedDisplayMode, savedDrawn
+end
+
+-- MARK: - 48. Popup dismissal threshold: POPUP_DISMISS_IDLE_TICKS
+--
+-- POPUP_DISMISS_IDLE_TICKS (idle ticks before the popup auto-dismisses) is now the only idle-tick
+-- threshold governing popup behaviour - the Master Volume gesture boundary (MVOL_GESTURE_IDLE_TICKS)
+-- was removed along with gesture-based reseeding (section 46). See
+-- docs/config-lua-history.md#popup-dismiss-doubled-to-2s-2026-09-10 and
+-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
+do
+	check('POPUP_DISMISS_IDLE_TICKS is 2 (~2s at POPUP_TICK_MS)', POPUP_DISMISS_IDLE_TICKS == 2)
+
+	local savedPopupActive, savedDisplayMode, savedPopupPreviousMode, savedPopupLastActivityIdleTick,
+		savedIdleTicks, savedDrawn, savedPending =
+		popupActive, displayMode, popupPreviousMode, popupLastActivityIdleTick, idleTicks, drawn, pendingMessages
+
+	drawn, pendingMessages = {}, {}
+
+	-- (a) One idle tick since the last activity: below the new threshold, must NOT dismiss yet.
+	popupActive = true
+	popupPreviousMode = 'zoom'
+	displayMode = 'popup'
+	idleTicks = 10
+	popupLastActivityIdleTick = 9
+	check_popup_dismiss()
+	check('one idle tick after activity: popup stays open (below POPUP_DISMISS_IDLE_TICKS=2)',
+		popupActive == true)
+
+	-- (b) Two idle ticks: at the threshold, must dismiss.
+	popupActive = true
+	displayMode = 'popup'
+	idleTicks = 11
+	popupLastActivityIdleTick = 9
+	check_popup_dismiss()
+	check('two idle ticks after activity: popup dismisses (meets POPUP_DISMISS_IDLE_TICKS=2)',
+		popupActive == false)
+
+	popupActive, displayMode, popupPreviousMode, popupLastActivityIdleTick, idleTicks, drawn, pendingMessages =
+		savedPopupActive, savedDisplayMode, savedPopupPreviousMode, savedPopupLastActivityIdleTick,
+		savedIdleTicks, savedDrawn, savedPending
+end
+
+-- MARK: - 49. STATE_REIDENTIFY_WAIT's ID_QUERY reply never promotes on a stale identifyFallback
 --
 -- handle_identification_rejected never clears identifyFallback, so a rejected session can sit in
 -- STATE_REIDENTIFY_WAIT with it still true from an earlier STATE_IDENTIFYING fallback engagement.
@@ -1488,7 +2227,7 @@ do
 		savedState, savedPending, savedIdentifyFallback, savedArmed, savedTimerPending
 end
 
--- MARK: - 36. derive_instance_start's modulus makes SL_INSTANCE_MAX actually reachable
+-- MARK: - 50. derive_instance_start's modulus makes SL_INSTANCE_MAX actually reachable
 --
 -- The modulus range width is SL_INSTANCE_MAX - SL_INSTANCE_MIN + 1; dropping the +1 silently makes
 -- SL_INSTANCE_MAX unreachable while every other derive_instance_start check still passes. Sweeping
@@ -1503,10 +2242,10 @@ do
 	check('derive_instance_start reaches SL_INSTANCE_MAX over a full residue sweep', maxSeen == SL_INSTANCE_MAX)
 end
 
--- MARK: - 37. Bump-wrap boundary: SL_INSTANCE_MAX - 1 bumps to SL_INSTANCE_MAX without wrapping
+-- MARK: - 51. Bump-wrap boundary: SL_INSTANCE_MAX - 1 bumps to SL_INSTANCE_MAX without wrapping
 --
--- Mirrors test 34(b), which covers the wrap FROM SL_INSTANCE_MAX; mutating instanceID > SL_INSTANCE_MAX
--- to >= passes without this case, which must land exactly on the max and not wrap early.
+-- Mirrors test 42(b), which covers the wrap FROM SL_INSTANCE_MAX; mutating instanceID > SL_INSTANCE_MAX
+-- to >= passes 235/235 without this case, which must land exactly on the max and not wrap early.
 do
 	local savedState, savedPending, savedInstanceID, savedIdentifyResendsLeft, savedIdentifyFallback,
 		savedReidentifyRetriesLeft, savedArmed, savedTimerPending =
@@ -1527,13 +2266,202 @@ do
 		savedReidentifyRetriesLeft, savedArmed, savedTimerPending
 end
 
--- MARK: - 38. Recovery watchdog: recovers a STATE_ACTIVE session the SL88 silently dropped
+-- MARK: - 52. A single A-encoder gesture cannot queue an unbounded/growing burst
+--
+-- Hardware run: one gesture's first tick queued 11 messages via set_display_mode('popup')'s double
+-- Clear Screen, and the queue kept backing up during the sweep, starving the Identification Query
+-- until the SL88 dropped the app. enter_popup_mode() (see
+-- docs/config-lua-history.md#popup-entry-skips-clear-screen-2026-09-12) dropped the burst to 9, and
+-- the full-region erase added since (see
+-- docs/config-lua-history.md#popup-entry-always-erases-its-full-region-first-2026-09-12) puts it
+-- back up to 10 - a deliberate, deliberately-raised ceiling, not a regression. The per-tick Master
+-- Volume READ that used to add an 11th message is gone (2026-09-13, see
+-- docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13),
+-- so the ceiling drops back to 11 (10 display + the write). This section pins both the first-tick
+-- ceiling and that a following tick never grows the queue further, so either regression is caught
+-- without needing hardware.
+do
+	local savedPending, savedDrawn, savedMasterVolume, savedMasterVolumeRead, savedPopupActive,
+		savedDisplayMode, savedIdleTicks =
+		pendingMessages, drawn, masterVolume, masterVolumeRead, popupActive, displayMode, idleTicks
+
+	local function encoder_frame(tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
+	end
+
+	drawn = {}
+	pendingMessages = {}
+	masterVolume = 50
+	masterVolumeRead = 50
+	popupActive = false
+	displayMode = 'zoom'
+	idleTicks = 10
+
+	-- (a) First tick shows a fresh popup: erase + bg + 4 border + label + knob + value + sacrificial
+	-- = 10, plus the write = 11 at most. A regression back to set_display_mode's double Clear Screen,
+	-- a dropped erase-rect invalidation forcing a repeat resend, or the per-tick READ poll coming
+	-- back, would push this past 11.
+	handle_sl_frame(encoder_frame(0x41)) -- delta +1
+	local firstTickCount = #pendingMessages
+	check('first tick of a gesture queues at most 11 messages total', firstTickCount <= 11)
+
+	-- (b) A second tick that only moves the value coalesces into the SAME queued entries (write,
+	-- knob, value all replace in place) rather than growing the queue - this is what makes a
+	-- sustained sweep safe regardless of how many ticks it contains.
+	handle_sl_frame(encoder_frame(0x41)) -- delta +1
+	check("a subsequent tick does not grow the queue past the first tick's count",
+		#pendingMessages <= firstTickCount)
+
+	pendingMessages, drawn, masterVolume, masterVolumeRead, popupActive, displayMode, idleTicks =
+		savedPending, savedDrawn, savedMasterVolume, savedMasterVolumeRead, savedPopupActive,
+		savedDisplayMode, savedIdleTicks
+end
+
+-- MARK: - 53. Popup entry always erases its full region first, and never skips it as unchanged
+--
+-- Change 2 (see docs/config-lua-history.md#popup-entry-always-erases-its-full-region-first-2026-09-12):
+-- enter_popup_mode() queues one filled Draw Rectangle over the WHOLE popup rect (border included) as
+-- the very first message, before bg/border/label/knob/value. draw_rect() memoizes by id, so this
+-- must not be silently skipped on a later popup opening just because its own tuple - and the tuples
+-- of everything it overlaps - happen to be unchanged from a previous session.
+do
+	local savedPending, savedDrawn, savedDisplayMode, savedPopupActive =
+		pendingMessages, drawn, displayMode, popupActive
+
+	-- (a) A fresh popup entry: the erase is the FIRST display message queued, with the exact bytes of
+	-- a Draw Rectangle over the whole POPUP_X/Y/W/H rect in POPUP_BG_COLOR.
+	drawn = {}
+	pendingMessages = {}
+	displayMode = 'zoom'
+	popupActive = false
+	enter_popup_mode()
+	check('popup entry queues at least one message', #pendingMessages >= 1)
+	if #pendingMessages >= 1 then
+		check('...and the FIRST one is the popupErase region', pendingMessages[1].regionId == 'popupErase')
+		checkHex('...matching the exact bytes of a Draw Rectangle over the whole popup rect',
+			pendingMessages[1],
+			hex(msg_draw_rect(POPUP_X, POPUP_Y, POPUP_W, POPUP_H,
+				POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])))
+	end
+
+	-- (b) A LATER popup entry, with drawn[] still holding the exact same tuples from (a) (as if
+	-- dismiss_popup()'s own invalidate_all() had not run) - the erase, and everything it overlaps,
+	-- must still resend, not be skipped as "unchanged".
+	pendingMessages = {}
+	enter_popup_mode()
+	check('a later popup entry (memo unchanged from before) still queues the erase first',
+		#pendingMessages >= 1 and pendingMessages[1].regionId == 'popupErase')
+	local bgCount, borderCount = 0, 0
+	for i = 1, #pendingMessages do
+		local id = pendingMessages[i].regionId
+		if id == 'popupBg' then bgCount = bgCount + 1 end
+		if id == 'popupBorderTop' or id == 'popupBorderBottom' or id == 'popupBorderLeft' or id == 'popupBorderRight' then
+			borderCount = borderCount + 1
+		end
+	end
+	check('...and popupBg resends too, not suppressed as unchanged', bgCount == 1)
+	check('...and all 4 border strips resend too, not suppressed as unchanged', borderCount == 4)
+
+	pendingMessages, drawn, displayMode, popupActive =
+		savedPending, savedDrawn, savedDisplayMode, savedPopupActive
+end
+
+-- MARK: - 54. Master Volume write pacing: mvolFlushReady limits WRITE to one emission per tick
+--
+-- See docs/config-lua-history.md#master-volume-write-pacing-one-per-tick-2026-09-13: a fast A-encoder
+-- gesture used to leave several Master Volume writes in a single timer tick (each inbound frame's own
+-- flush_pending call dequeuing the write the 'mvol' regionId had just coalesced), then nothing until
+-- the next tick - bursty spacing that sounds stepped even though the device handles a dense, evenly
+-- spaced write stream smoothly. mvolFlushReady (mirroring displayFlushReady) now gates the WRITE to
+-- one per tick; the READ and every protocol message stay ungated. Exercises flush_pending directly,
+-- matching the granularity of the equivalent displayFlushReady tests (sections 10/11/37).
+do
+	local savedPending, savedDisplayFlushReady, savedMvolFlushReady =
+		pendingMessages, displayFlushReady, mvolFlushReady
+
+	local function mvol_writes_in(bytes)
+		local out = {}
+		for _, m in ipairs(split_messages(bytes or {})) do
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_WRITE then out[#out + 1] = m end
+		end
+		return out
+	end
+
+	-- (a) Several writes queued within one tick (coalescing under 'mvol', like a fast twist) leave
+	-- exactly one queued entry - and flushing it emits exactly one WRITE this tick, carrying the
+	-- NEWEST value, not a stale intermediate one.
+	pendingMessages = {}
+	mvolFlushReady = true
+	queue_message(msg_master_volume_write(10), 'mvol')
+	queue_message(msg_master_volume_write(20), 'mvol')
+	queue_message(msg_master_volume_write(30), 'mvol')
+	check('coalescing under \'mvol\' leaves exactly one queued write before any flush', #pendingMessages == 1)
+
+	local out = flush_pending(false)
+	local writes = mvol_writes_in(out and out.midi)
+	check('a tick with mvolFlushReady=true emits exactly one Master Volume write', #writes == 1)
+	check('...carrying the newest coalesced value (30), not a stale one (10 or 20)',
+		#writes == 1 and writes[1][10] == 30)
+	check('mvolFlushReady is consumed the moment the write is emitted', mvolFlushReady == false)
+
+	-- (b) A further write queued in the SAME tick (mvolFlushReady still false) does not go out - it
+	-- stays queued instead of being dropped.
+	pendingMessages = {}
+	queue_message(msg_master_volume_write(40), 'mvol')
+	out = flush_pending(false)
+	check('a second write queued before the next tick is NOT emitted (gate still closed)',
+		#mvol_writes_in(out and out.midi) == 0)
+	check('...it stays queued rather than being dropped', #pendingMessages == 1)
+
+	-- (c) The next tick re-grants the gate (mirrors controller_timer_trigger's unconditional
+	-- mvolFlushReady = true) - the write left over from (b) now goes out, still carrying its value.
+	mvolFlushReady = true
+	out = flush_pending(false)
+	writes = mvol_writes_in(out and out.midi)
+	check('the next tick emits the write left pending from the previous tick', #writes == 1)
+	check('...carrying the value queued for it (40)', #writes == 1 and writes[1][10] == 40)
+
+	-- (d) A protocol message (keepalive) is never paced by mvolFlushReady: queued behind a
+	-- currently-blocked Master Volume write, it still flushes in the same tick by jumping the queue -
+	-- exactly like flush_pending's existing display/keepalive scan-forward (section 11).
+	pendingMessages = {}
+	mvolFlushReady = false
+	queue_message(msg_master_volume_write(55), 'mvol')
+	queue_message(msg_system(SYS_DEVICE_NOTIFICATION))
+	out = flush_pending(false)
+	local keepalives = 0
+	for _, m in ipairs(split_messages(out and out.midi or {})) do
+		if item_type_of(m) == IT_SYSTEM and func_of(m) == SYS_DEVICE_NOTIFICATION then keepalives = keepalives + 1 end
+	end
+	check('a keepalive queued behind a paced-and-blocked Master Volume write still flushes this tick',
+		keepalives == 1)
+	check('...and the blocked write itself does not', #mvol_writes_in(out and out.midi) == 0)
+	check('...the write stays queued, jumped rather than dropped', #pendingMessages == 1)
+
+	-- (e) The Master Volume READ is a different func byte (MVOL_READ, not MVOL_WRITE) on the SAME
+	-- itemType - confirms the gate keys off func, not just itemType, so a READ is never paced either.
+	pendingMessages = {}
+	mvolFlushReady = false
+	queue_message(msg_master_volume_read())
+	out = flush_pending(false)
+	local reads = 0
+	for _, m in ipairs(split_messages(out and out.midi or {})) do
+		if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_READ then reads = reads + 1 end
+	end
+	check('a Master Volume READ is never paced by mvolFlushReady (gate keys off func, not itemType alone)',
+		reads == 1)
+
+	pendingMessages, displayFlushReady, mvolFlushReady =
+		savedPending, savedDisplayFlushReady, savedMvolFlushReady
+end
+
+-- MARK: - 55. Recovery watchdog: recovers a STATE_ACTIVE session the SL88 silently dropped
 --
 -- Hardware evidence: the SL88 can stop replying to Identification Queries entirely while
 -- STATE_ACTIVE - no logout, no standby - while still sending other traffic (encoder frames). A
 -- similar detector was tried and removed after a suspected freeze from unbounded re-identify
 -- retries - see docs/config-lua-history.md#recovering-a-silently-dropped-active-session-bounded-2026-09-13.
--- This section proves the threshold and the reset-on-reply in isolation; tests 39-41 prove the
+-- This section proves the threshold and the reset-on-reply in isolation; tests 56-58 prove the
 -- cooldown, the attempt cap, and the not-ACTIVE guard.
 do
 	local savedState, savedPending, savedTimerPending, savedFramesSinceTick, savedArmed, savedPopupActive,
@@ -1600,9 +2528,9 @@ do
 		savedFallback
 end
 
--- MARK: - 39. Recovery watchdog: cooldown prevents an attempt too soon after the last one
+-- MARK: - 56. Recovery watchdog: cooldown prevents an attempt too soon after the last one
 --
--- Isolates RECOVERY_COOLDOWN_MS from the attempt cap (test 40) and the threshold (test 38): starts
+-- Isolates RECOVERY_COOLDOWN_MS from the attempt cap (test 57) and the threshold (test 55): starts
 -- from a state that just fired (cooldown armed, one attempt counted) and proves a session that
 -- re-hits the threshold immediately is NOT allowed to fire again until the cooldown itself elapses.
 do
@@ -1651,9 +2579,9 @@ do
 		savedArmedInterval, savedResends, savedFallback
 end
 
--- MARK: - 40. Recovery watchdog: caps consecutive attempts and gives up rather than retrying forever
+-- MARK: - 57. Recovery watchdog: caps consecutive attempts and gives up rather than retrying forever
 --
--- Isolated from the cooldown (test 39): resets recoveryCooldownMs to 0 before each trigger, so only
+-- Isolated from the cooldown (test 56): resets recoveryCooldownMs to 0 before each trigger, so only
 -- MAX_RECOVERY_ATTEMPTS itself is under test. After the cap, the (MAX_RECOVERY_ATTEMPTS + 1)-th
 -- would-be attempt must not re-identify, and must log clearly that recovery has given up.
 do
@@ -1717,7 +2645,7 @@ do
 		savedArmedInterval, savedResends, savedFallback
 end
 
--- MARK: - 41. Recovery watchdog: never fires outside STATE_ACTIVE
+-- MARK: - 58. Recovery watchdog: never fires outside STATE_ACTIVE
 --
 -- Even with activeMsSinceQueryReply pre-loaded past the threshold (as if state had just left ACTIVE
 -- without the accumulator being reset), no non-ACTIVE state may trigger a recovery attempt - the

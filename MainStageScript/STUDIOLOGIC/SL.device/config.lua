@@ -83,9 +83,14 @@ SL_INSTANCE_MAX = 0x7E
 -- Item types
 IT_SYSTEM = 0x00
 IT_BUTTON = 0x01 -- handled for BID_ZOOM (see handle_zoom_button) and every BID in BUTTON_CC; other BIDs are logged only
-IT_ENCODER = 0x03 -- handled for every EID in ENCODER_CC; other EIDs (just A) are logged only
+IT_ENCODER = 0x03 -- handled for every EID in ENCODER_CC, plus EID_A (drives Master Volume directly)
 IT_DISPLAY = 0x04
+IT_MASTER_VOLUME = 0x07
 IT_IDENTIFICATION = 0x7F
+
+-- Master Volume R/W flag (item type IT_MASTER_VOLUME's own function byte).
+MVOL_READ = 0
+MVOL_WRITE = 1
 
 -- Button IDs, matching the spec's button ID table (see docs/implementing-sl-link.md).
 BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
@@ -115,9 +120,8 @@ EID_ZONE2 = 0x01
 EID_ZONE3 = 0x02
 EID_ZONE4 = 0x03
 EID_JOYSTICK = 0x04
-EID_A = 0x05 -- reference only: A is intentionally excluded from the CC map (see docs' 'Two
-	-- decisions' / CC map design), not forgotten - its ticks fall through to the unhandled-ENCODER log
-	-- line.
+EID_A = 0x05 -- drives the SL88's Master Volume directly (IT_MASTER_VOLUME), not a CC - see
+	-- handle_sl_frame's IT_ENCODER branch. Deliberately absent from ENCODER_CC/CC_MAP.
 EID_B = 0x06
 
 -- MARK: - Phase 2 CC dispatch (every SL88 control emits a mappable CC)
@@ -278,11 +282,12 @@ SIZE_SMALL, SIZE_MEDIUM, SIZE_BIG = 0x00, 0x01, 0x02
 KEEPALIVE_MS = 3000
 
 -- MainStage tears the script down and re-initialises it mid-session, which re-derives instanceID via
--- derive_instance_start(instanceTag) (see docs/config-lua-history.md, "Per-instance starting id") -
--- but the SL88 still holds the PREVIOUS incarnation's registration under that id, since
--- controller_finalize never sends a Logout Request (see that function). Bumping the
--- instance byte immediately on rejection would 'solve' it by registering as a DIFFERENT app,
--- silently losing the user's APP-list selection - do not do that here. Wait comfortably longer than
+-- derive_instance_start(instanceTag) (see docs/config-lua-history.md, "Per-instance starting id").
+-- controller_finalize now sends a Logout Request to release the old id (see that function), but
+-- delivery isn't guaranteed, so this wait/retry stays as the fallback for a stale registration
+-- surviving anyway. Bumping the instance byte immediately on rejection would 'solve' it by
+-- registering as a DIFFERENT app, silently losing the user's APP-list selection - do not do that
+-- here. Wait comfortably longer than
 -- the keyboard's ~5s host timeout so the stale registration expires, then retry the SAME id. NEVER
 -- shorten this below that margin - rearm_timer()/request_quick_rearm() both special-case
 -- STATE_REIDENTIFY_WAIT so nothing overwrites it early. See
@@ -390,6 +395,17 @@ encoderValue = { -- absolute 0-127 tracked value per encoder wired to a CC
 	[EID_JOYSTICK] = 64, [EID_B] = 64,
 }
 
+-- Safe mid-scale starting point for masterVolume: not 0, and not 100 where a single click could
+-- slam the audio board to full output. See
+-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
+MVOL_SEED_DEFAULT = 60
+
+masterVolume = MVOL_SEED_DEFAULT -- 0-100 percentage: the value being SENT, changed ONLY by
+	-- accumulated EID_A deltas (clamped 0-100) - never reseeded from masterVolumeRead. See
+	-- docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13.
+masterVolumeRead = nil -- last VOL from an actual READ reply (07 00); diagnostic/logging only, never
+	-- feeds masterVolume - see the anchor above.
+
 -- Gates EVERY settriggertimer call (rule 6 in the banner above): true whenever a one-shot is
 -- currently outstanding. rearm_timer() only calls settriggertimer when this is false, and sets it
 -- true when it does; controller_timer_trigger() clears it at its own start (the one-shot has just
@@ -460,6 +476,14 @@ recoveryGivenUp = false
 -- docs/config-lua-history.md#defect-a-the-ungated-flush-drained-at-round-trip-speed-not-timer-speed
 -- for the hardware finding this fixes.
 displayFlushReady = true
+
+-- Same shape as displayFlushReady, but for the Master Volume WRITE only (never the READ, and never
+-- other protocol messages) - granted once per tick by controller_timer_trigger, consumed by
+-- flush_pending the moment it emits an MVOL_WRITE. Fixes bursty writes (several leaving in one tick,
+-- then a gap) sounding stepped even though the device handles a dense, EVENLY SPACED stream fine -
+-- see docs/config-lua-history.md#master-volume-write-pacing-one-per-tick-2026-09-13. Starts true for
+-- the same reason displayFlushReady does.
+mvolFlushReady = true
 
 -- A full-screen Clear Screen plausibly takes the panel longer to paint than an ordinary text line.
 -- Set to MODE_SWITCH_SETTLE_TICKS by flush_pending() the moment it emits a Clear Screen;
@@ -621,7 +645,9 @@ flushCounter = 0
 -- Emits whole messages up to the budget. `includeQuery` appends an Identification Query and
 -- reserves room for it inside the budget: its reply is the only thing that re-arms the one-shot
 -- timer (see the SESSION CLOCK note above controller_midi_in), so a flush carrying no query can
--- stall the session clock.
+-- stall the session clock. A Master Volume write used to go out unpaired (dropping the query) -
+-- reverted, it was not what made Master Volume work and it starved the clock during an A-encoder
+-- sweep - see docs/config-lua-history.md#master-volume-writes-go-out-unpaired-2026-09-10.
 function flush_pending(includeQuery)
 	local out = {}
 	local query = includeQuery and msg_identification_query() or nil
@@ -638,61 +664,69 @@ function flush_pending(includeQuery)
 	-- docs/config-lua-history.md#the-display-query-flush-shape.
 	--
 	-- A display message (itemType IT_DISPLAY) may only be dequeued here while displayFlushReady is
-	-- true, and doing so clears it (rule 5 in the banner). A non-display, protocol message at the
-	-- front of the queue (identification, keepalive, logout) is never gated - it dequeues every flush
-	-- regardless.
+	-- true, and an MVOL_WRITE only while mvolFlushReady is true - each clears its own flag the moment
+	-- it goes out (rule 5 in the banner; mvolFlushReady mirrors it, see that flag's declaration). Every
+	-- other message (identification, keepalive, logout, MVOL_READ) is never gated - it dequeues every
+	-- flush regardless.
 	--
-	-- If the head message can't go out this flush (it is IT_DISPLAY and displayFlushReady is false),
-	-- scan forward for the FIRST protocol message (itemType ~= IT_DISPLAY) and let it jump the queue
-	-- instead, removed from its own position with everything else left untouched - otherwise a
-	-- keepalive queued behind a display backlog would starve for the whole repaint. See
-	-- docs/config-lua-history.md#defect-b-a-keepalive-stuck-behind-a-display-backlog. Display messages
-	-- never reorder relative to each other - only a protocol message can jump ahead of ones still
-	-- waiting on displayFlushReady. Still at most one queued message per flush, still paired with the
-	-- query below.
+	-- If the head message can't go out this flush (paced and its flag is false), scan forward for the
+	-- FIRST message that isn't itself paced-and-blocked and let it jump the queue instead, removed from
+	-- its own position with everything else left untouched - otherwise a keepalive (or a ready display
+	-- message) queued behind a blocked one would starve. See
+	-- docs/config-lua-history.md#defect-b-a-keepalive-stuck-behind-a-display-backlog. Paced messages
+	-- never reorder relative to OTHER paced messages of the same kind - only an unblocked message can
+	-- jump ahead of ones still waiting on their flag. Still at most one queued message per flush, still
+	-- paired with the query below.
+	local function is_paced_and_blocked(msg)
+		if msg[8] == IT_DISPLAY then return not displayFlushReady end
+		if msg[8] == IT_MASTER_VOLUME and msg[9] == MVOL_WRITE then return not mvolFlushReady end
+		return false
+	end
+
+	local index, m = nil, nil
 	if #pendingMessages > 0 then
 		local head = pendingMessages[1]
-		local headIsDisplay = (head[8] == IT_DISPLAY)
-		local index, m = nil, nil
-		if not headIsDisplay or displayFlushReady then
+		if not is_paced_and_blocked(head) then
 			index, m = 1, head
 		else
 			for i = 2, #pendingMessages do
-				if pendingMessages[i][8] ~= IT_DISPLAY then
+				if not is_paced_and_blocked(pendingMessages[i]) then
 					index, m = i, pendingMessages[i]
 					break
 				end
 			end
 		end
+	end
 
-		if m ~= nil and #m + reserve <= FLUSH_BUDGET then
-			local isDisplay = (m[8] == IT_DISPLAY)
-			table.remove(pendingMessages, index)
-			for i = 1, #m do out[#out + 1] = m[i] end
-			if m.outport then outPort = m.outport end
-			if isDisplay then
-				displayFlushReady = false
-				-- CLEAR SCREEN SETTLE GUARD: see displaySettleTicks' declaration. A Clear Screen going out
-				-- earns the next draw MODE_SWITCH_SETTLE_TICKS extra ticks of quiet on top of the ordinary
-				-- one-per-tick pacing.
-				if m[9] == DISP_CLEAR_SCREEN then displaySettleTicks = MODE_SWITCH_SETTLE_TICKS end
-			end
-			flushCounter = flushCounter + 1
-			-- `tick=` ties this FLUSH to controller_timer_trigger's tick print, so a captured log reads as
-			-- 'tick N emitted region R, depth D' - flushes can also happen off-tick (inbound-frame flushes
-			-- in controller_midi_in, controller_select_patch); a FLUSH whose tick= repeats the previous
-			-- FLUSH's is exactly one of those.
-			-- Protocol messages (regionId nil) get their bytes dumped too - they're rare enough not to
-			-- flood the log, and distinguishing e.g. a keepalive from another 10-byte protocol message
-			-- needs the bytes.
-			local msgSuffix = m.regionId == nil and (' msg=' .. dump_bytes(m)) or ''
-			slog('FLUSH #' .. flushCounter ..
-				' tick=' .. timerTicks ..
-				' regionId=' .. tostring(m.regionId or 'none') ..
-				' bytes=' .. #m ..
-				' queueDepthAfter=' .. #pendingMessages ..
-				msgSuffix)
+	if m ~= nil and #m + reserve <= FLUSH_BUDGET then
+		local isDisplay = (m[8] == IT_DISPLAY)
+		local isMvolWrite = (m[8] == IT_MASTER_VOLUME and m[9] == MVOL_WRITE)
+		table.remove(pendingMessages, index)
+		for i = 1, #m do out[#out + 1] = m[i] end
+		if m.outport then outPort = m.outport end
+		if isDisplay then
+			displayFlushReady = false
+			-- CLEAR SCREEN SETTLE GUARD: see displaySettleTicks' declaration. A Clear Screen going out
+			-- earns the next draw MODE_SWITCH_SETTLE_TICKS extra ticks of quiet on top of the ordinary
+			-- one-per-tick pacing.
+			if m[9] == DISP_CLEAR_SCREEN then displaySettleTicks = MODE_SWITCH_SETTLE_TICKS end
+		elseif isMvolWrite then
+			mvolFlushReady = false
 		end
+		flushCounter = flushCounter + 1
+		-- `tick=` ties this FLUSH to controller_timer_trigger's tick print, so a captured log reads as
+		-- 'tick N emitted region R, depth D' - flushes can also happen off-tick (inbound-frame flushes
+		-- in controller_midi_in, controller_select_patch); a FLUSH whose tick= repeats the previous
+		-- FLUSH's is exactly one of those.
+		-- Protocol messages (regionId nil) get their bytes dumped too - they're rare enough not to
+		-- flood the log, and distinguishing e.g. a keepalive from a Master Volume read needs the bytes.
+		local msgSuffix = m.regionId == nil and (' msg=' .. dump_bytes(m)) or ''
+		slog('FLUSH #' .. flushCounter ..
+			' tick=' .. timerTicks ..
+			' regionId=' .. tostring(m.regionId or 'none') ..
+			' bytes=' .. #m ..
+			' queueDepthAfter=' .. #pendingMessages ..
+			msgSuffix)
 	end
 
 	if query then
@@ -867,6 +901,25 @@ function msg_system(func)
 	return m
 end
 
+-- vol is 0-100 (a percentage, not 0-127) - single byte, no msb/lsb split. MUTE is omitted
+-- deliberately so a volume write never touches mute status - see docs/implementing-sl-link.md §6.
+function msg_master_volume_write(vol)
+	local m = sl_header()
+	table.insert(m, IT_MASTER_VOLUME)
+	table.insert(m, MVOL_WRITE)
+	table.insert(m, vol)
+	table.insert(m, SL_END)
+	return m
+end
+
+function msg_master_volume_read()
+	local m = sl_header()
+	table.insert(m, IT_MASTER_VOLUME)
+	table.insert(m, MVOL_READ)
+	table.insert(m, SL_END)
+	return m
+end
+
 function msg_clear_screen(r, g, b)
 	local m = sl_header()
 	table.insert(m, IT_DISPLAY)
@@ -940,10 +993,9 @@ end
 -- that layers draws - e.g. a filled rect under text - will corrupt the screen the moment only the
 -- bottom layer changes and the top layer is skipped as unchanged; the device has no concept of
 -- layers, it paints strictly in message order. A caller that cannot avoid overlap must clear the
--- shared ids' drawn[] entries together so they resend as one unit - every draw_*() call in this
--- file is currently self-clearing (a real, non-zero maxWidth/w/h on every Write Text/Draw Rect/Plot
--- Bitmap), so nothing currently needs that escape hatch. The zoom screen's zset/zname used to be the
--- one exception (maxWidth=0, via the since-removed draw_text_with_erase()) - see
+-- shared ids' drawn[] entries together so they resend as one unit - used by draw_popup_erase()
+-- below, and previously by the zoom screen's zset/zname (maxWidth=0, via the since-removed
+-- draw_text_with_erase()) - see
 -- docs/config-lua-history.md#zoom-screen-centring-moved-to-the-device-2026-08-29.
 
 drawn = {}
@@ -1182,11 +1234,12 @@ POPUP_BORDER_COLOR = { 200, 210, 220 } -- thin light neutral border, matching th
 popupActive = false
 -- Cached name/CC/value for the CURRENTLY showing popup, updated by show_popup() and read by
 -- paint_popup_screen() - so a repaint triggered from elsewhere (paint_screen() dispatching to
--- paint_popup_screen() because displayMode=='popup', or set_display_mode('popup') itself) can
--- redraw the popup's content without needing the encoder id threaded through every call site.
+-- paint_popup_screen() because displayMode=='popup', or enter_popup_mode() itself) can redraw the
+-- popup's content without needing the encoder id threaded through every call site.
 popupControlName = nil
 popupCcNumber = nil
 popupValue = 0
+popupMax = 127 -- popupValue's scale for popup_knob_icon's ring fill; 127 for CC encoders, 100 for Master Volume
 -- displayMode to restore when the popup dismisses - set by show_popup() to whatever displayMode was
 -- BEFORE it switched to 'popup' (only on the transition into showing, never overwritten while
 -- already active - see show_popup's popupActive guard), consumed once by dismiss_popup().
@@ -1216,6 +1269,26 @@ function draw_popup_bg()
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
+-- Popup ids the full-region erase below overlaps - the NON-OVERLAP RULE's own escape hatch (see
+-- MARK: - Per-region memoization above): a caller that can't avoid overlap must clear all the
+-- shared ids' drawn[] entries together so they resend as one unit.
+POPUP_ERASE_OVERLAP_IDS = { 'popupBg', 'popupBorderTop', 'popupBorderBottom', 'popupBorderLeft',
+	'popupBorderRight', 'popupLabel', 'popupKnob', 'popupValue' }
+
+-- Default entry behaviour for every popup (called once by enter_popup_mode(), never by a mid-session
+-- repaint): one filled rect over the WHOLE panel (border included), queued first, so the previous
+-- screen can never show through while the border/label/knob/value messages that follow are still
+-- trickling out one per tick - see
+-- docs/config-lua-history.md#popup-entry-always-erases-its-full-region-first-2026-09-12.
+-- Must always resend - draw_rect() memoizes by id, so both this id and everything it overlaps have
+-- their drawn[] entries cleared first, or an otherwise-unchanged popup would skip it.
+function draw_popup_erase()
+	drawn['popupErase'] = nil
+	for _, id in ipairs(POPUP_ERASE_OVERLAP_IDS) do drawn[id] = nil end
+	draw_rect('popupErase', POPUP_X, POPUP_Y, POPUP_W, POPUP_H,
+		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
+end
+
 -- SIZE_MEDIUM + non-zero maxWidth is safe here, unlike the zoom screen's SIZE_BIG text: Max Width
 -- truncation is only confirmed broken at SIZE_BIG (docs/config-lua-history.md#max-width-truncation-
 -- broken-at-size_big), and 'ENC 1 - CC 59'-shaped strings are far shorter than POPUP_CONTENT_W, so
@@ -1224,25 +1297,32 @@ end
 -- needed. Plain ASCII ' - ' separator, not a middle dot/en dash: the SLMK2 font only covers 0x20-0x80
 -- (see append_text's clamp).
 function draw_popup_label(name, ccNumber)
-	draw_text('popupLabel', name .. ' - CC ' .. ccNumber, POPUP_CONTENT_X, POPUP_LABEL_Y,
+	-- ccNumber is nil for controls with no CC (Master Volume/EID_A) - show just the name.
+	local label = ccNumber and (name .. ' - CC ' .. ccNumber) or name
+	draw_text('popupLabel', label, POPUP_CONTENT_X, POPUP_LABEL_Y,
 		POPUP_CONTENT_W, ALIGN_CENTER, SIZE_MEDIUM, POPUP_LABEL_FG[1], POPUP_LABEL_FG[2],
 		POPUP_LABEL_FG[3], POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
 -- Same SIZE_MEDIUM/non-zero-maxWidth safety as draw_popup_label above - a 1-3 digit value is even
 -- shorter than the label, so truncation is not in play here either.
+-- value may be nil - shown as '--', never as a number (defensive; no current caller passes nil
+-- since MVOL_SEED_DEFAULT replaced the placeholder - see
+-- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12).
 function draw_popup_value(value)
-	draw_text('popupValue', tostring(value), POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
+	local text = value and tostring(value) or '--'
+	draw_text('popupValue', text, POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
 		ALIGN_CENTER, SIZE_MEDIUM, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
--- Knob icon index for a 0-127 value: linear scaling by value/127 (NOT value/128), so that value=0
--- selects icon 0 (empty) and value=127 - the actual maximum - selects icon 0x0C (full) exactly,
--- rather than topping out one icon short the way a /128 divisor would (127/128*12 = 11.9, floors to
--- 11, not 12).
+-- Knob icon index for a 0-popupMax value: linear scaling by value/popupMax (NOT value/(popupMax+1)),
+-- so that value=0 selects icon 0 (empty) and value=popupMax - the actual maximum - selects icon 0x0C
+-- (full) exactly, whether popupMax is 127 (CC encoders) or 100 (Master Volume). nil (no READ reply
+-- yet) also renders as icon 0 - empty, same as 0, never a misleading full ring.
 function popup_knob_icon(value)
-	return math.floor(value * (BMP_KNOB_LEVELS - 1) / 127)
+	if value == nil then return 0 end
+	return math.floor(value * (BMP_KNOB_LEVELS - 1) / popupMax)
 end
 
 function draw_popup_knob(value)
@@ -1252,8 +1332,8 @@ function draw_popup_knob(value)
 end
 
 -- The popup's own content-painting function, in the same family as paint_zoom_screen()/
--- paint_list_screen() - dispatched to from set_display_mode('popup') (the mode-switch path, once
--- per popup 'session') and from paint_screen() (an ordinary content-driven repaint that lands while
+-- paint_list_screen() - dispatched to from enter_popup_mode() (once per popup 'session') and from
+-- paint_screen() (an ordinary content-driven repaint that lands while
 -- displayMode=='popup', e.g. a patch-name change arriving mid-popup - see paint_screen's 3-way
 -- branch). Reads popupControlName/popupCcNumber/popupValue rather than taking parameters, since
 -- both call sites dispatch generically by mode with no encoder id in hand. Safe to call repeatedly -
@@ -1270,10 +1350,9 @@ end
 -- Call from handle_sl_frame's IT_ENCODER branch, right after encoderValue[eid] is updated, for
 -- every eid present in ENCODER_CC (looped there, not hardcoded - see that call site).
 --
--- FIRST call of a popup 'session' (popupActive false -> true) runs the full
--- set_display_mode('popup') machinery ONCE, whose own paint dispatch does the drawing. REPEAT calls
--- (continued scrubbing) must NOT re-run set_display_mode() - that would re-send the double Clear
--- Screen and a full invalidate on every tick. Instead call paint_popup_screen() directly: its
+-- FIRST call of a popup 'session' (popupActive false -> true) runs enter_popup_mode() ONCE, whose
+-- own paint dispatch does the drawing. REPEAT calls (continued scrubbing) must NOT re-run it - that
+-- would re-invalidate everything on every tick. Instead call paint_popup_screen() directly: its
 -- draw_* calls are per-id memoized, so unchanged content (background/border/label while
 -- popupCcNumber matches) queues nothing and only a genuinely new value re-queues - a DIFFERENT
 -- control taking over redraws the label for free, since its CC number differs.
@@ -1284,25 +1363,48 @@ function show_popup(eid)
 	popupControlName = ENCODER_NAME[eid]
 	popupCcNumber = CC_MAP[control]
 	popupValue = encoderValue[eid]
+	popupMax = 127
 	popupLastActivityIdleTick = idleTicks
 
 	if not popupActive then
 		popupPreviousMode = displayMode
 		popupActive = true
-		set_display_mode('popup') -- full mode-switch machinery once; its own dispatch paints the popup
+		enter_popup_mode()
 	else
 		paint_popup_screen()
 		request_quick_rearm()
 	end
 end
 
--- ~1s-idle dismissal, quantised to the session clock's existing idle-tick counter (idleTicks,
+-- EID_A's popup: same structure as show_popup, but for Master Volume (no CC number, 0-100 scale)
+-- rather than an ENCODER_CC entry.
+function show_master_volume_popup()
+	popupControlName = 'Main Volume'
+	popupCcNumber = nil
+	-- The value being SENT (masterVolume), tracked locally only - never reseeded from
+	-- masterVolumeRead, which does not track our writes on this hardware. See
+	-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
+	popupValue = masterVolume
+	popupMax = 100
+	popupLastActivityIdleTick = idleTicks
+
+	if not popupActive then
+		popupPreviousMode = displayMode
+		popupActive = true
+		enter_popup_mode()
+	else
+		paint_popup_screen()
+		request_quick_rearm()
+	end
+end
+
+-- ~2s-idle dismissal, quantised to the session clock's existing idle-tick counter (idleTicks,
 -- incremented once per timer-tick while nothing is draining). While popupActive is true,
 -- rearm_timer() arms the tick at POPUP_TICK_MS (~1s) instead of the normal KEEPALIVE_MS (~3s), so
--- POPUP_DISMISS_IDLE_TICKS=1 means 'wait one ~1s tick'. This reuses the single existing timer
+-- POPUP_DISMISS_IDLE_TICKS=2 means 'wait two ~1s ticks'. This reuses the single existing timer
 -- rather than adding a second settriggertimer, which risks the same starved-clock class of bug rule
--- 6 in the banner fixes.
-POPUP_DISMISS_IDLE_TICKS = 1
+-- 6 in the banner fixes. See docs/config-lua-history.md#popup-dismiss-doubled-to-2s-2026-09-10.
+POPUP_DISMISS_IDLE_TICKS = 2
 
 -- Popup is a full-screen mode, so dismissal is just switching BACK to whatever mode was active
 -- before it took over - reusing set_display_mode's own proven double-Clear-Screen/
@@ -1702,6 +1804,25 @@ function set_display_mode(mode)
 	slog('display mode -> ' .. mode)
 end
 
+-- Entering the popup overlay, unlike set_display_mode(), skips Clear Screen and invalidate_all() -
+-- see docs/config-lua-history.md#popup-entry-skips-clear-screen-2026-09-12 for why (both are the
+-- expensive part; the popup's own content is not). draw_popup_erase() still blanks the whole panel
+-- as its own first message, so nothing already on screen can show through while the border/label/
+-- knob/value messages that follow are still draining one per tick - see
+-- docs/config-lua-history.md#popup-entry-always-erases-its-full-region-first-2026-09-12.
+-- dismiss_popup() still uses the full set_display_mode() to restore whatever the popup covered.
+function enter_popup_mode()
+	displayMode = 'popup'
+	drop_queued_display()
+	local before = queuedDisplayOps
+	draw_popup_erase()
+	paint_popup_screen()
+	if queuedDisplayOps > before then
+		queue_sacrificial_redraw()
+	end
+	request_quick_rearm()
+end
+
 
 -- MARK: - Session
 
@@ -1766,9 +1887,20 @@ function handle_identification_rejected(reason)
 	start_identification()
 end
 
+-- Builds, logs and queues a Master Volume READ to sync masterVolume with the hardware's current
+-- value. Split out so handle_login can force one even when enter_active_session() is a no-op.
+-- Diagnostic only, issued once per session (see docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13) -
+-- no longer polled per EID_A tick.
+function queue_master_volume_read()
+	local mvolReadMsg = msg_master_volume_read()
+	slog('-> MASTER VOLUME READ: ' .. dump_bytes(mvolReadMsg))
+	queue_message(mvolReadMsg)
+end
+
 -- Shared entry point for every transition into STATE_ACTIVE (login confirmation/recall, restart,
 -- and the ID_QUERY self-heal path - see handle_sl_frame). Idempotent: returns false and does
--- nothing if already active, so a self-heal reaffirmation is a no-op.
+-- nothing if already active, so a self-heal reaffirmation never requeues the volume read. Returns
+-- true if it performed the transition (and so already queued the read).
 function enter_active_session()
 	if state == STATE_ACTIVE then return false end
 	state = STATE_ACTIVE
@@ -1777,6 +1909,7 @@ function enter_active_session()
 	-- how often the session drops.
 	activeMsSinceQueryReply = 0
 	recoveryAttempts = 0
+	queue_master_volume_read()
 	return true
 end
 
@@ -1786,7 +1919,12 @@ function handle_login()
 	-- may record draws sent before the keyboard had actually identified/confirmed us.
 	invalidate_all()
 	paint_screen()
-	enter_active_session()
+	-- A genuine login confirmation must resync volume even if the self-heal path already made us
+	-- ACTIVE (the hardware only honours Master Volume once actually logged in) - avoid double-queuing
+	-- when enter_active_session() itself just did it.
+	if not enter_active_session() then
+		queue_master_volume_read()
+	end
 end
 
 function handle_standby()
@@ -1924,6 +2062,20 @@ function handle_sl_frame(e)
 		elseif func == SYS_LOGOUT_CONFIRMATION then
 			handle_logout_confirmation()
 		end
+	elseif itemType == IT_MASTER_VOLUME then
+		-- e[9] is VOL; a trailing MUTE byte may or may not follow (docs/implementing-sl-link.md §7 -
+		-- trailing bytes are optional more often than the spec documents) - ignored either way.
+		local vol = e[9]
+		if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
+		if func == MVOL_READ then
+			-- Diagnostic/logging only - never feeds masterVolume. See
+			-- docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13.
+			masterVolumeRead = vol
+			slog('<- MASTER VOLUME READ reply vol=' .. vol .. ' (masterVolume=' .. masterVolume .. ')')
+		else
+			masterVolume = vol
+			slog('<- MASTER VOLUME WRITE echo vol=' .. vol)
+		end
 	elseif itemType == IT_BUTTON then
 		local bid = func
 		local pressKind = e[9]
@@ -1948,22 +2100,38 @@ function handle_sl_frame(e)
 	elseif itemType == IT_ENCODER then
 		local eid = func
 		local delta = e[9] - 0x40
-		local control = ENCODER_CC[eid]
-		if control ~= nil then
-			local newValue = encoderValue[eid] + delta
-			if newValue < 0 then newValue = 0 elseif newValue > 127 then newValue = 127 end
-			encoderValue[eid] = newValue -- still tracked for show_popup's ring gauge, not for what's emitted below
-			if delta ~= 0 then
-				-- Relative2C two's complement; wire encoding confirmed on hardware 2026-09-05, see
-				-- docs/mainstage-integration.md. queue_relative_cc accumulates the raw signed delta;
-				-- flush_pending_cc clamps and encodes it at emit time.
-				queue_relative_cc(control, delta)
-			end
-			show_popup(eid)
+		if eid == EID_A then
+			-- masterVolume starts at MVOL_SEED_DEFAULT and thereafter changes ONLY by accumulated
+			-- deltas - never reseeded from masterVolumeRead. See
+			-- docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13.
+			local vol = masterVolume + delta
+			if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
+			masterVolume = vol
+			-- Own regionId so a fast twist's many ticks coalesce to one queued write, not several - see
+			-- queue_message's PER-REGION COALESCING comment. No accompanying READ poll any more - a
+			-- write takes effect without one (same anchor above); dropping it frees a flush slot.
+			local mvolWriteMsg = msg_master_volume_write(masterVolume)
+			slog('-> MASTER VOLUME WRITE: ' .. dump_bytes(mvolWriteMsg))
+			queue_message(mvolWriteMsg, 'mvol')
+			show_master_volume_popup()
 		else
-			slog('<- ENCODER eid=' .. string.format('0x%02X', eid)
-				.. ' tick=' .. string.format('0x%02X', e[9])
-				.. ' delta=' .. tostring(delta) .. ' (unhandled) frame=' .. dump_event(e))
+			local control = ENCODER_CC[eid]
+			if control ~= nil then
+				local newValue = encoderValue[eid] + delta
+				if newValue < 0 then newValue = 0 elseif newValue > 127 then newValue = 127 end
+				encoderValue[eid] = newValue -- still tracked for show_popup's ring gauge, not for what's emitted below
+				if delta ~= 0 then
+					-- Relative2C two's complement; wire encoding confirmed on hardware 2026-09-05, see
+					-- docs/mainstage-integration.md. queue_relative_cc accumulates the raw signed delta;
+					-- flush_pending_cc clamps and encodes it at emit time.
+					queue_relative_cc(control, delta)
+				end
+				show_popup(eid)
+			else
+				slog('<- ENCODER eid=' .. string.format('0x%02X', eid)
+					.. ' tick=' .. string.format('0x%02X', e[9])
+					.. ' delta=' .. tostring(delta) .. ' (unhandled) frame=' .. dump_event(e))
+			end
 		end
 	else
 		slog('<- unhandled itemType=' .. string.format('0x%02X', itemType)
@@ -2082,6 +2250,9 @@ function controller_timer_trigger()
 	else
 		displayFlushReady = true
 	end
+	-- Master Volume writes get no settle guard - grant unconditionally every tick. See mvolFlushReady's
+	-- declaration.
+	mvolFlushReady = true
 	-- Only ticks that arrive at the full keepalive cadence count towards the periodic refresh; fast
 	-- drain ticks must not.
 	local draining = has_pending()
@@ -2155,7 +2326,7 @@ function controller_timer_trigger()
 			queue_message(msg_identification_request())
 		else
 			-- Budget spent, still no APPROVED: fall back to the pre-fix query-reply promotion rather
-			-- than going silent forever (a dead session is worse than a delayed one).
+			-- than going silent forever (a dead session is worse than one missing Master Volume).
 			if not identifyFallback then
 				identifyFallback = true
 				slog('identification never approved - falling back to query-reply promotion')
