@@ -20,6 +20,19 @@ No CC numbers moved in this release.
   Layout mode by name instead of as bare CC numbers.
 - `logicprox = false`; the emitted CC numbers now appear in the debug log; MainStage's injected
   globals are logged at `controller_initialize`.
+- Master Volume driven from the A encoder: writes paced to one per timer tick, the value tracked
+  locally (seeded at 60, not read from the device — see Fixed), a popup showing it, and the popup
+  region erased with a filled rectangle on entry.
+- Per-instance DeviceIDs and per-instance log tags, so concurrent script instances are distinguishable
+  in the log instead of colliding on one id.
+- Bounded recovery when the SL88 goes silent mid-session: after `ACTIVE_QUERY_DROP_MS` with no
+  Identification Query reply, the script re-identifies, capped at `MAX_RECOVERY_ATTEMPTS`. **Untested
+  on hardware** — the one session-drop it was live for was resolved by MainStage's own churn before
+  the threshold was reached, so the watchdog never actually fired.
+- Logout from the Cancel button: SHORT sends a Logout Request and withholds the keepalive until the
+  SL88 drops the app (it never confirms the request); LONG force-logs-out locally without sending one.
+- `Scripts/probe-mastervolume.swift`, a standalone SL Link probe that drives its own session with no
+  MainStage involved, with a `--cadence` diagnostic mode.
 
 ### Changed
 
@@ -37,6 +50,14 @@ No CC numbers moved in this release.
   (captured on hardware: stalled dead at tick #352 with no recovery short of restarting MainStage).
   The watchdog only re-arms once queued display output is stuck behind the dead clock, so it cannot
   fire during ordinary play and starve the clock itself (rule 6).
+- Identification APPROVED and REJECTED frames now actually reach the script. They were being lost in
+  the window after MainStage wires `outport` but before it starts delivering `controller_midi_in`,
+  which made the re-identify recovery path (`handle_identification_rejected`,
+  `STATE_REIDENTIFY_WAIT`) unreachable for the project's entire life until now. Fixed by re-sending the
+  Identification Request until an explicit approval arrives.
+- Master Volume's never-write-until-confirmed guard was removed: the device only answers a READ while
+  a write is in flight, so the guard could never confirm and left the encoder polling forever. The
+  value is instead tracked locally from a known-safe seed (60) rather than trusted from the device.
 
 ### Documented
 
