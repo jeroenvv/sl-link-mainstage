@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-14
+
+- docs: tidy the generated 2.0.0 changelog section
+- docs: record v2.0.0 verified on hardware
+- docs: draft the upstream correction for sl-link issue #2
+- feat: move the popup value inside the ring
+- fix: duplicate the underlying screen's line, not the list's
+- fix: make session recovery reachable when the clock is dead
+- fix: throttle the popup value's repaint to ~10/second
+- docs: record the popup rework verified on hardware
+
 ## [2.0.0] - 2026-09-14
 
 ### BREAKING
