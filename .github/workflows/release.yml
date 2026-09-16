@@ -164,7 +164,18 @@ jobs:
           {
             echo "## [$version] - $release_date"
             echo
-            cut -f2 /tmp/commits-since-last-tag.tsv | sed 's/^/- /'
+            # Ordered feat -> fix -> docs -> everything else, stable within each group, rather
+            # than chronologically: a release note is read to decide whether to take the release,
+            # so new capability leads and documentation trails.
+            cut -f2 /tmp/commits-since-last-tag.tsv \
+              | awk '{
+                  rank = 4
+                  if ($0 ~ /^feat(\([^)]*\))?!?:/) rank = 1
+                  else if ($0 ~ /^fix(\([^)]*\))?!?:/) rank = 2
+                  else if ($0 ~ /^docs(\([^)]*\))?!?:/) rank = 3
+                  printf "%d\t%06d\t%s\n", rank, NR, $0
+                }' \
+              | sort -k1,1n -k2,2n | cut -f3 | sed 's/^/- /'
           } > /tmp/changelog-section.md
 
           # Real if/then, not `grep -q ... && ...`, for the same set -e reason as the bump-decision
