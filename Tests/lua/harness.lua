@@ -3522,6 +3522,194 @@ do
 	masterMuted, masterVolumeRead, pendingMessages = savedMasterMuted, savedMasterVolumeRead, savedPending
 end
 
+-- MARK: - 70. Master Volume settle: re-send the final value once a gesture goes idle, verified by a
+-- rate-limited, diagnostic-only READ
+--
+-- See docs/config-lua-history.md#settle-resend-of-the-final-master-volume-write-2026-09-16. A dropped
+-- MID-gesture write self-corrects on the next tick; a dropped FINAL write does not, so
+-- check_mvol_settle() re-sends the settled value MUTE_LED_REPEATS times (same reasoning as the
+-- mute/LED repeat workaround) once EID_A has been quiet for MVOL_SETTLE_IDLE_TICKS idle ticks, then
+-- issues a rate-limited diagnostic READ. Every threshold below is read from the constant itself, not
+-- hardcoded, so a mutation to a constant's VALUE cannot make these pass for the wrong reason - only
+-- the >=/once-per-gesture/rate-limit BEHAVIOUR is being pinned.
+do
+	local function encoder_frame(eid, tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, eid, tickByte, 0xF7)
+	end
+
+	local function mvol_read_frame(vol)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, vol, 0xF7)
+	end
+
+	-- Settle re-sends carry no regionId (queue_repeated's whole point), so they're told apart from an
+	-- ordinary per-tick 'mvol'-regionId write by that absence.
+	local function settle_writes()
+		local out = {}
+		for i = 1, #pendingMessages do
+			local m = pendingMessages[i]
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_WRITE and m.regionId == nil then
+				out[#out + 1] = m
+			end
+		end
+		return out
+	end
+
+	local function read_messages()
+		local out = {}
+		for i = 1, #pendingMessages do
+			if item_type_of(pendingMessages[i]) == IT_MASTER_VOLUME and func_of(pendingMessages[i]) == MVOL_READ then
+				out[#out + 1] = pendingMessages[i]
+			end
+		end
+		return out
+	end
+
+	local function captured_log(action)
+		local lines = {}
+		local savedPrint = print
+		print = function(s) lines[#lines + 1] = s end
+		local ok, err = pcall(action)
+		print = savedPrint
+		if not ok then error(err) end
+		return lines
+	end
+
+	local function contains(lines, needle)
+		for _, l in ipairs(lines) do
+			if tostring(l):find(needle, 1, true) then return true end
+		end
+		return false
+	end
+
+	local savedPending, savedVolume, savedIdle, savedTimerTicks, savedLastActivity, savedPending2,
+		savedLastReadTick, savedAwaiting =
+		pendingMessages, masterVolume, idleTicks, timerTicks, mvolLastActivityIdleTick, mvolSettlePending,
+		mvolLastSettleReadTick, awaitingSettleRead
+
+	-- (a) Below MVOL_SETTLE_IDLE_TICKS of quiet since the last activity: no re-send yet, still owed.
+	pendingMessages = {}
+	masterVolume = 60
+	timerTicks = 500
+	idleTicks = 100 + MVOL_SETTLE_IDLE_TICKS - 1
+	mvolLastActivityIdleTick = 100
+	mvolSettlePending = true
+	mvolLastSettleReadTick = nil
+	awaitingSettleRead = false
+	check_mvol_settle()
+	check('(a) below MVOL_SETTLE_IDLE_TICKS of quiet: no settle re-send yet', #settle_writes() == 0)
+	check('(a) ...and no diagnostic READ either', #read_messages() == 0)
+	check('(a) ...and mvolSettlePending stays true (still owed)', mvolSettlePending == true)
+
+	-- (b) At the threshold: fires, re-sending MUTE_LED_REPEATS copies of the settled value plus
+	-- exactly one diagnostic READ, and clears the pending flag.
+	idleTicks = 100 + MVOL_SETTLE_IDLE_TICKS
+	check_mvol_settle()
+	local writesB = settle_writes()
+	check('(b) at MVOL_SETTLE_IDLE_TICKS of quiet: settle re-sends MUTE_LED_REPEATS copies',
+		#writesB == MUTE_LED_REPEATS)
+	for i = 1, #writesB do
+		checkHex('(b) settle re-send #' .. i .. ' carries the settled value (60=0x3C), no MUTE byte',
+			writesB[i], 'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 3C F7')
+	end
+	check('(b) settle issues exactly one diagnostic READ', #read_messages() == 1)
+	check('(b) mvolSettlePending is cleared once the settle fires', mvolSettlePending == false)
+
+	-- (c) Fires ONCE per gesture: further idle ticks with mvolSettlePending already false must not
+	-- re-queue anything, however many times check_mvol_settle() runs.
+	pendingMessages = {}
+	idleTicks = idleTicks + 1
+	check_mvol_settle()
+	idleTicks = idleTicks + 5
+	check_mvol_settle()
+	check('(c) further idle ticks with no new activity re-send nothing', #settle_writes() == 0)
+	check('(c) ...and queue no further READ', #read_messages() == 0)
+
+	-- (d) Resuming motion and settling again re-sends: driven through the real handle_sl_frame EID_A
+	-- path (not by poking flags directly), so removing that hook would fail here.
+	pendingMessages = {}
+	masterVolume = 50
+	mvolSettlePending = false
+	local idleAtGesture = idleTicks
+	handle_sl_frame(encoder_frame(EID_A, 0x41)) -- delta +1, masterVolume -> 51
+	check('(d) an EID_A tick marks a new gesture as pending', mvolSettlePending == true)
+	check('(d) ...and pins mvolLastActivityIdleTick to idleTicks at the moment of the tick',
+		mvolLastActivityIdleTick == idleAtGesture)
+
+	pendingMessages = {}
+	timerTicks = timerTicks + MVOL_SETTLE_READ_MIN_TICKS -- clear (b)'s rate-limit window
+	idleTicks = idleAtGesture + MVOL_SETTLE_IDLE_TICKS
+	check_mvol_settle()
+	local writesD = settle_writes()
+	check('(d) settling again after resumed motion re-sends MUTE_LED_REPEATS copies of the NEW value',
+		#writesD == MUTE_LED_REPEATS)
+	checkHex('(d) ...carrying VOL=51 (0x33)', writesD[1], 'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 33 F7')
+
+	-- (e) The diagnostic READ is rate-limited over MVOL_SETTLE_READ_MIN_TICKS of timerTicks: a second
+	-- settle landing inside that window still re-sends the write but must not queue another READ;
+	-- once the window has elapsed, a further settle reads again. Every field is reset explicitly so
+	-- this sub-test doesn't depend on state left over from (a)-(d).
+	pendingMessages = {}
+	masterVolume = 70
+	timerTicks = 1000
+	mvolLastSettleReadTick = nil
+	idleTicks = 200
+	mvolLastActivityIdleTick = 200 - MVOL_SETTLE_IDLE_TICKS
+	mvolSettlePending = true
+	check_mvol_settle()
+	check('(e) first settle queues its diagnostic READ', #read_messages() == 1)
+
+	pendingMessages = {}
+	timerTicks = 1000 + MVOL_SETTLE_READ_MIN_TICKS - 1 -- still inside the rate-limit window
+	idleTicks = idleTicks + MVOL_SETTLE_IDLE_TICKS
+	mvolLastActivityIdleTick = idleTicks - MVOL_SETTLE_IDLE_TICKS
+	mvolSettlePending = true
+	check_mvol_settle()
+	check('(e) a settle inside the READ rate-limit window still re-sends the write',
+		#settle_writes() == MUTE_LED_REPEATS)
+	check('(e) ...but queues no further READ', #read_messages() == 0)
+
+	pendingMessages = {}
+	timerTicks = 1000 + MVOL_SETTLE_READ_MIN_TICKS -- rate-limit window has now elapsed
+	idleTicks = idleTicks + MVOL_SETTLE_IDLE_TICKS
+	mvolLastActivityIdleTick = idleTicks - MVOL_SETTLE_IDLE_TICKS
+	mvolSettlePending = true
+	check_mvol_settle()
+	check('(e) a settle once the rate-limit window elapses queues a READ again', #read_messages() == 1)
+
+	-- (f) The READ reply logs a distinct line for a match vs a mismatch, never corrects masterVolume
+	-- (deliberately no correction loop), and stays silent when no settle is outstanding.
+	pendingMessages = {}
+	masterVolume = 60
+	awaitingSettleRead = true
+	local matchLines = captured_log(function() handle_sl_frame(mvol_read_frame(60)) end)
+	check('(f) a matching READ reply logs a distinct confirmation line',
+		contains(matchLines, 'settled volume confirmed vol=60'))
+	check('(f) ...and does not touch masterVolume (diagnostic only)', masterVolume == 60)
+	check('(f) ...and clears awaitingSettleRead', awaitingSettleRead == false)
+
+	pendingMessages = {}
+	masterVolume = 60
+	awaitingSettleRead = true
+	local mismatchLines = captured_log(function() handle_sl_frame(mvol_read_frame(55)) end)
+	check('(f) a mismatching READ reply logs a distinct MISMATCH line',
+		contains(mismatchLines, 'settled volume MISMATCH: sent 60, device reports 55'))
+	check('(f) ...and does NOT correct masterVolume from the read (no correction loop)',
+		masterVolume == 60)
+
+	pendingMessages = {}
+	masterVolume = 60
+	awaitingSettleRead = false
+	local unrelatedLines = captured_log(function() handle_sl_frame(mvol_read_frame(60)) end)
+	check('(f) a READ reply with no settle outstanding logs neither settle line',
+		not contains(unrelatedLines, 'settled volume confirmed')
+			and not contains(unrelatedLines, 'settled volume MISMATCH'))
+
+	pendingMessages, masterVolume, idleTicks, timerTicks, mvolLastActivityIdleTick, mvolSettlePending,
+		mvolLastSettleReadTick, awaitingSettleRead =
+		savedPending, savedVolume, savedIdle, savedTimerTicks, savedLastActivity, savedPending2,
+		savedLastReadTick, savedAwaiting
+end
+
 -- MARK: - Summary
 
 realPrint('')
