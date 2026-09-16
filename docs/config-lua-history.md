@@ -2229,3 +2229,29 @@ per tick; a fast delta bypasses an already-spent grant; a sustained fast sweep f
 `MVOL_FAST_WRITES_PER_TICK - 1` writes before the budget caps out and leaves one coalesced backlog
 entry rather than piling up; the session clock keeps re-arming throughout; and the next real tick
 resets the budget and drains the backlog.
+
+### Mute, LED and fast-turn pacing verified on hardware (2026-09-16)
+
+Jeroen's verdict after the final round: **"good enough. not exactly smooth, but workable."**
+
+Confirmed working on the SL88: short press mutes and unmutes; the A encoder's ring lights on login and
+tracks mute state; long press resets the volume to 60 and unmutes; turning the encoder while muted leaves
+it muted; the settled volume lands where the popup says it does; and a quick turn now keeps up rather
+than trailing.
+
+**Residual, accepted:** fast turns are not perfectly smooth. Volume writes are paced at one per tick for
+slow turns (which cured the audibly uneven stepping) and allowed up to four per tick when the encoder
+delta is 3 or more. That is a deliberate trade — loosening the pacing further risks reintroducing the
+unevenness it was added to fix, and crowding the budget the Identification Query and keepalive share,
+which has previously got the app dropped from the APP list.
+
+**Still unexplained, and now worked around rather than understood:** single messages from MainStage are
+silently dropped, while byte-identical ones from `Scripts/probe-mute-led.swift` always arrive. Ruled out
+by hardware test: the message bytes (spec-verified against upstream `docs/hardware-io.md`), and the
+`[message, query]` pairing shape `flush_pending()` uses. The workaround throughout is repetition —
+mute, the LED, and the settled volume are each sent three times.
+
+**The settle read-back produced no data.** Seven `SETTLE: resend x3` lines in the capture and zero
+`settled volume confirmed` / `MISMATCH` lines, so the diagnostic READ either never went out or was never
+answered. The re-send half works; the verification half is silent and remains unproven. Worth chasing
+before anyone relies on that oracle.
