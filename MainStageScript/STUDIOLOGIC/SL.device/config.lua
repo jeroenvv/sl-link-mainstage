@@ -96,6 +96,16 @@ MVOL_WRITE = 1
 -- docs/implementing-sl-link.md §6.
 MVOL_IGNORE_VOL = 0x7F
 
+-- FAST-TURN BUDGET: an EID_A delta at or above this magnitude marks its queued write 'fast' (see
+-- mvolFastWritesThisTick), letting it bypass the ordinary one-per-tick pace. SL88 ticks run +-1 for a
+-- slow turn up to +-8 observed for a fast one, so 3 sits clearly above a single detent. See
+-- docs/config-lua-history.md#fast-turn-master-volume-write-budget-2026-09-16.
+MVOL_FAST_DELTA_THRESHOLD = 3
+-- Total MVOL_WRITE emissions allowed per tick window while fast turning (the base tick grant plus up
+-- to this many extra fast-path writes) - a ~4x speed-up over the base 1/tick pace, bounded so a fast
+-- sweep can't flood the wire. See the anchor above for the trade-off against the anti-jitter pacing.
+MVOL_FAST_WRITES_PER_TICK = 4
+
 -- Button IDs, matching the spec's button ID table (see docs/implementing-sl-link.md).
 BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
 BID_CANCEL = 0x0F -- spec's Cancel button; NOT YET confirmed on hardware, see docs/implementing-sl-link.md
@@ -547,6 +557,13 @@ displayFlushReady = true
 -- the same reason displayFlushReady does.
 mvolFlushReady = true
 
+-- Count of MVOL_WRITE emissions THIS tick window that went out via the fast-turn bypass (not via
+-- mvolFlushReady's own one grant) - reset to 0 each tick alongside mvolFlushReady. flush_pending()
+-- lets a write tagged .fast (handle_sl_frame, a delta >= MVOL_FAST_DELTA_THRESHOLD) through once
+-- mvolFlushReady itself is spent, as long as this is still below MVOL_FAST_WRITES_PER_TICK - 1; a
+-- slow turn's write is never tagged, so it stays at exactly the pre-existing one-per-tick pace.
+mvolFastWritesThisTick = 0
+
 -- A full-screen Clear Screen plausibly takes the panel longer to paint than an ordinary text line.
 -- Set to MODE_SWITCH_SETTLE_TICKS by flush_pending() the moment it emits a Clear Screen;
 -- decremented by controller_timer_trigger, which withholds that tick's displayFlushReady grant
@@ -771,7 +788,12 @@ function flush_pending(includeQuery)
 	-- paired with the query below.
 	local function is_paced_and_blocked(msg)
 		if msg[8] == IT_DISPLAY then return not displayFlushReady end
-		if msg[8] == IT_MASTER_VOLUME and msg[9] == MVOL_WRITE then return not mvolFlushReady end
+		if msg[8] == IT_MASTER_VOLUME and msg[9] == MVOL_WRITE then
+			if mvolFlushReady then return false end
+			-- Fast-turn bypass: a write tagged .fast (handle_sl_frame) may still go out, up to
+			-- MVOL_FAST_WRITES_PER_TICK - 1 of them this tick window - see mvolFastWritesThisTick.
+			return not (msg.fast and mvolFastWritesThisTick < MVOL_FAST_WRITES_PER_TICK - 1)
+		end
 		return false
 	end
 
@@ -803,7 +825,13 @@ function flush_pending(includeQuery)
 			-- one-per-tick pacing.
 			if m[9] == DISP_CLEAR_SCREEN then displaySettleTicks = MODE_SWITCH_SETTLE_TICKS end
 		elseif isMvolWrite then
-			mvolFlushReady = false
+			-- Spend the base per-tick grant first; only count against the fast-turn budget once it's
+			-- gone, so a slow turn (never tagged .fast) is completely unaffected.
+			if mvolFlushReady then
+				mvolFlushReady = false
+			else
+				mvolFastWritesThisTick = mvolFastWritesThisTick + 1
+			end
 		end
 		flushCounter = flushCounter + 1
 		-- `tick=` ties this FLUSH to controller_timer_trigger's tick print, so a captured log reads as
@@ -2162,11 +2190,14 @@ function handle_login()
 	-- may record draws sent before the keyboard had actually identified/confirmed us.
 	invalidate_all()
 	paint_screen()
-	-- A genuine login confirmation must resync volume even if the self-heal path already made us
-	-- ACTIVE (the hardware only honours Master Volume once actually logged in) - avoid double-queuing
-	-- when enter_active_session() itself just did it.
+	-- A genuine login confirmation must resync volume AND resend the LED even if the self-heal path
+	-- already made us ACTIVE (the SL88 discards messages sent before the app is actually selected,
+	-- so a self-heal LED send can be silently dropped - see
+	-- docs/config-lua-history.md#startup-led-discarded-before-login-confirmation-2026-09-16) - avoid
+	-- double-queuing when enter_active_session() itself just did both.
 	if not enter_active_session() then
 		queue_master_volume_read()
+		set_master_mute(masterMuted)
 	end
 end
 
@@ -2379,6 +2410,10 @@ function handle_sl_frame(e)
 			-- queue_message's PER-REGION COALESCING comment. No accompanying READ poll any more - a
 			-- write takes effect without one (same anchor above); dropping it frees a flush slot.
 			local mvolWriteMsg = msg_master_volume_write(masterVolume)
+			-- FAST-TURN BUDGET: tag the write when THIS delta is fast, so flush_pending() may let it
+			-- bypass the one-per-tick pace (up to MVOL_FAST_WRITES_PER_TICK total) - see
+			-- mvolFastWritesThisTick's declaration. A slow delta leaves the tag unset.
+			mvolWriteMsg.fast = math.abs(delta) >= MVOL_FAST_DELTA_THRESHOLD
 			slog('-> MASTER VOLUME WRITE: ' .. dump_bytes(mvolWriteMsg))
 			queue_message(mvolWriteMsg, 'mvol')
 			show_master_volume_popup()
@@ -2578,6 +2613,7 @@ function controller_timer_trigger()
 	-- Master Volume writes get no settle guard - grant unconditionally every tick. See mvolFlushReady's
 	-- declaration.
 	mvolFlushReady = true
+	mvolFastWritesThisTick = 0 -- fresh fast-turn budget for this tick window - see its own declaration
 	-- Only ticks that arrive at the full keepalive cadence count towards the periodic refresh; fast
 	-- drain ticks must not.
 	local draining = has_pending()

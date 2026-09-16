@@ -2154,3 +2154,78 @@ and the [read-reply anchor](#master-volume-read-reply-does-not-track-writes-2026
 `masterVolume` from a read that might itself be stale risks thrashing the audio board's volume, which is
 worse than an occasional silently-stale step. The log is the evidence a future correction loop would
 need; building the loop itself is left for when that evidence exists.
+
+## Startup LED discarded before login confirmation (2026-09-16)
+
+**Hardware capture.** At session start the volume was correctly unmuted, but the A encoder's ring
+never lit. The LED write did go out — `-> A ENCODER LED x3: unmuted` appears early in the log — but it
+was sent from `enter_active_session()`, reached via the ID_QUERY self-heal path in `handle_sl_frame`
+(the same path Lua harness section 35 covers for the Master Volume read) **before** the user had
+actually selected the app on the keyboard. The SL88 discards display/LED traffic from an app that
+isn't the one currently selected — the same long-standing behaviour that is why a full repaint is
+required on login and on restart.
+
+**Fix.** `handle_login()` already re-queues a Master Volume READ when `enter_active_session()` reports
+it did *not* just perform the transition itself (i.e. the session was already ACTIVE from a prior
+self-heal) — that guard is what stops a genuine LOGIN CONFIRMATION's resync from being swallowed. The
+LED needed the identical treatment: `handle_login()` now also calls `set_master_mute(masterMuted)` in
+that same branch, so the LED is (re)sent once the app can actually act on it. The
+`enter_active_session()` send is left in place — harmless, and it is what covers the case where login
+was already established before this script instance even started.
+
+**No double-send.** Because the fix reuses the exact guard the READ resync already relies on, a bare
+self-heal reaffirmation (no genuine login confirmation) still sends nothing, and a fresh transition
+into ACTIVE still sends the LED exactly once (via `enter_active_session()`), not twice.
+
+Pinned by Lua harness section 71: a login confirmation while already ACTIVE resends the LED
+`MUTE_LED_REPEATS` times with the byte matching the current mute state (both muted and unmuted), a
+bare reaffirmation sends none, and a fresh transition is not double-sent.
+
+## Fast-turn Master Volume write budget (2026-09-16)
+
+**Hardware measurement.** The one-write-per-tick pace (`mvolFlushReady`, see
+[the write-pacing entry above](#master-volume-write-pacing-one-per-tick-2026-09-13)) cures audibly
+uneven stepping on a slow turn, but a fast sweep generates deltas faster than ~28 writes/sec can
+represent: one capture logged 120 A-encoder frames in against only 105 writes actually flushed - not
+drops, just pacing too slow to keep up, so the audible/displayed volume visibly trails the knob.
+
+**The pace must stay for slow turns.** Removing or loosening it outright would reintroduce the bursty
+stepping it was added to fix. Jeroen's decision: let writes go out faster while turning quickly,
+keeping the existing pace for slow turns.
+
+**What counts as fast.** The SL88's own encoder ticks are speed-sensitive - observed ±1 for a slow
+turn up to ±8 for a fast one - so a single frame's delta magnitude is a direct, per-frame signal of
+how fast the physical knob is moving, with no extra bookkeeping needed. `MVOL_FAST_DELTA_THRESHOLD`
+(3) marks a delta at or above it as fast: comfortably above a single slow detent, comfortably below
+the fastest observed speed.
+
+**The mechanism.** `handle_sl_frame`'s EID_A branch tags the queued write's message table with
+`.fast` when its own delta meets the threshold - a slow delta leaves the tag unset. `flush_pending()`
+still spends `mvolFlushReady`'s ordinary one-per-tick grant first; only once that is gone does it check
+whether the head write is tagged `.fast` and, if so, let it through anyway, counting the emission in
+`mvolFastWritesThisTick` (capped at `MVOL_FAST_WRITES_PER_TICK - 1` = 3 extra writes). Both counters
+reset together each real `controller_timer_trigger` tick, so the budget is a per-tick-window allowance,
+not a running total - a sustained fast sweep flushes up to `MVOL_FAST_WRITES_PER_TICK` (4) writes in
+one window (a ~4x speed-up over the base pace) and then leaves a single coalesced backlog entry,
+carrying the newest value, until the next tick resets the budget. A slow turn never sets the tag, so
+it is completely unaffected - exactly the pre-existing one-write-per-tick behaviour.
+
+**Trade-off against the anti-jitter fix.** 4 was picked as a bound comfortably above the base rate
+without approaching "one write per frame," which was the shape that produced audible stepping in the
+first place when the device saw an uneven burst-then-gap pattern. A fast turn's writes are evenly
+paced relative to the frame rate that produced them (each additional write requires its own inbound
+frame reaching `flush_pending`, so the emission rate cannot outrun the physical rate the encoder is
+actually generating), so this does not reintroduce the original bursty pattern.
+
+**Keepalive protection.** The fast-turn bypass changes nothing about how often
+`controller_timer_trigger` itself fires - that clock is governed entirely by `settriggertimer`/
+`timerPending`, untouched by this change. Every `flush_pending` call this mechanism enables still runs
+through the same call sites that already pair a display/volume message with the Identification Query
+(`flush_pending(true)` from `controller_midi_in`), so the extra writes never come at the query's
+expense - they ride along with it, the same as an ordinary write always has.
+
+Pinned by Lua harness section 72: a slow delta never sets the tag and still emits at most one write
+per tick; a fast delta bypasses an already-spent grant; a sustained fast sweep flushes exactly
+`MVOL_FAST_WRITES_PER_TICK - 1` writes before the budget caps out and leaves one coalesced backlog
+entry rather than piling up; the session clock keeps re-arming throughout; and the next real tick
+resets the budget and drains the backlog.
