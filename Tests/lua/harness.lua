@@ -2434,8 +2434,8 @@ end
 -- one per tick; the READ and every protocol message stay ungated. Exercises flush_pending directly,
 -- matching the granularity of the equivalent displayFlushReady tests (sections 10/11/37).
 do
-	local savedPending, savedDisplayFlushReady, savedMvolFlushReady =
-		pendingMessages, displayFlushReady, mvolFlushReady
+	local savedPending, savedDisplayFlushReady, savedMvolFlushReady, savedMvolFastCredits =
+		pendingMessages, displayFlushReady, mvolFlushReady, mvolFastWritesThisTick
 
 	local function mvol_writes_in(bytes)
 		local out = {}
@@ -2450,6 +2450,7 @@ do
 	-- NEWEST value, not a stale intermediate one.
 	pendingMessages = {}
 	mvolFlushReady = true
+	mvolFastWritesThisTick = 0 -- this section tests mvolFlushReady alone; the fast-turn bypass is section 72's concern
 	queue_message(msg_master_volume_write(10), 'mvol')
 	queue_message(msg_master_volume_write(20), 'mvol')
 	queue_message(msg_master_volume_write(30), 'mvol')
@@ -2474,6 +2475,7 @@ do
 	-- (c) The next tick re-grants the gate (mirrors controller_timer_trigger's unconditional
 	-- mvolFlushReady = true) - the write left over from (b) now goes out, still carrying its value.
 	mvolFlushReady = true
+	mvolFastWritesThisTick = 0
 	out = flush_pending(false)
 	writes = mvol_writes_in(out and out.midi)
 	check('the next tick emits the write left pending from the previous tick', #writes == 1)
@@ -2484,6 +2486,7 @@ do
 	-- exactly like flush_pending's existing display/keepalive scan-forward (section 11).
 	pendingMessages = {}
 	mvolFlushReady = false
+	mvolFastWritesThisTick = 0
 	queue_message(msg_master_volume_write(55), 'mvol')
 	queue_message(msg_system(SYS_DEVICE_NOTIFICATION))
 	out = flush_pending(false)
@@ -2500,6 +2503,7 @@ do
 	-- itemType - confirms the gate keys off func, not just itemType, so a READ is never paced either.
 	pendingMessages = {}
 	mvolFlushReady = false
+	mvolFastWritesThisTick = 0
 	queue_message(msg_master_volume_read())
 	out = flush_pending(false)
 	local reads = 0
@@ -2509,8 +2513,8 @@ do
 	check('a Master Volume READ is never paced by mvolFlushReady (gate keys off func, not itemType alone)',
 		reads == 1)
 
-	pendingMessages, displayFlushReady, mvolFlushReady =
-		savedPending, savedDisplayFlushReady, savedMvolFlushReady
+	pendingMessages, displayFlushReady, mvolFlushReady, mvolFastWritesThisTick =
+		savedPending, savedDisplayFlushReady, savedMvolFlushReady, savedMvolFastCredits
 end
 
 -- MARK: - 55. Recovery watchdog: recovers a STATE_ACTIVE session the SL88 silently dropped
@@ -3708,6 +3712,205 @@ do
 		mvolLastSettleReadTick, awaitingSettleRead =
 		savedPending, savedVolume, savedIdle, savedTimerTicks, savedLastActivity, savedPending2,
 		savedLastReadTick, savedAwaiting
+end
+
+-- MARK: - 71. The A encoder LED is (re)sent on a genuine login confirmation, not just from
+-- enter_active_session()'s self-heal path
+--
+-- Hardware bug: enter_active_session() alone sends the LED, but the ID_QUERY self-heal path can
+-- reach STATE_ACTIVE before the user has actually selected the app on the keyboard - the SL88
+-- discards messages from an app that isn't selected, so that LED is silently dropped (same class of
+-- bug section 35 fixed for the Master Volume read). Fix mirrors section 35 exactly: handle_login()
+-- now also calls set_master_mute() whenever enter_active_session() reports it did NOT just do the
+-- transition itself (i.e. every genuine LOGIN CONFIRMATION), so the LED still reaches the keyboard
+-- once it can actually act on it - without double-sending on a plain reaffirmation.
+do
+	local savedState, savedMasterMuted, savedPending =
+		state, masterMuted, pendingMessages
+
+	local function led_writes()
+		local out = {}
+		for i = 1, #pendingMessages do
+			if item_type_of(pendingMessages[i]) == IT_LED then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+
+	-- (a) Self-heal already made the session ACTIVE (enter_active_session() is a no-op here); a
+	-- genuine login confirmation arriving afterward must still (re)send the LED, unmuted state.
+	state = STATE_ACTIVE
+	masterMuted = false
+	pendingMessages = {}
+	handle_login()
+	local writes = led_writes()
+	check('a login confirmation while already ACTIVE (self-heal) resends the LED MUTE_LED_REPEATS times',
+		#writes == MUTE_LED_REPEATS)
+	if #writes > 0 then
+		checkHex(
+			'...carrying WLID_A_ENC and state=1 (on, unmuted)',
+			writes[1],
+			'F0 00 20 1A 16 03 ' .. id2() .. ' 02 0A 01 F7'
+		)
+	end
+
+	-- (b) Same scenario, but muted - the resent LED must carry the correct (off) byte, not a
+	-- hardcoded on.
+	state = STATE_ACTIVE
+	masterMuted = true
+	pendingMessages = {}
+	handle_login()
+	writes = led_writes()
+	check('...and MUTE_LED_REPEATS times again when the current state is muted', #writes == MUTE_LED_REPEATS)
+	if #writes > 0 then
+		checkHex(
+			'...this time carrying state=0 (off, muted)',
+			writes[1],
+			'F0 00 20 1A 16 03 ' .. id2() .. ' 02 0A 00 F7'
+		)
+	end
+
+	-- (c) A plain reaffirmation (enter_active_session() called directly, not through a login
+	-- confirmation) must NOT resend the LED - only handle_login()'s own genuine-confirmation branch
+	-- does, or every keepalive-driven self-heal round-trip would resend it needlessly.
+	state = STATE_ACTIVE
+	pendingMessages = {}
+	enter_active_session()
+	check('a bare self-heal reaffirmation (no login confirmation) sends no LED', #led_writes() == 0)
+
+	-- (d) A FRESH transition into ACTIVE (enter_active_session() itself performs the transition and
+	-- already sends the LED once) must not have handle_login() add a second round of sends on top -
+	-- still exactly MUTE_LED_REPEATS, not double.
+	state = STATE_LISTED
+	masterMuted = false
+	pendingMessages = {}
+	handle_login()
+	writes = led_writes()
+	check('a login confirmation that itself triggers the ACTIVE transition sends the LED exactly once (not doubled)',
+		#writes == MUTE_LED_REPEATS)
+
+	state, masterMuted, pendingMessages = savedState, savedMasterMuted, savedPending
+end
+
+-- MARK: - 72. Fast-turn Master Volume write budget: a fast delta lets its write bypass the
+-- one-per-tick pace, up to a bounded cap; a slow turn still emits at most one write per tick
+--
+-- Jeroen's decision (2026-09-16 hardware run): a fast A-encoder sweep trails the knob under the
+-- existing one-write-per-tick pace (mvolFlushReady, section 54) - measured 120 frames in, only 105
+-- writes flushed. The fix must not remove that pacing (it cures audibly uneven stepping on a SLOW
+-- turn): a write is tagged .fast only when ITS OWN delta is at/above MVOL_FAST_DELTA_THRESHOLD
+-- (handle_sl_frame), and flush_pending() lets a tagged write through once mvolFlushReady's single
+-- per-tick grant is already spent - counted in mvolFastWritesThisTick, capped at
+-- MVOL_FAST_WRITES_PER_TICK - 1 extra writes, reset only by the next real controller_timer_trigger
+-- tick (not by exhausting it). See docs/config-lua-history.md#fast-turn-master-volume-write-budget-2026-09-16.
+--
+-- Drives real controller_midi_in round-trips (not handle_sl_frame directly) so the pacing gate,
+-- rearm_timer() and the Identification Query all run exactly as they do on hardware - same approach
+-- as section 39's rapid-tick sweep. show_master_volume_popup() is stubbed out, as in section 39, so
+-- its own display traffic never mixes into the 'mvol'-only counts this section checks.
+do
+	local savedState, savedPending, savedTimerPending, savedArmed, savedMvolFlushReady,
+		savedMvolFastWritesThisTick, savedMasterVolume, savedPopupActive, savedDisplayMode =
+		state, pendingMessages, timerPending, armed, mvolFlushReady,
+		mvolFastWritesThisTick, masterVolume, popupActive, displayMode
+
+	local originalShowMVPopup = show_master_volume_popup
+	show_master_volume_popup = function() end
+
+	local function encoder_frame(tickByte)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_A, tickByte, 0xF7)
+	end
+
+	local function mvol_writes_in(bytes)
+		local out = {}
+		for _, m in ipairs(split_messages(bytes or {})) do
+			if item_type_of(m) == IT_MASTER_VOLUME and func_of(m) == MVOL_WRITE then out[#out + 1] = m end
+		end
+		return out
+	end
+
+	local function mvol_backlog()
+		local out = {}
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == 'mvol' then out[#out + 1] = pendingMessages[i] end
+		end
+		return out
+	end
+
+	state = STATE_ACTIVE
+
+	-- (a) A SLOW turn (delta magnitude below MVOL_FAST_DELTA_THRESHOLD) is never tagged .fast: exactly
+	-- the pre-existing one-write-per-tick behaviour, unaffected by this change.
+	pendingMessages = {}
+	timerPending = false
+	mvolFlushReady = true
+	mvolFastWritesThisTick = 0
+	masterVolume = 50
+	local out = controller_midi_in(encoder_frame(0x41), 'LINK') -- delta +1
+	check('a slow delta (+1) emits its write immediately when the tick grant is available',
+		#mvol_writes_in(out and out.midi) == 1)
+	check('...spending the base grant, not the fast-turn budget', mvolFastWritesThisTick == 0)
+
+	out = controller_midi_in(encoder_frame(0x41), 'LINK') -- delta +1, tick grant already spent
+	check('a second slow delta in the same tick window (grant spent, never tagged fast) does not flush',
+		#mvol_writes_in(out and out.midi) == 0)
+	check('...it stays queued rather than being dropped', #mvol_backlog() == 1)
+
+	-- (b) A FAST turn (delta magnitude at/above the threshold) bypasses the exhausted base grant -
+	-- proving the extra throughput comes from the fast-turn tag, not the ordinary tick grant, which
+	-- stays spent (mvolFlushReady is never re-granted here - only controller_timer_trigger does that).
+	pendingMessages = {}
+	mvolFlushReady = false
+	mvolFastWritesThisTick = 0
+	masterVolume = 50
+	out = controller_midi_in(encoder_frame(0x48), 'LINK') -- delta +8, fast
+	local writes = mvol_writes_in(out and out.midi)
+	check('a fast delta (+8) flushes its write even though the ordinary tick grant is already spent',
+		#writes == 1)
+	check('...carrying the fresh value (58), not a stale one', #writes == 1 and writes[1][10] == 58)
+	check('...counted against the fast-turn budget', mvolFastWritesThisTick == 1)
+
+	-- (c) The fast-turn budget is bounded at MVOL_FAST_WRITES_PER_TICK - 1 extra writes per tick
+	-- window, not unbounded: a sustained fast sweep eventually stops flushing every tick and instead
+	-- leaves a single coalesced backlog entry (still carrying the newest value, never dropped) until
+	-- the budget resets - protecting the keepalive/Identification Query from an unbounded write burst.
+	pendingMessages = {}
+	mvolFlushReady = false
+	mvolFastWritesThisTick = 0
+	masterVolume = 50
+	local flushedCount = 0
+	local sweepTicks = MVOL_FAST_WRITES_PER_TICK + 5
+	for _ = 1, sweepTicks do
+		out = controller_midi_in(encoder_frame(0x48), 'LINK') -- delta +8, fast, every call
+		flushedCount = flushedCount + #mvol_writes_in(out and out.midi)
+	end
+	check('a sustained fast sweep flushes exactly MVOL_FAST_WRITES_PER_TICK - 1 writes, then stops',
+		flushedCount == MVOL_FAST_WRITES_PER_TICK - 1)
+	check('...the budget is pinned at its cap, not left growing unbounded',
+		mvolFastWritesThisTick == MVOL_FAST_WRITES_PER_TICK - 1)
+	check('...and the remaining ticks left exactly one coalesced backlog entry, not a pile-up',
+		#mvol_backlog() == 1)
+
+	-- (d) The keepalive/Identification Query is never starved by fast-turn traffic: rearm_timer() ran
+	-- on every one of the round-trips above (flush_pending's own reserved query-budget behaviour,
+	-- section 54, is unrelated to and unaffected by this change) - confirmed by the session clock
+	-- still being armed after the sweep.
+	check('the session clock kept re-arming throughout the fast sweep (no keepalive starvation)',
+		timerPending == true)
+
+	-- (e) The budget is a PER-TICK-WINDOW allowance, not a permanent lockout: the next real timer tick
+	-- resets it, and the backlog left over from (c) then drains via the ordinary base grant.
+	mvolFlushReady = true -- mirrors controller_timer_trigger's own unconditional grant
+	mvolFastWritesThisTick = 0 -- mirrors controller_timer_trigger's own reset
+	out = controller_midi_in(encoder_frame(0x41), 'LINK') -- delta +1, arrives after the reset
+	writes = mvol_writes_in(out and out.midi)
+	check('once the next tick resets the budget, the coalesced backlog drains via the base grant',
+		#writes == 1)
+
+	show_master_volume_popup = originalShowMVPopup
+	state, pendingMessages, timerPending, armed, mvolFlushReady, mvolFastWritesThisTick, masterVolume,
+		popupActive, displayMode =
+		savedState, savedPending, savedTimerPending, savedArmed, savedMvolFlushReady,
+		savedMvolFastWritesThisTick, savedMasterVolume, savedPopupActive, savedDisplayMode
 end
 
 -- MARK: - Summary
