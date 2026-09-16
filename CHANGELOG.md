@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-16
+
+- fix: bump the README's version on release too
+- feat: toggle audio-board mute from the A encoder button
+- fix: repeat the mute and LED writes, which MainStage drops
+- docs: record mute verified on hardware, and the dropped-volume follow-up
+- docs: add the settled-volume follow-up
+- fix: re-send the final volume value once a gesture settles
+- fix: light the LED on login, and let fast turns send faster
+- docs: record the mute and pacing work verified on hardware
+
 ## [2.1.0] - 2026-09-14
 
 - docs: tidy the generated 2.0.0 changelog section
