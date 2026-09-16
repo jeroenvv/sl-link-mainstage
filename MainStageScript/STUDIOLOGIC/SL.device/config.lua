@@ -436,6 +436,26 @@ masterVolumeRead = nil -- last VOL from an actual READ reply (07 00); diagnostic
 -- docs/config-lua-history.md#a-encoder-button-mute-2026-09-14.
 masterMuted = false
 
+-- Idle ticks of A-encoder quiet before a gesture counts as settled - see check_mvol_settle(). Distinct
+-- from the gesture-start reseed mechanism removed in the 2026-09-12 history entry; this one guarantees
+-- the LAST write of a gesture lands, not the first. See
+-- docs/config-lua-history.md#settle-resend-of-the-final-master-volume-write-2026-09-16.
+MVOL_SETTLE_IDLE_TICKS = 2
+
+-- idleTicks at the last EID_A tick, and whether a settle re-send/read is still owed for the gesture in
+-- progress - set true by every EID_A tick, cleared by check_mvol_settle() once it fires.
+mvolLastActivityIdleTick = 0
+mvolSettlePending = false
+
+-- Rate-limits the diagnostic READ a settle issues - a timerTicks gap (idleTicks freezes while messages
+-- are queued, so it can't measure this). nil means none has been sent yet.
+MVOL_SETTLE_READ_MIN_TICKS = 2
+mvolLastSettleReadTick = nil
+
+-- True from the moment a settle's diagnostic READ is queued until its reply is seen - lets the
+-- MVOL_READ handler in handle_sl_frame log a match/mismatch against masterVolume for THIS read only.
+awaitingSettleRead = false
+
 -- Gates EVERY settriggertimer call (rule 6 in the banner above): true whenever a one-shot is
 -- currently outstanding. rearm_timer() only calls settriggertimer when this is false, and sets it
 -- true when it does; controller_timer_trigger() clears it at its own start (the one-shot has just
@@ -2096,6 +2116,28 @@ function queue_master_volume_read()
 	queue_message(mvolReadMsg)
 end
 
+-- Called once per timer tick (controller_timer_trigger), after idleTicks is updated - same shape as
+-- check_popup_dismiss(). Fires once per gesture (mvolSettlePending is set by every EID_A tick, cleared
+-- here): a dropped FINAL write of a gesture has no successor to correct it, so the value is repeated
+-- the same way mute/LED writes are (a single drop is otherwise unrecoverable). The read that follows is
+-- diagnostic only - see docs/config-lua-history.md#settle-resend-of-the-final-master-volume-write-2026-09-16
+-- for why it never corrects masterVolume itself.
+function check_mvol_settle()
+	if not mvolSettlePending then return end
+	if (idleTicks - mvolLastActivityIdleTick) < MVOL_SETTLE_IDLE_TICKS then return end
+	mvolSettlePending = false
+
+	local vol = masterVolume
+	queue_repeated(function() return msg_master_volume_write(vol) end, MUTE_LED_REPEATS)
+	slog('-> MASTER VOLUME SETTLE: resend x' .. MUTE_LED_REPEATS .. ' vol=' .. vol)
+
+	if mvolLastSettleReadTick == nil or (timerTicks - mvolLastSettleReadTick) >= MVOL_SETTLE_READ_MIN_TICKS then
+		mvolLastSettleReadTick = timerTicks
+		awaitingSettleRead = true
+		queue_master_volume_read()
+	end
+end
+
 -- Shared entry point for every transition into STATE_ACTIVE (login confirmation/recall, restart,
 -- and the ID_QUERY self-heal path - see handle_sl_frame). Idempotent: returns false and does
 -- nothing if already active, so a self-heal reaffirmation never requeues the volume read. Returns
@@ -2282,6 +2324,16 @@ function handle_sl_frame(e)
 			end
 			slog('<- MASTER VOLUME READ reply vol=' .. vol .. ' mute=' .. tostring(muteByte) ..
 				' (masterVolume=' .. masterVolume .. ', masterMuted=' .. tostring(masterMuted) .. ')')
+			-- Diagnostic only - see check_mvol_settle()'s comment for why a mismatch never corrects
+			-- masterVolume.
+			if awaitingSettleRead then
+				awaitingSettleRead = false
+				if vol == masterVolume then
+					slog('settled volume confirmed vol=' .. vol)
+				else
+					slog('settled volume MISMATCH: sent ' .. masterVolume .. ', device reports ' .. vol)
+				end
+			end
 		else
 			masterVolume = vol
 			slog('<- MASTER VOLUME WRITE echo vol=' .. vol)
@@ -2313,6 +2365,10 @@ function handle_sl_frame(e)
 		local eid = func
 		local delta = e[9] - 0x40
 		if eid == EID_A then
+			-- Marks a gesture in progress - check_mvol_settle() clears this once quiet for
+			-- MVOL_SETTLE_IDLE_TICKS, so a settle fires once per gesture rather than on every idle tick.
+			mvolLastActivityIdleTick = idleTicks
+			mvolSettlePending = true
 			-- masterVolume starts at MVOL_SEED_DEFAULT and thereafter changes ONLY by accumulated
 			-- deltas - never reseeded from masterVolumeRead. See
 			-- docs/config-lua-history.md#master-volume-writes-take-effect-without-a-paired-read-probe-four-phase-result-2026-09-13.
@@ -2527,6 +2583,7 @@ function controller_timer_trigger()
 	local draining = has_pending()
 	if not draining then idleTicks = idleTicks + 1 end
 	check_popup_dismiss()
+	check_mvol_settle()
 	-- Drain a throttle-withheld popupValue redraw once it's due (see POPUP_VALUE_THROTTLE_TICKS) -
 	-- this is what guarantees a settled value is never left stale.
 	flush_popup_value_if_due()

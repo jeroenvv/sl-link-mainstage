@@ -2127,3 +2127,30 @@ settles (the mute/LED workaround, applied at gesture end rather than per tick); 
 gesture settles and re-send if the reported VOL differs from what was intended — the read reply is the
 only evidence the device actually took the value. Note the read is answered reliably from a probe, and
 was answered from MainStage in the 2026-09-13 runs, so this is testable.
+
+## Settle re-send of the final Master Volume write (2026-09-16)
+
+Implements the first option from the follow-up above: repeat the last write once motion settles,
+rather than trusting the READ reply to drive a correction.
+
+**"Settled" is defined the same way the popup already defines idle.** `check_mvol_settle()` reuses
+`idleTicks` (frozen while messages are queued, advancing once per tick otherwise) exactly like
+`check_popup_dismiss()` does — a gesture is settled once `MVOL_SETTLE_IDLE_TICKS` (2) idle ticks have
+passed with no further `EID_A` activity. `mvolSettlePending` is set true by every `EID_A` tick and
+cleared the moment the settle fires, so it fires once per gesture, not on every idle tick after — and
+setting it true again is exactly what a resumed gesture does, so settling twice re-sends twice.
+
+**Re-send count.** `MUTE_LED_REPEATS` (3), unchanged, via the same `queue_repeated()` a single dropped
+message cannot survive on its own — see the mute/LED entry above for why 3.
+
+**The READ is diagnostic only, deliberately.** A settle queues one `msg_master_volume_read()`, rate
+limited to at most once per `MVOL_SETTLE_READ_MIN_TICKS` (2) `timerTicks` so back-to-back short gestures
+can't spam it. The reply logs `settled volume confirmed vol=N` or `settled volume MISMATCH: sent X,
+device reports Y` and stops there — it never writes `masterVolume` or re-sends again. This was a
+deliberate choice, not an oversight: the READ reply has a mixed record on this hardware (one capture
+pinned at a constant while writes plainly took effect; another tracked correctly — see
+[the mid-gesture guard entry](#master-volume-drop-detection-read-rate-limiting-and-the-mid-gesture-guard-2026-09-10)
+and the [read-reply anchor](#master-volume-read-reply-does-not-track-writes-2026-09-12)). Correcting
+`masterVolume` from a read that might itself be stale risks thrashing the audio board's volume, which is
+worse than an occasional silently-stale step. The log is the evidence a future correction loop would
+need; building the loop itself is left for when that evidence exists.
