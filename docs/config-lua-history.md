@@ -2501,3 +2501,60 @@ asked to look for it. It follows from the same change - logout is a request/conf
 confirm used to queue behind whatever else was pending and, before the pacing fix, could be one of the
 messages lost to arriving behind another. Worth remembering that the pacing work paid off somewhere
 nobody was measuring.
+
+## controller_midi_out reports real parameter values — with a screen control (2026-09-17)
+
+**The old finding was wrong, and the missing variable was the screen control.** `config.lua`'s popup
+comment stated that `controller_midi_out` "was confirmed on hardware to report nil
+name/valueString/color for the mapped CC itself", which is why the popup was built on `encoderValue`,
+a local accumulator seeded at 64. Re-probed today: it reports nil only for a control with no **screen
+control** in the concert. Assign one and it reports fully.
+
+Captured from the B encoder (CC 63) once a screen control for output 1-2 volume existed:
+
+```
+midi_out st=BF d1=63 d2=90 name=Volume valueString=+0,0 ㏈ color=1.00/0.90/0.31
+midi_out st=BF d1=63 d2=85 name=Volume valueString=-1,0 ㏈ color=1.00/0.90/0.31
+```
+
+- `name` is the screen control's name, `valueString` the **real formatted value** (locale-formatted -
+  comma decimal separator here), `color` a table of `r`/`g`/`b` floats 0.0-1.0.
+- **`d2` is ABSOLUTE**, not the relative delta we send. It tracks the parameter's own 0-127 position,
+  so the ring gauge can read it directly and `encoderValue`'s accumulator is unnecessary in this mode.
+- **It fires unprompted and repeatedly.** A single static button produced 2,929 identical calls with no
+  user input at all, which is why every shipped implementation caches before drawing. Cache on the
+  tuple, not on the event.
+- **Our own outbound SL Link SysEx passes through this callback** (`st=F0`, all metadata nil). KORG's
+  scripts use `return {}` as their unhandled default, which *swallows* the event - copying that would
+  destroy every display message we send. Return `nil` on every unhandled path.
+
+### Popup layout: two modes
+
+Chosen with Jeroen. `POPUP_H` stays 169 so the verified legacy layout is untouched; only the feedback
+mode is new. Panel spans y 35-204.
+
+| Feedback mode (screen control exists) | y | Legacy mode (no feedback) | y |
+|:--|--:|:--|--:|
+| `popupTitle` — parameter name, SIZE_SMALL | 45 | `popupKnob` — ring, fill from `encoderValue` | 57 |
+| `popupKnob` — ring, fill from `d2` | 70 | `popupValue` — 0-127 number, INSIDE the ring | 78 |
+| `popupValue` — `valueString`, SIZE_MEDIUM | 132 | `popupLabel` — `ENC n - CC nn`, SIZE_MEDIUM | 123 |
+| `popupMuteHint` — only if a mute mapping exists | 165 | `popupMuteHint` — Master Volume only | 158 |
+
+**The 2.2.1 overlap fix stays.** Legacy mode still draws `popupValue` inside `popupKnob`, so the
+non-overlap escape hatch and `drop_queued_region('popupValue')` in `draw_popup_knob` remain load-bearing
+for that mode. Feedback mode's regions do not overlap.
+
+**A layout change must re-erase.** The two modes place `popupValue` at different y positions, and
+memoization only redraws a region, it never clears the one it vacated. Switching the popup between a
+feedback control and a non-feedback control mid-session must re-run the filled-rect erase, not rely on
+the new content covering the old.
+
+**Mute:** show the hint and bind the ring LED only when the paired push button's reported parameter
+name contains "Mute". **Lit = unmuted**, matching the A ring's existing convention.
+
+**Non-ASCII units.** `㏈` is three UTF-8 bytes, each clamped to a space by `append_text`, so it would
+render as blanks. Substitute known units (`㏈` -> `dB`) and strip anything else outside 0x20-0x80 rather
+than emitting runs of spaces.
+
+**Scope reality:** only controls with a screen control report. In the test concert that was two -
+`PANIC!` and `Volume`. Every other encoder falls back to legacy mode.

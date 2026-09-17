@@ -3017,6 +3017,33 @@ end
 --   select a set:      patchname="2. Jacob & Sons / Joseph's Coat"  setname='Joseph key2'
 --                       (setname is actually the CONCERT)
 --   select the concert: patchname='Joseph key2'                    setname=''
+-- PROBE ONLY - dumps what MainStage actually passes, so the popup can be wired to real parameter
+-- values instead of config.lua's own accumulator. Returns nil on every path: nil passes the outbound
+-- event through unchanged, and this callback must not alter what reaches the SL88. Remove once the
+-- capture is recorded. See docs/mainstage-device-scripts.md#3-callbacks.
+probeMidiOutSeen = {} -- probe only: last logged tuple per status/data1, to cut the repeat flood
+
+function controller_midi_out(midiEvent, name, valueString, color)
+	if midiEvent == nil then return nil end
+	local status, d1, d2 = midiEvent[0], midiEvent[1], midiEvent[2]
+	local col = 'nil'
+	if type(color) == 'table' then
+		col = string.format('%.2f/%.2f/%.2f', color.r or -1, color.g or -1, color.b or -1)
+	elseif color ~= nil then
+		col = type(color) .. ':' .. tostring(color)
+	end
+	local line = string.format('midi_out st=%02X d1=%s d2=%s name=%s valueString=%s color=%s',
+		status or 0, tostring(d1), tostring(d2), tostring(name), tostring(valueString), col)
+	-- Log only when the tuple for this control CHANGES: one static button produced 2,929 identical
+	-- calls in the first capture, which is why every shipped implementation caches before drawing.
+	local key = tostring(status) .. ':' .. tostring(d1)
+	if probeMidiOutSeen[key] ~= line then
+		probeMidiOutSeen[key] = line
+		slog(line)
+	end
+	return nil
+end
+
 -- controller_select_patch below trusts patchname/setname/concertname UNCONDITIONALLY - this is a
 -- deliberate product decision (the user wants the selected value shown in the patch slot regardless
 -- of hierarchy level), not an oversight. Do NOT reintroduce a 'refuse non-patch selections' guard
