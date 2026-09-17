@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-17
+
+- feat: release the registration when MainStage quits
+- fix: stop the digest counting the logout line as a finalize
+- docs: record logout-on-quit working, gated on state and tick
+- chore: log when controller_finalize fires
+
 ## [2.2.1] - 2026-09-17
 
 - fix: pace every queued SL message to one per tick
