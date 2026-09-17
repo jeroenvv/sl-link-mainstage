@@ -2449,3 +2449,22 @@ assertions, and removing the state guard fails the stale-echo assertions.
 exposed rather than caused — the first being the popup value/knob ordering. Slowing the drain turned
 queue contents that used to clear within a tick into state that persists for many, and anything queued
 speculatively during a transition now outlives the transition.
+
+## Second hardware run: both fixes confirmed (2026-09-17)
+
+Re-ran after the popup ordering fix and the stale-request purge. SL88 MK2, script 2.2.0, 419 ticks.
+
+- **Zero post-approval rejections.** Two rejections before approval (the ordinary startup retry), then
+  `APPROVED as 03 40`, then `LOGIN`, and nothing after. The stale-echo guard in
+  `handle_identification_rejected` never had to fire, because the purge stopped the requests reaching
+  the wire at all - the guard stays as a backstop for any path that queues one later.
+- **Popup ordering holds.** Every `popupKnob` flush is followed by its `popupValue` flush, never the
+  reverse; the temporary pairing diagnostic fired 25 times and resolved every time. Jeroen confirmed
+  the number stays visible through slow turns, fast turns and an abrupt stop.
+- Settle READ confirmed twice, no mismatches. 419 ticks contiguous, 419 keepalive replies.
+
+**Unlooked-for improvement: logout via CANCEL reacts much quicker.** Jeroen noticed this without being
+asked to look for it. It follows from the same change - logout is a request/confirm pair, and the
+confirm used to queue behind whatever else was pending and, before the pacing fix, could be one of the
+messages lost to arriving behind another. Worth remembering that the pacing work paid off somewhere
+nobody was measuring.
