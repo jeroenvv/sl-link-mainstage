@@ -608,15 +608,16 @@ do
 	popupPreviousMode = savedPopupPreviousMode
 end
 
--- MARK: - 15. controller_finalize sends nothing and still tears down
+-- MARK: - 15. controller_finalize tears down unconditionally
 --
--- See docs/config-lua-history.md#controller_finalize-sends-no-logout-request - sending a Logout
--- Request here logged the app out of the SL88's APP list on every spurious MainStage teardown.
+-- What it SENDS is section 77's concern (a gated Logout Request); this section covers only the
+-- teardown, which happens either way.
 do
 	state = STATE_ACTIVE
+	timerTicks = 0 -- inside the churn window, so nothing is sent - see section 77
 	pendingMessages = { msg_draw_rect(0, 0, 10, 10, 0, 0, 0) }
 	local result = controller_finalize()
-	check('controller_finalize returns nil (sends nothing)', result == nil)
+	check('controller_finalize sends nothing from inside the churn window', result == nil)
 	check('controller_finalize still clears pendingMessages', #pendingMessages == 0)
 	check('controller_finalize still sets state to STATE_IDLE', state == STATE_IDLE)
 end
@@ -4248,6 +4249,48 @@ do
 		state == STATE_REIDENTIFY_WAIT and reidentifyRetriesLeft == 1)
 
 	pendingMessages, state, reidentifyRetriesLeft = savedPending, savedState, savedRetries
+end
+
+-- MARK: - 77. controller_finalize releases a live registration, but never one it does not hold
+-- Two earlier unconditional attempts were reverted for logging the app out during MainStage's
+-- startup teardown churn. Hardware 2026-09-17 showed the two cases are separable: the churn
+-- teardown fires at tick 0 in STATE_IDENTIFYING, a real quit from a registered state many ticks in.
+do
+	local savedPending, savedState, savedTicks = pendingMessages, state, timerTicks
+
+	-- (a) The startup churn teardown: identifying, tick 0 - must send nothing.
+	pendingMessages, state, timerTicks = {}, STATE_IDENTIFYING, 0
+	check('THE REGRESSION: a teardown while still identifying sends no logout',
+		controller_finalize() == nil)
+
+	-- (b) Registered but still inside the churn window - must send nothing.
+	pendingMessages, state, timerTicks = {}, STATE_ACTIVE, LOGOUT_ON_QUIT_MIN_TICKS - 1
+	check('THE REGRESSION: a teardown before LOGOUT_ON_QUIT_MIN_TICKS sends no logout',
+		controller_finalize() == nil)
+
+	-- (c) A real quit: registered, well past the window - sends one Logout Request on SL_PORT.
+	pendingMessages, state, timerTicks = {}, STATE_ACTIVE, 537
+	local out = controller_finalize()
+	check('a real quit returns a logout', out ~= nil and out.midi ~= nil)
+	checkHex('a real quit returns exactly a System Logout Request',
+		out and out.midi,
+		hex(msg_system(SYS_LOGOUT_REQUEST)))
+	check('a real quit sends it on SL_PORT', out ~= nil and out.outport == SL_PORT)
+
+	-- (d) Every registered state releases, not just active.
+	for _, st in ipairs({ STATE_LISTED, STATE_STANDBY }) do
+		pendingMessages, state, timerTicks = {}, st, 537
+		check('a quit from ' .. st .. ' also releases the registration',
+			controller_finalize() ~= nil)
+	end
+
+	-- (e) Whatever it does or does not send, it always tears the queue and state down.
+	pendingMessages, state, timerTicks = { { 0xF0 } }, STATE_ACTIVE, 537
+	controller_finalize()
+	check('finalize always clears the queue and drops to idle',
+		#pendingMessages == 0 and state == STATE_IDLE)
+
+	pendingMessages, state, timerTicks = savedPending, savedState, savedTicks
 end
 
 -- MARK: - Summary
