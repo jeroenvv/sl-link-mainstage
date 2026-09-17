@@ -398,6 +398,39 @@ timeout has actually elapsed.
 
 ### `controller_finalize` sends no Logout Request
 
+**Status (2026-09-17): it sends one again, and this time it is gated.** Third attempt, and the first
+that distinguishes a real quit from MainStage's startup teardown churn instead of sending
+unconditionally. The two reverts below both failed for the same reason - the churn teardown released a
+registration it should have kept.
+
+Instrumenting `controller_finalize` settled it. It had never logged anything, so how often and in what
+state it fired had never actually been measured; a capture then showed only **two** teardowns in a full
+session, and they are trivially separable:
+
+```
+controller_finalize (state=identifying, tick=0,   pending=0)   <- startup churn
+controller_finalize (state=active,      tick=537, pending=5)   <- the user quitting
+```
+
+So the gate is: send only from a registered state (LISTED/ACTIVE/STANDBY) **and** only past
+`LOGOUT_ON_QUIT_MIN_TICKS`. The state test covers the observed churn case; the tick floor covers the
+2026-09-10 failure below, where the churn teardown fired *after* APPROVED and a state test alone would
+have let it through.
+
+Confirmed on hardware 2026-09-17: the app reaches the APP list, activates and works normally, and on
+quitting MainStage the entry disappears **immediately** rather than after the SL88's ~5s keepalive
+timeout - which also removes the dead second entry that used to linger when relaunching. The log shows
+the churn teardown correctly sending nothing and the real quit sending the request. No LOGOUT
+CONFIRMATION is captured, because the script is already gone when it would arrive.
+
+Prompted by the observation that Studiologic's own Numa Player deregisters instantly on close, so a
+host evidently is expected to release its registration rather than let it time out.
+
+**Cost of the gate:** a quit inside the first `LOGOUT_ON_QUIT_MIN_TICKS` ticks still falls back to the
+~5s timeout. The verified run quit at tick 32 against a floor of 20, which is not a wide margin - if a
+quick quit-after-launch is ever seen leaving a stale entry, the floor is the thing to lower, not the
+state test.
+
 **Status (2026-09-10): reverted again, same day.** Retried sending the Logout Request (below) on the
 hypothesis that per-instance DeviceIDs (see
 [Per-instance starting id](#per-instance-starting-id-2026-09-10)) had fixed the root cause. On hardware
