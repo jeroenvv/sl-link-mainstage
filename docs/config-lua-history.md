@@ -2599,3 +2599,22 @@ mistake this document already warned about.
 A regression the harness caught on the way: `flush_mute_leds` initially queued during
 `STATE_REIDENTIFY_WAIT`, competing with the identification retry for the one-message-per-tick permit.
 It is ACTIVE-only.
+
+### controller_midi_in reviewed against the host contract (2026-09-17)
+
+Checked against `docs/mainstage-device-scripts.md` section 3-4 and the section 11 checklist, as the
+other half of the `controller_midi_out` work.
+
+**One real defect, fixed.** `flush_pending_cc` returned `{ midi = {} }` when every queued relative
+delta netted to zero. Per the contract's return table an empty table **swallows the inbound event**,
+and the `#pendingCCOrder > 0` branch also pre-empted that round's SL flush - so the round lost its
+display drain and its keepalive query to send nothing at all. It returns `nil` now, and
+`controller_midi_in` falls through to the flush.
+
+Three harness assertions had been encoding the defect as intended behaviour (`#out.midi == 0`); they
+now assert `nil`.
+
+**Everything else already conformed**, verified rather than assumed: the signature
+`(midiEvent, portName)` matches all 20 shipped implementations; `midiEvent` is read 0-indexed; the
+timer is re-armed here and never from `controller_timer_trigger` (rule 6); musical MIDI returns `nil`
+and is never swallowed; `outport` uses the short port name.
