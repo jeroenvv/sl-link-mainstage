@@ -737,6 +737,18 @@ function queue_message(msg, regionId)
 	table.insert(pendingMessages, msg)
 end
 
+-- Removes a single pending queue entry by regionId, without touching drawn[] - unlike
+-- drop_queued_display() below, which drops every display message. Used when a region must be
+-- forced back to the tail instead of coalescing at its old position - see draw_popup_knob.
+function drop_queued_region(regionId)
+	for i = 1, #pendingMessages do
+		if pendingMessages[i].regionId == regionId then
+			table.remove(pendingMessages, i)
+			return
+		end
+	end
+end
+
 -- Queues `count` fresh messages from `builder()`, one call per copy, all with regionId nil so
 -- PER-REGION COALESCING (queue_message's own comment above) never collapses them back into one -
 -- that would defeat the whole point of repeating a one-shot write. `builder` is called once per
@@ -1174,18 +1186,23 @@ function tuple_equal(a, b, n)
 	return true
 end
 
+-- Returns true when it actually queued a message, false when memoization skipped it as unchanged -
+-- callers that need to know whether a redraw really landed (e.g. draw_popup_knob, below) use this
+-- instead of re-deriving it from drawn[id] themselves.
 function draw_text(id, text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, bb)
 	local t = { text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, bb }
-	if tuple_equal(drawn[id], t, #t) then return end
+	if tuple_equal(drawn[id], t, #t) then return false end
 	drawn[id] = t
 	queue_message(msg_write_text(text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, bb), id)
+	return true
 end
 
 function draw_rect(id, x, y, w, h, r, g, b)
 	local t = { x, y, w, h, r, g, b }
-	if tuple_equal(drawn[id], t, #t) then return end
+	if tuple_equal(drawn[id], t, #t) then return false end
 	drawn[id] = t
 	queue_message(msg_draw_rect(x, y, w, h, r, g, b), id)
+	return true
 end
 
 -- Like draw_text/draw_rect, but for Plot Bitmap. A bitmap fully replaces the pixels beneath it -
@@ -1193,9 +1210,10 @@ end
 -- Write Text redraw is, and satisfies the non-overlap rule above on its own.
 function draw_bitmap(id, x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb)
 	local t = { x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb }
-	if tuple_equal(drawn[id], t, #t) then return end
+	if tuple_equal(drawn[id], t, #t) then return false end
 	drawn[id] = t
 	queue_message(msg_plot_bitmap(x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb), id)
+	return true
 end
 
 -- MARK: - Screen
@@ -1505,7 +1523,7 @@ end
 -- (see its declaration above) so Write Text's opaque background box never crosses into the ring.
 function draw_popup_value(value)
 	local text = value and tostring(value) or '--'
-	draw_text('popupValue', text, POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
+	return draw_text('popupValue', text, POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
 		ALIGN_CENTER, SIZE_MEDIUM, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
@@ -1531,32 +1549,36 @@ function popup_knob_icon(value)
 end
 
 -- NON-OVERLAP RULE escape hatch (see MARK: - Per-region memoization above): popupValue draws inside
--- this bitmap's rect, and the icon has only 13 fill levels against 128 possible values, so a knob
--- redraw is not always paired with a value change - clear popupValue's memo so a knob redraw (which
--- repaints the whole icon, wiping the centre) always forces the value to resend on the same tick.
--- Compares just the icon index (draw_bitmap's tuple field 4) since it is the only field that varies
--- at this call site. See docs/config-lua-history.md#value-moved-inside-the-ring-2026-09-14.
+-- this bitmap's rect, so a knob redraw (which repaints the whole icon) must always be queued BEFORE
+-- its value. queue_message coalesces a same-regionId update at its OLD queue position, so a
+-- popupValue queued earlier (a prior value-only change) would otherwise stay ahead of a knob queued
+-- just now - drop it and force it to re-append behind the knob. See
+-- docs/config-lua-history.md#popup-value-wiped-by-its-own-ring-redraw-2026-09-17.
 function draw_popup_knob(value)
 	local icon = popup_knob_icon(value)
-	local prior = drawn['popupKnob']
-	if prior == nil or prior[4] ~= icon then
-		drawn['popupValue'] = nil
-	end
-	draw_bitmap('popupKnob', POPUP_KNOB_X, POPUP_KNOB_Y, BMP_GROUP_KNOB, icon,
+	local queued = draw_bitmap('popupKnob', POPUP_KNOB_X, POPUP_KNOB_Y, BMP_GROUP_KNOB, icon,
 		POPUP_KNOB_FG[1], POPUP_KNOB_FG[2], POPUP_KNOB_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
+	if queued then
+		drop_queued_region('popupValue')
+		drawn['popupValue'] = nil
+	end
+	return queued
 end
 
 -- Throttled entry point for popupValue - call this instead of draw_popup_value() directly (see
 -- POPUP_VALUE_THROTTLE_TICKS). `drawn['popupValue'] == nil` means either the very first paint or
 -- draw_popup_knob() just invalidated it for an icon change; either way that must win over the
 -- throttle immediately, or the value stays blank/stale until the throttle next allows a repaint.
-function queue_popup_value()
+-- `knobRequeued` (paint_popup_screen's draw_popup_knob() return) logs the requeue-behind-the-knob
+-- case for a hardware capture to confirm the pairing held.
+function queue_popup_value(knobRequeued)
 	local forced = drawn['popupValue'] == nil
 	if forced or timerTicks - popupValueLastPaintTick >= POPUP_VALUE_THROTTLE_TICKS then
 		popupValueLastPaintTick = timerTicks
 		popupValueDirty = false
 		draw_popup_value(popupValue)
+		if knobRequeued then slog('popup value queued behind knob redraw') end
 	else
 		popupValueDirty = true
 	end
@@ -1585,8 +1607,8 @@ function paint_popup_screen()
 	draw_popup_bg()
 	draw_popup_border()
 	draw_popup_label(popupControlName, popupCcNumber)
-	draw_popup_knob(popupValue)
-	queue_popup_value()
+	local knobRequeued = draw_popup_knob(popupValue)
+	queue_popup_value(knobRequeued)
 	if popupCcNumber == nil then
 		draw_popup_mute_hint(true)
 	elseif drawn['popupMuteHint'] ~= nil then

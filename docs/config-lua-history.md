@@ -2254,8 +2254,9 @@ are each sent three times. **Diagnosed and the workaround removed on 2026-09-17 
 
 **The settle read-back produced no data.** Seven `SETTLE: resend x3` lines in the capture and zero
 `settled volume confirmed` / `MISMATCH` lines, so the diagnostic READ either never went out or was never
-answered. The re-send half works; the verification half is silent and remains unproven. Worth chasing
-before anyone relies on that oracle.
+answered. **Resolved on 2026-09-17:** it went out every time and was dropped every time, for the same
+pacing reason as the mute and LED writes — it now answers reliably. See
+[One SL message per tick](#one-sl-message-per-tick-2026-09-17).
 
 ## Every LED id swept and identified (2026-09-17)
 
@@ -2329,8 +2330,57 @@ floor". Section 54's `a Master Volume READ is never paced` survives as written (
 Mutation-tested by a separate agent across eight mutations; no assertion passed when it should have
 failed.
 
-**Unproven until hardware.** The mechanism above is inferred from the code and the timing, not
-measured on the device. The sharpest single signal will be the settle READ: if it starts producing
-`settled volume confirmed` / `MISMATCH` lines where it has always been silent, the diagnosis is right.
-If single sends still vanish, the pacing theory is wrong — restore the repeats and say so rather than
-raising the count.
+**Confirmed on hardware (2026-09-17).** SL88 MK2, script 2.2.0, one session of 1,275 log lines.
+
+The settle READ — the sharpest signal, silent on every prior run — produced **five**
+`settled volume confirmed` lines (vol=75, 78, 77, 60, 86), each preceded by its `MASTER VOLUME READ
+reply`. The login-time READ was answered too (`07 00 3C 00` → `vol=60 mute=0`). The diagnosis is
+right: the READ was always going out and always being dropped for arriving behind another message.
+
+Everything else the fix touched held. Mute and unmute each cost **one** LED write and **one** mute
+write — `FLUSH #33 ... msg=F0 00 20 1A 16 03 33 02 0A 01 F7` is the whole of the login LED paint,
+where three copies used to go. A LONG press reset to 60 and unmuted, twice. The queue drained strictly
+one message per tick throughout (ticks 25-34 emptied an 8-deep repaint one message at a time). The
+keepalive never missed a flush and the app was not dropped from the APP list, which was the regression
+the rejected keepalive-priority variant existed to guard against — it was not needed.
+
+Jeroen's verdict: **"looks good ... reaction speed is much better"**, with one regression, below.
+
+## Popup value wiped by its own ring redraw (2026-09-17)
+
+Found at the hardware gate for the change above, and caused by it. In some situations the number
+inside the popup's ring gauge is no longer visible.
+
+`popupValue` draws *inside* `popupKnob`'s rect — the documented escape hatch to the non-overlap rule —
+so a knob redraw repaints the whole icon and wipes the centre. The number must therefore always be
+painted **after** its knob.
+
+**Root cause: `queue_message` coalesces in place.** An entry already in `pendingMessages` keeps its
+original queue position when a later draw updates it (`pendingMessages[i] = msg; return`). So:
+
+1. A paint where only the value changed queues `popupValue` at position *k*.
+2. Before *k* drains, a paint where the icon changed appends `popupKnob` at the tail — and the paired
+   `queue_popup_value()` coalesces the value back into position *k*, now **ahead of its own knob**.
+3. The value is emitted first, the knob repaints over it and wipes the centre, and nothing follows.
+
+The hardware trace shows exactly that: `FLUSH #116 tick=115 regionId=popupValue`, then
+`FLUSH #119 tick=118 regionId=popupKnob`, then nothing, then dismissal with the centre still blank.
+Invisible before the change above, because both messages left inside one display refresh and the
+order never showed; under one-message-per-tick they are three ticks apart.
+
+**Rejected: a `popupValueOwed` debt flag.** Built first, on the theory that the paired value redraw was
+being *stranded* by the repaint throttle or by `dismiss_popup`. It cannot be: `draw_popup_knob` has one
+caller, `paint_popup_screen`, with `queue_popup_value()` on the next line, so the pairing is
+unconditionally synchronous — and `draw_popup_knob` already cleared `drawn['popupValue']` in the same
+branch, so the new flag was always in lockstep with the existing signal and changed no behaviour. The
+mutation pass proved it: deleting the owed bypass from `flush_popup_value_if_due`, and deleting the
+`owed` term from `queue_popup_value`'s `forced` condition, each left the suite green at 442/442. The
+flag was untestable because it was unreachable as a distinct state. Worth recording as a case where the
+tests were green, the mechanism was plausible, and the fix was a placebo — the independent mutation
+pass is what caught it.
+
+**Not fixed by relaxing the pacing.** Letting the pair share a flush or a tick is precisely what rule 5
+forbids and what the change above removed. The value trailing its knob by one tick (~35ms at
+`FLUSH_SOON_MS`) is fine; being emitted *before* it is not. The fix drops any pending `popupValue`
+entry when the knob re-queues, so the value is appended behind it instead of coalescing into an older,
+earlier slot.

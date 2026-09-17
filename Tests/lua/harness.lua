@@ -4062,6 +4062,127 @@ do
 		savedPending, savedDisplay, savedMvol, savedFast, savedSl
 end
 
+-- MARK: - 74. The popup value never coalesces ahead of the knob redraw it belongs behind
+--
+-- BUG (docs/config-lua-history.md#popup-value-wiped-by-its-own-ring-redraw-2026-09-17):
+-- queue_message coalesces a same-regionId update at its OLD queue position (see that function's own
+-- comment). A value-only paint can queue popupValue first; before it drains, a later paint that
+-- changes the knob's icon appends popupKnob at the TAIL, and the paired queue_popup_value() call
+-- then coalesces the value back into its stale, earlier position - ahead of its own knob. A
+-- hardware capture caught the worst case: 'FLUSH #116 ... regionId=popupValue' then
+-- 'FLUSH #119 ... regionId=popupKnob' with nothing after it - the knob's redraw wiped the value and
+-- nothing repainted it. Fixed by draw_popup_knob dropping any pending popupValue entry (see
+-- drop_queued_region) whenever its own bitmap redraw actually queues, forcing the paired
+-- queue_popup_value() call to append fresh rather than coalesce stale.
+do
+	local savedDrawn, savedPending, savedTicks, savedLastPaint, savedDirty, savedValue, savedMax,
+		savedDisplay, savedSl =
+		drawn, pendingMessages, timerTicks, popupValueLastPaintTick, popupValueDirty,
+		popupValue, popupMax, displayFlushReady, slFlushReady
+
+	popupMax = 127
+
+	local function non_query_messages(out)
+		local msgs = {}
+		for _, m in ipairs(split_messages(out and out.midi or {})) do
+			if not (item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_QUERY) then
+				msgs[#msgs + 1] = m
+			end
+		end
+		return msgs
+	end
+
+	-- Baseline: an ordinary paint at icon 6 (floor(64*12/127)), simulated as already flushed to
+	-- hardware - drawn[] retains both ids' tuples, the queue is empty.
+	drawn, pendingMessages = {}, {}
+	timerTicks = 5000
+	popupValue = 64
+	draw_popup_knob(popupValue)
+	queue_popup_value()
+	pendingMessages = {}
+
+	-- (a) THE REGRESSION SETUP: a value-only paint (still icon 6 - floor(70*12/127)) queues
+	-- popupValue ALONE, past the throttle so it actually reaches the queue.
+	timerTicks = 5003
+	popupValue = 70
+	queue_popup_value()
+	check('setup: the value-only change queues popupValue alone, at position 1',
+		#pendingMessages == 1 and pendingMessages[1].regionId == 'popupValue')
+
+	-- Before that drains, a paint changes the icon (120 -> icon 11) and queues popupKnob, paired
+	-- with the same queue_popup_value() call paint_popup_screen always makes right after.
+	popupValue = 120
+	draw_popup_knob(popupValue)
+	queue_popup_value()
+	check('THE REGRESSION: the icon-changing paint still queues exactly 2 messages',
+		#pendingMessages == 2)
+	if #pendingMessages == 2 then
+		check('THE REGRESSION: popupKnob is queued before popupValue, not coalesced ahead of it',
+			pendingMessages[1].regionId == 'popupKnob' and pendingMessages[2].regionId == 'popupValue')
+	end
+
+	-- (b) Draining with real flush ticks emits the knob on one tick and the value on a LATER tick -
+	-- never reversed, never the knob alone with the value stranded behind it.
+	displayFlushReady, slFlushReady = true, true
+	local tick1 = non_query_messages(flush_pending(true))
+	check('drain: tick 1 emits exactly one display message', #tick1 == 1)
+	check('drain: tick 1 emits the knob (Plot Bitmap), not the value',
+		#tick1 == 1 and func_of(tick1[1]) == DISP_PLOT_BITMAP)
+	check('drain: tick 1 leaves only the value still queued',
+		#pendingMessages == 1 and pendingMessages[1].regionId == 'popupValue')
+
+	-- Fresh tick: displayFlushReady/slFlushReady reset, as controller_timer_trigger does every tick.
+	displayFlushReady, slFlushReady = true, true
+	local tick2 = non_query_messages(flush_pending(true))
+	check('drain: tick 2 emits exactly one display message', #tick2 == 1)
+	check('drain: tick 2 emits the value (Write Text) - the pair completes with no gap',
+		#tick2 == 1 and func_of(tick2[1]) == DISP_WRITE_TEXT and write_text_body(tick2[1]) == '120')
+	check('drain: both messages delivered - the queue is now empty', #pendingMessages == 0)
+
+	-- (c) A value-only change (icon unchanged) must still be throttled as before - the fix must not
+	-- defeat POPUP_VALUE_THROTTLE_TICKS for ordinary scrubbing within the same icon bucket.
+	drawn, pendingMessages = {}, {}
+	timerTicks = 6000
+	popupValue = 1
+	draw_popup_knob(1) -- icon 0, first draw
+	queue_popup_value() -- forced first paint; pins the paint tick at 6000
+	pendingMessages = {}
+
+	timerTicks = 6001 -- only 1 tick later - throttle window is 3
+	popupValue = 2 -- icon 0 still - value-only change
+	queue_popup_value()
+	check('throttle: an ordinary value-only change within the window is withheld, not sent immediately',
+		#pendingMessages == 0 and popupValueDirty == true)
+
+	drawn, pendingMessages, timerTicks, popupValueLastPaintTick, popupValueDirty,
+		popupValue, popupMax, displayFlushReady, slFlushReady =
+		savedDrawn, savedPending, savedTicks, savedLastPaint, savedDirty,
+		savedValue, savedMax, savedDisplay, savedSl
+end
+
+-- MARK: - 75. drop_queued_region() removes only the named region's entry, position preserved
+do
+	local savedPending = pendingMessages
+	pendingMessages = {}
+
+	queue_message({ 0xF0, 0x00 }, 'regionA')
+	queue_message({ 0xF0, 0x01 }, 'regionB')
+	queue_message({ 0xF0, 0x02 }, 'regionC')
+	check('drop_queued_region setup: three regions queued', #pendingMessages == 3)
+
+	drop_queued_region('regionB')
+	check('drop_queued_region: exactly one entry removed', #pendingMessages == 2)
+	check('drop_queued_region: the remaining two are regionA then regionC, order preserved',
+		pendingMessages[1].regionId == 'regionA' and pendingMessages[2].regionId == 'regionC')
+
+	drop_queued_region('regionZ') -- not queued - must be a harmless no-op
+	check('drop_queued_region: dropping an absent regionId changes nothing',
+		#pendingMessages == 2 and pendingMessages[1].regionId == 'regionA'
+		and pendingMessages[2].regionId == 'regionC')
+
+	pendingMessages = savedPending
+end
+
 -- MARK: - Summary
 
 realPrint('')
