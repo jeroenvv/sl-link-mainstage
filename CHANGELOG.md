@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-09-17
+
+- fix: pace every queued SL message to one per tick
+- fix: queue the popup value behind its knob redraw
+- fix: drop stale identification requests on approval
+- docs: identify every LED id on hardware
+- docs: register the settings-storage follow-up
+- docs: record the second hardware run and the faster CANCEL logout
+- chore: order the generated changelog feat, fix, docs
+- test: make the popup ordering assertion prove targeting
+- chore: add a lua.log digest for cheap hardware-run reads
+- chore: drop the popup pairing diagnostic, confirmed on hardware
+- Merge fix/one-sl-message-per-tick: pace SL messages one per tick
+
 ## [2.2.0] - 2026-09-16
 
 - fix: bump the README's version on release too
