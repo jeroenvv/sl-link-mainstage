@@ -2602,16 +2602,25 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	return flush_pending()
 end
 
--- Sends nothing - see docs/config-lua-history.md#controller_finalize-sends-no-logout-request.
--- MainStage tears the script down and re-initialises it constantly; a Logout Request here logs the
--- app out of the SL88's APP list on every spurious teardown. Logs state and tick so a capture can
--- show WHEN it fires - a real quit has to be told apart from that churn before anything is sent.
+-- A teardown that holds a live registration releases it, so the SL88 drops us at once instead of
+-- waiting out its ~5s keepalive timeout and briefly showing a dead second entry in the APP list.
+-- GATED, because MainStage tears the script down and re-initialises it constantly and two earlier
+-- unconditional attempts had to be reverted for logging the app out mid-startup: a churn teardown
+-- fires at tick 0 in STATE_IDENTIFYING, holding nothing worth releasing, while a real quit fires
+-- from a registered state many ticks in. See
+-- docs/config-lua-history.md#controller_finalize-sends-no-logout-request.
+LOGOUT_ON_QUIT_MIN_TICKS = 20
+
 function controller_finalize()
 	slog('controller_finalize (state=' .. tostring(state) .. ', tick=' .. tostring(timerTicks) ..
 		', pending=' .. #pendingMessages .. ')')
+	local registered = (state == STATE_LISTED or state == STATE_ACTIVE or state == STATE_STANDBY)
+	local mature = timerTicks >= LOGOUT_ON_QUIT_MIN_TICKS
 	pendingMessages = {}
 	state = STATE_IDLE
-	return nil
+	if not (registered and mature) then return nil end
+	slog('-> LOGOUT REQUEST from controller_finalize')
+	return { midi = msg_system(SYS_LOGOUT_REQUEST), outport = SL_PORT }
 end
 
 -- Fires the recovery action itself (drop to STATE_IDLE, which controller_timer_trigger's STATE_IDLE
