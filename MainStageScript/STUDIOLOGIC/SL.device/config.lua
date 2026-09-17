@@ -133,6 +133,7 @@ BID_A_ENC = 0x0B -- SLButtonID.aEncoderButton; toggles Master Volume mute (handl
 -- White LED ids for the A/B encoder rings (IT_LED). Confirmed on hardware 2026-09-17 by sweeping
 -- every id; the full table is in docs/implementing-sl-link.md §5. Only A and B have a ring LED -
 -- Zone 1-4 and the joystick have none.
+WLID_ZOOM = 0x07 -- ZOOM button lamp; see docs/implementing-sl-link.md section 5
 WLID_A_ENC = 0x0A
 WLID_B_ENC = 0x0B
 
@@ -1738,6 +1739,23 @@ end
 -- popup, and the popup dismisses after ~2s anyway - the LED is a persistent indicator, so it has to
 -- track the feedback rather than the popup. Not queued from controller_midi_out either, which must
 -- never queue. Lit = unmuted, matching the A ring.
+-- Last ZOOM lamp state sent; nil means 'unknown, send it'. Same memo/clear discipline as
+-- encoderMuteLedSent - see flush_mute_leds.
+modeLedSent = nil
+
+-- ZOOM lamp mirrors the screen: lit in the patch list, dark in zoom. Drained on the tick and
+-- ACTIVE-only for the same reasons as flush_mute_leds. During a popup it follows the mode the popup
+-- is covering, so a transient popup never darkens it.
+function flush_mode_led()
+	if state ~= STATE_ACTIVE then return end
+	local mode = popupActive and popupPreviousMode or displayMode
+	local ledOn = (mode == 'list')
+	if modeLedSent ~= ledOn then
+		modeLedSent = ledOn
+		queue_message(msg_white_led(WLID_ZOOM, ledOn))
+	end
+end
+
 function flush_mute_leds()
 	-- ACTIVE only. An LED write before the app is selected is discarded by the SL88 anyway, and
 	-- queueing one during identification competes with the retry for the per-tick permit and delays
@@ -2410,7 +2428,7 @@ function enter_active_session()
 	-- Forget what the mute rings were last sent, so the next tick re-establishes them for this
 	-- session rather than trusting a memo from before the SL88 confirmed us - same reasoning as
 	-- invalidate_all() for the display. See docs/config-lua-history.md#startup-led-discarded-before-login-confirmation-2026-09-16.
-	encoderMuteLedSent = {}
+	encoderMuteLedSent, modeLedSent = {}, nil
 	return true
 end
 
@@ -2431,7 +2449,7 @@ function handle_login()
 	end
 	-- And the mute rings, for the same reason: enter_active_session's own clear does not run when we
 	-- were already ACTIVE, so a ring set before this confirmation was discarded and never re-sent.
-	encoderMuteLedSent = {}
+	encoderMuteLedSent, modeLedSent = {}, nil
 end
 
 function handle_standby()
@@ -2872,6 +2890,7 @@ function controller_timer_trigger()
 	flush_popup_value_if_due()
 	-- Mute ring LEDs track their parameter's feedback, not the popup - see flush_mute_leds().
 	flush_mute_leds()
+	flush_mode_led()
 	-- `tick=`/`pending=`/`draining=` here let a captured hardware log be read as 'N drain ticks
 	-- elapsed while M messages went out' - pair against the `tick=` field flush_pending's own FLUSH
 	-- print carries.
