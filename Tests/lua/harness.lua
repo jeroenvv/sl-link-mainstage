@@ -4586,6 +4586,23 @@ do
 	check('THE REGRESSION: with no mute mapping the ring is driven dark, not left alone',
 		bLed ~= nil and bLed[9] == WLID_B_ENC and bLed[10] == 0)
 
+	-- (i2) THE REGRESSION: a concert change must drop stored feedback. MainStage never announces that
+	-- a control it used to report is gone, so a mute mapping from the old concert kept its ring lit.
+	midiOutFeedback[bCc] = { name = 'Master Mute', valueString = 'Off', value = 0 }
+	currentConcert, patchName, setName = 'Old Concert', 'p', 's'
+	controller_select_patch(0, 'p2', 's2', 'New Concert', { { IsPatch = true, Label = 'p2',
+		SetIndex = 0, PatchIndex = 0 } }, 0, 0)
+	check('THE REGRESSION: a concert change drops stored parameter feedback',
+		midiOutFeedback[bCc] == nil)
+
+	-- Same patch list, same concert: feedback must SURVIVE, or every patch change would blank the
+	-- popup until MainStage happened to re-report.
+	midiOutFeedback[bCc] = { name = 'Master Mute', valueString = 'Off', value = 0 }
+	controller_select_patch(0, 'p3', 's2', 'New Concert', { { IsPatch = true, Label = 'p3',
+		SetIndex = 0, PatchIndex = 1 } }, 0, 1)
+	check('a patch change within the same concert keeps stored feedback',
+		midiOutFeedback[bCc] ~= nil)
+
 	-- (i) A fresh session must forget what was last sent, so the rings are re-established rather
 	-- than trusting a memo from before the SL88 confirmed us.
 	encoderMuteLedSent = { [WLID_B_ENC] = true }

@@ -3267,6 +3267,11 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 		return nil
 	end
 
+	-- A new concert invalidates every stored parameter feedback: MainStage never announces that a
+	-- control it used to report is gone, so a mute mapping from the previous concert would keep its
+	-- ring lit forever. Dropping it lets flush_mute_leds dark-assert until the new concert reports.
+	if c ~= currentConcert then midiOutFeedback = {} end
+
 	patchName, setName, currentConcert = p, s, c
 	activeSetIndex = currentSetIndex or activeSetIndex
 	activePatchIndex = currentPatchIndex or activePatchIndex
