@@ -1583,15 +1583,12 @@ end
 -- POPUP_VALUE_THROTTLE_TICKS). `drawn['popupValue'] == nil` means either the very first paint or
 -- draw_popup_knob() just invalidated it for an icon change; either way that must win over the
 -- throttle immediately, or the value stays blank/stale until the throttle next allows a repaint.
--- `knobRequeued` (paint_popup_screen's draw_popup_knob() return) logs the requeue-behind-the-knob
--- case for a hardware capture to confirm the pairing held.
-function queue_popup_value(knobRequeued)
+function queue_popup_value()
 	local forced = drawn['popupValue'] == nil
 	if forced or timerTicks - popupValueLastPaintTick >= POPUP_VALUE_THROTTLE_TICKS then
 		popupValueLastPaintTick = timerTicks
 		popupValueDirty = false
 		draw_popup_value(popupValue)
-		if knobRequeued then slog('popup value queued behind knob redraw') end
 	else
 		popupValueDirty = true
 	end
@@ -1620,8 +1617,8 @@ function paint_popup_screen()
 	draw_popup_bg()
 	draw_popup_border()
 	draw_popup_label(popupControlName, popupCcNumber)
-	local knobRequeued = draw_popup_knob(popupValue)
-	queue_popup_value(knobRequeued)
+	draw_popup_knob(popupValue)
+	queue_popup_value()
 	if popupCcNumber == nil then
 		draw_popup_mute_hint(true)
 	elseif drawn['popupMuteHint'] ~= nil then
