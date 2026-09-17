@@ -4601,10 +4601,12 @@ do
 	-- The tick flushes as it returns, so the LED may be in the returned midi OR still queued behind
 	-- the one-message-per-tick permit - either proves the drain ran.
 	bLed = nil
-	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then bLed = m end end
+	for _, m in ipairs(pendingMessages) do
+		if item_type_of(m) == IT_LED and m[9] == WLID_B_ENC then bLed = m end
+	end
 	if bLed == nil and tickOut ~= nil and tickOut.midi ~= nil then
 		for _, m in ipairs(split_messages(tickOut.midi)) do
-			if item_type_of(m) == IT_LED then bLed = m end
+			if item_type_of(m) == IT_LED and m[9] == WLID_B_ENC then bLed = m end
 		end
 	end
 	check('THE REGRESSION: controller_timer_trigger itself drains the mute LEDs',
@@ -4659,6 +4661,57 @@ do
 		popupValue, midiOutFeedback, encoderMuteLedSent =
 		savedDrawn, savedPending, savedEid, savedFeedbackActive, savedFeedbackName, savedValueString,
 		savedValue, savedFeedback, savedLedSent
+end
+
+-- MARK: - 82. The ZOOM lamp mirrors the display mode
+do
+	local savedState, savedPending, savedMode, savedPopup, savedPrev, savedSent =
+		state, pendingMessages, displayMode, popupActive, popupPreviousMode, modeLedSent
+
+	local function zoomLed()
+		for _, m in ipairs(pendingMessages) do
+			if item_type_of(m) == IT_LED and m[9] == WLID_ZOOM then return m end
+		end
+		return nil
+	end
+
+	state, popupActive = STATE_ACTIVE, false
+
+	pendingMessages, modeLedSent, displayMode = {}, nil, 'list'
+	flush_mode_led()
+	local led = zoomLed()
+	check('list mode lights the ZOOM lamp', led ~= nil and led[10] == 1)
+
+	pendingMessages, displayMode = {}, 'zoom'
+	flush_mode_led()
+	led = zoomLed()
+	check('zoom mode darkens the ZOOM lamp', led ~= nil and led[10] == 0)
+
+	pendingMessages = {}
+	flush_mode_led() -- unchanged
+	check('an unchanged mode does not re-queue the ZOOM lamp', zoomLed() == nil)
+
+	-- A popup covers a mode rather than replacing it, so the lamp must follow what is underneath.
+	pendingMessages, modeLedSent = {}, nil
+	popupActive, popupPreviousMode, displayMode = true, 'list', 'popup'
+	flush_mode_led()
+	led = zoomLed()
+	check('a popup over the list keeps the ZOOM lamp lit', led ~= nil and led[10] == 1)
+
+	-- ACTIVE-only, for the same reason as the mute rings: an LED queued during identification
+	-- competes with the retry for the per-tick permit.
+	pendingMessages, modeLedSent = {}, nil
+	popupActive, displayMode, state = false, 'list', STATE_IDENTIFYING
+	flush_mode_led()
+	check('the ZOOM lamp is not written outside an active session', zoomLed() == nil)
+
+	-- And a ring set before login is discarded, so login must forget what was sent.
+	state, modeLedSent = STATE_ACTIVE, true
+	handle_login()
+	check('login clears the ZOOM lamp memo so it re-asserts', modeLedSent == nil)
+
+	state, pendingMessages, displayMode, popupActive, popupPreviousMode, modeLedSent =
+		savedState, savedPending, savedMode, savedPopup, savedPrev, savedSent
 end
 
 -- MARK: - Summary
