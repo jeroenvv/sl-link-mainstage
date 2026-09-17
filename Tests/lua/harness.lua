@@ -51,7 +51,11 @@ local function frame(...)
 	return e
 end
 
+-- nil-tolerant on purpose: a mutation under test can leave a message missing, and crashing here
+-- aborts the run so every later section goes unchecked - which silently hides whether those
+-- sections would have caught the mutation. Report it as a failed check instead.
 local function hex(t)
+	if t == nil then return '<nil>' end
 	local s = {}
 	for i = 1, #t do s[#s + 1] = string.format('%02X', t[i]) end
 	return table.concat(s, ' ')
@@ -4101,25 +4105,46 @@ do
 	queue_popup_value()
 	pendingMessages = {}
 
+	-- Decoys AHEAD of popupValue, mirroring paint_popup_screen's real layout - it queues the panel
+	-- and border strips before ever reaching the knob, so popupValue is never the first entry on
+	-- hardware. Without these the removal has only one candidate and a 'drop whatever is at the
+	-- head' bug would pass this section unnoticed.
+	draw_rect('popupBg', 1, 1, 10, 10, 0, 0, 0)
+	draw_rect('popupBorderTop', 1, 1, 10, 2, 1, 1, 1)
+	draw_rect('popupBorderBottom', 1, 20, 10, 2, 1, 1, 1)
+
 	-- (a) THE REGRESSION SETUP: a value-only paint (still icon 6 - floor(70*12/127)) queues
-	-- popupValue ALONE, past the throttle so it actually reaches the queue.
+	-- popupValue ALONE, past the throttle so it actually reaches the queue - behind the decoys.
 	timerTicks = 5003
 	popupValue = 70
 	queue_popup_value()
-	check('setup: the value-only change queues popupValue alone, at position 1',
-		#pendingMessages == 1 and pendingMessages[1].regionId == 'popupValue')
+	check('setup: the value-only change queues popupValue alone, behind the decoys',
+		#pendingMessages == 4 and pendingMessages[4].regionId == 'popupValue')
 
 	-- Before that drains, a paint changes the icon (120 -> icon 11) and queues popupKnob, paired
 	-- with the same queue_popup_value() call paint_popup_screen always makes right after.
 	popupValue = 120
 	draw_popup_knob(popupValue)
 	queue_popup_value()
-	check('THE REGRESSION: the icon-changing paint still queues exactly 2 messages',
-		#pendingMessages == 2)
-	if #pendingMessages == 2 then
+	check('THE REGRESSION: the icon-changing paint still leaves 5 messages queued',
+		#pendingMessages == 5)
+	if #pendingMessages == 5 then
 		check('THE REGRESSION: popupKnob is queued before popupValue, not coalesced ahead of it',
-			pendingMessages[1].regionId == 'popupKnob' and pendingMessages[2].regionId == 'popupValue')
+			pendingMessages[4].regionId == 'popupKnob' and pendingMessages[5].regionId == 'popupValue')
+		-- Proves the removal was TARGETED, not 'drop the head of the queue': every region ahead of
+		-- popupValue must survive, in order.
+		check('THE REGRESSION: dropping popupValue left the regions ahead of it untouched',
+			pendingMessages[1].regionId == 'popupBg'
+				and pendingMessages[2].regionId == 'popupBorderTop'
+				and pendingMessages[3].regionId == 'popupBorderBottom')
 	end
+
+	-- Drop the decoys so the drain assertions below see only the knob/value pair.
+	local pairOnly = {}
+	for _, m in ipairs(pendingMessages) do
+		if m.regionId == 'popupKnob' or m.regionId == 'popupValue' then pairOnly[#pairOnly + 1] = m end
+	end
+	pendingMessages = pairOnly
 
 	-- (b) Draining with real flush ticks emits the knob on one tick and the value on a LATER tick -
 	-- never reversed, never the knob alone with the value stranded behind it.
