@@ -144,7 +144,7 @@ BEGIN {
 		if (match(line, /version=[0-9.]+/)) version = substr(line, RSTART + 8, RLENGTH - 8)
 		next
 	}
-	if (line ~ /controller_finalize/) { finals++; next }
+	if (line ~ /^controller_finalize/) { finals++; next }
 	if (line == "") next
 	emit(line)
 }
