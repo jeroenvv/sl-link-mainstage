@@ -2604,8 +2604,11 @@ end
 
 -- Sends nothing - see docs/config-lua-history.md#controller_finalize-sends-no-logout-request.
 -- MainStage tears the script down and re-initialises it constantly; a Logout Request here logs the
--- app out of the SL88's APP list on every spurious teardown.
+-- app out of the SL88's APP list on every spurious teardown. Logs state and tick so a capture can
+-- show WHEN it fires - a real quit has to be told apart from that churn before anything is sent.
 function controller_finalize()
+	slog('controller_finalize (state=' .. tostring(state) .. ', tick=' .. tostring(timerTicks) ..
+		', pending=' .. #pendingMessages .. ')')
 	pendingMessages = {}
 	state = STATE_IDLE
 	return nil
