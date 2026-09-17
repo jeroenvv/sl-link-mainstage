@@ -2425,6 +2425,9 @@ function handle_login()
 		queue_master_volume_read()
 		set_master_mute(masterMuted)
 	end
+	-- And the mute rings, for the same reason: enter_active_session's own clear does not run when we
+	-- were already ACTIVE, so a ring set before this confirmation was discarded and never re-sent.
+	encoderMuteLedSent = {}
 end
 
 function handle_standby()

@@ -4586,6 +4586,15 @@ do
 	check('THE REGRESSION: with no mute mapping the ring is driven dark, not left alone',
 		bLed ~= nil and bLed[9] == WLID_B_ENC and bLed[10] == 0)
 
+    -- (i1) THE REGRESSION: a ring set BEFORE login confirmation is discarded by the SL88, so login
+    -- must forget what was sent and re-assert. enter_active_session's own clear does not run on the
+    -- already-ACTIVE path, which is the normal one.
+    state = STATE_ACTIVE
+    encoderMuteLedSent = { [WLID_B_ENC] = false }
+    handle_login()
+    check('THE REGRESSION: login clears the mute LED memo so the rings re-assert',
+        next(encoderMuteLedSent) == nil)
+
 	-- (i2) THE REGRESSION: a concert change must drop stored feedback. MainStage never announces that
 	-- a control it used to report is gone, so a mute mapping from the old concert kept its ring lit.
 	midiOutFeedback[bCc] = { name = 'Master Mute', valueString = 'Off', value = 0 }
