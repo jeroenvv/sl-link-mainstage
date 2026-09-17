@@ -2787,22 +2787,23 @@ do
 	local savedDrawn, savedPending, savedMax = drawn, pendingMessages, popupMax
 	popupMax = 127
 
-	-- (a) First draw at icon 0 (value 0): the value's memo starts populated.
+	-- (a) First draw at icon 0 (value 0): the value's memo starts populated. y/legacyOverlap match
+	-- legacy mode - see draw_popup_knob's own comment for why the escape hatch is legacy-only.
 	drawn, pendingMessages = {}, {}
-	draw_popup_knob(0)
+	draw_popup_knob(0, POPUP_KNOB_Y, true)
 	draw_popup_value(64) -- text unrelated to the knob's value on purpose, isolating the memo check
 	check('popupValue memo is populated after the first draw', drawn['popupValue'] ~= nil)
 
 	-- (b) Redrawing the knob at a value that selects the SAME icon (still icon 0) must NOT touch the
 	-- value's memo - this is the ordinary per-id memoization path, unrelated to the trap.
-	draw_popup_knob(1)
+	draw_popup_knob(1, POPUP_KNOB_Y, true)
 	check('popupValue memo survives a knob redraw that keeps the same icon',
 		drawn['popupValue'] ~= nil)
 
 	-- (c) Redrawing the knob at a value that selects a DIFFERENT icon (value 127 -> icon 12) MUST
 	-- clear the value's memo, even though draw_popup_value has not been called again yet - this is
 	-- the actual regression guard: prove the invalidation happens inside draw_popup_knob() itself.
-	draw_popup_knob(127)
+	draw_popup_knob(127, POPUP_KNOB_Y, true)
 	check('popupValue memo is cleared when the knob icon actually changes',
 		drawn['popupValue'] == nil)
 
@@ -2820,7 +2821,7 @@ do
 	check('popupValue memo is populated before the decreasing-icon case', drawn['popupValue'] ~= nil)
 	local midValue = math.floor(popupMax / 2)
 	local midIcon = popup_knob_icon(midValue)
-	draw_popup_knob(midValue)
+	draw_popup_knob(midValue, POPUP_KNOB_Y, true)
 	check('a decreasing icon (full -> mid-level) still clears the popupValue memo, not just an increase',
 		drawn['popupValue'] == nil and midIcon < BMP_KNOB_LEVELS - 1 and midIcon > 0)
 	pendingMessages = {}
@@ -2834,7 +2835,7 @@ do
 	pendingMessages = {}
 	draw_popup_value(64)
 	check('popupValue memo is populated before the return-to-zero case', drawn['popupValue'] ~= nil)
-	draw_popup_knob(0)
+	draw_popup_knob(0, POPUP_KNOB_Y, true)
 	check('returning to icon 0 from a nonzero icon still clears the popupValue memo',
 		drawn['popupValue'] == nil)
 	pendingMessages = {}
@@ -3195,14 +3196,14 @@ do
 	drawn, pendingMessages = {}, {}
 	timerTicks = 3000
 	popupValue = 64
-	draw_popup_knob(0) -- icon 0 - queues its own bitmap message, isolated from the value below
+	draw_popup_knob(0, POPUP_KNOB_Y, true) -- icon 0 - queues its own bitmap message, isolated from the value below
 	pendingMessages = {}
 	queue_popup_value()
 	check('popup value throttle setup: first value paint after the initial knob draw', #pendingMessages == 1)
 
 	pendingMessages = {}
 	timerTicks = 3001 -- only 1 tick later - the throttle alone would withhold this
-	draw_popup_knob(127) -- icon 12: a genuine icon change, clears drawn['popupValue']
+	draw_popup_knob(127, POPUP_KNOB_Y, true) -- icon 12: a genuine icon change, clears drawn['popupValue']
 	pendingMessages = {} -- isolate the knob's own bitmap message from the value's below
 	queue_popup_value()
 	check('popup value throttle: a knob icon change forces the value through despite only 1 elapsed tick',
@@ -3326,7 +3327,7 @@ do
 	local changedIcons, allCorrect = 0, true
 	for v = 0, 127 do
 		pendingMessages = {}
-		draw_popup_knob(v)
+		draw_popup_knob(v, POPUP_KNOB_Y, true)
 		local icon = popup_knob_icon(v)
 		local expected = (icon ~= lastIcon) and 1 or 0
 		if expected == 1 then changedIcons = changedIcons + 1 end
@@ -4102,7 +4103,7 @@ do
 	drawn, pendingMessages = {}, {}
 	timerTicks = 5000
 	popupValue = 64
-	draw_popup_knob(popupValue)
+	draw_popup_knob(popupValue, POPUP_KNOB_Y, true)
 	queue_popup_value()
 	pendingMessages = {}
 
@@ -4125,7 +4126,7 @@ do
 	-- Before that drains, a paint changes the icon (120 -> icon 11) and queues popupKnob, paired
 	-- with the same queue_popup_value() call paint_popup_screen always makes right after.
 	popupValue = 120
-	draw_popup_knob(popupValue)
+	draw_popup_knob(popupValue, POPUP_KNOB_Y, true)
 	queue_popup_value()
 	check('THE REGRESSION: the icon-changing paint still leaves 5 messages queued',
 		#pendingMessages == 5)
@@ -4170,7 +4171,7 @@ do
 	drawn, pendingMessages = {}, {}
 	timerTicks = 6000
 	popupValue = 1
-	draw_popup_knob(1) -- icon 0, first draw
+	draw_popup_knob(1, POPUP_KNOB_Y, true) -- icon 0, first draw
 	queue_popup_value() -- forced first paint; pins the paint tick at 6000
 	pendingMessages = {}
 
@@ -4291,6 +4292,255 @@ do
 		#pendingMessages == 0 and state == STATE_IDLE)
 
 	pendingMessages, state, timerTicks = savedPending, savedState, savedTicks
+end
+
+-- MARK: - 78. controller_midi_out: our CC only, nil on every path, reverse-lookup storage
+--
+-- See docs/config-lua-history.md#controller_midi_out-reports-real-parameter-values-with-a-screen-
+-- control-2026-09-17. controller_midi_out must return nil unconditionally (our own outbound SysEx
+-- passes through this same callback - a non-nil return would alter or swallow it), and must only
+-- ever store feedback for a CC on CC_STATUS (our channel).
+do
+	local savedFeedback = midiOutFeedback
+	midiOutFeedback = {}
+
+	check('controller_midi_out returns nil for a nil midiEvent', controller_midi_out(nil, 'x', 'y', nil) == nil)
+
+	-- Our own outbound SysEx passes through this callback with metadata nil - must return nil, must
+	-- not touch midiOutFeedback.
+	local sysex = frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_DISPLAY, DISP_WRITE_TEXT)
+	check('controller_midi_out returns nil for our own outbound SysEx (F0)', controller_midi_out(sysex, nil, nil, nil) == nil)
+
+	local cc = CC_MAP['ENC1_TURN']
+	check('controller_midi_out returns nil for a reported CC on our channel',
+		controller_midi_out(frame(CC_STATUS, cc, 90), 'Volume', '+0,0 dB', { r = 1, g = 0.9, b = 0.31 }) == nil)
+	check('...and stores the reported name/valueString/absolute value (midiEvent[2])',
+		midiOutFeedback[cc] ~= nil and midiOutFeedback[cc].name == 'Volume'
+			and midiOutFeedback[cc].valueString == '+0,0 dB' and midiOutFeedback[cc].value == 90)
+
+	-- THE REGRESSION this guards: an unhandled status byte (any channel but ours) must be ignored
+	-- entirely, not overwrite an existing entry for the same CC number.
+	check('controller_midi_out returns nil for an unhandled status byte',
+		controller_midi_out(frame(CC_STATUS - 1, cc, 64), 'Whatever', '64', nil) == nil)
+	check('...and leaves the existing feedback for that CC untouched',
+		midiOutFeedback[cc] ~= nil and midiOutFeedback[cc].value == 90)
+
+	-- A CC not in CC_MAP (64 is deliberately skipped - see CC_MAP's own comment) has no reverse-lookup
+	-- entry and must be ignored, not stored under a bogus key.
+	check('controller_midi_out returns nil for a CC outside CC_MAP',
+		controller_midi_out(frame(CC_STATUS, 64, 10), 'Sustain', '10', nil) == nil)
+	check('...and stores nothing for it', midiOutFeedback[64] == nil)
+
+	-- nil name and the literal 'Unmapped' string both mean 'no feedback' - MainStage sends 'Unmapped'
+	-- for a control with no screen control assigned (see Native Instruments/KOMPLETE KONTROL
+	-- S61.device/config.lua:173 in the 4.3.1 bundle). Either must clear an existing entry.
+	midiOutFeedback[cc] = { name = 'Volume', valueString = '+0,0 dB', value = 90 }
+	controller_midi_out(frame(CC_STATUS, cc, 90), nil, nil, nil)
+	check('a nil name clears any existing feedback for that CC', midiOutFeedback[cc] == nil)
+
+	midiOutFeedback[cc] = { name = 'Volume', valueString = '+0,0 dB', value = 90 }
+	controller_midi_out(frame(CC_STATUS, cc, 90), 'Unmapped', '', nil)
+	check("the literal name 'Unmapped' clears any existing feedback for that CC", midiOutFeedback[cc] == nil)
+
+	-- Cache: an unchanged tuple (name/valueString/value all identical) must skip the store - proven by
+	-- reference identity, not just equal fields, so a mutation that always reassigns cannot pass this.
+	local cc2 = CC_MAP['ENC2_TURN']
+	midiOutFeedback[cc2] = nil
+	controller_midi_out(frame(CC_STATUS, cc2, 50), 'Pan', '0', nil)
+	local firstRef = midiOutFeedback[cc2]
+	controller_midi_out(frame(CC_STATUS, cc2, 50), 'Pan', '0', nil) -- identical tuple, thousands of these observed on hardware
+	check('an unchanged tuple skips the store (same table reference, not reassigned)',
+		midiOutFeedback[cc2] == firstRef)
+	controller_midi_out(frame(CC_STATUS, cc2, 51), 'Pan', '0', nil) -- value actually changed
+	check('a changed value DOES reassign the store',
+		midiOutFeedback[cc2] ~= firstRef and midiOutFeedback[cc2].value == 51)
+
+	midiOutFeedback = savedFeedback
+end
+
+-- MARK: - 79. sanitize_value_string: known units substituted, other non-ASCII dropped not spaced
+--
+-- valueString is locale-formatted and can contain non-ASCII - a hardware capture showed '+0,0 ㏈',
+-- where ㏈ (U+33C8, 3 UTF-8 bytes E3 8F 88) would render as three blanks under append_text's own
+-- per-byte clamp. sanitize_value_string substitutes known units and drops anything else outside
+-- 0x20-0x80, rather than letting append_text turn it into a run of spaces.
+do
+	check("sanitize_value_string substitutes U+33C8 (dB) with 'dB'",
+		sanitize_value_string('+0,0 \xE3\x8F\x88') == '+0,0 dB')
+	check('sanitize_value_string DROPS a stray non-ASCII byte rather than replacing it with a space',
+		sanitize_value_string('A\xC3\xA9B') == 'AB') -- Ã© (2 UTF-8 bytes, no substitution rule) - dropped, not spaced
+	check('sanitize_value_string is nil-safe', sanitize_value_string(nil) == nil)
+	check('sanitize_value_string leaves plain ASCII untouched',
+		sanitize_value_string('Hello, World! 123') == 'Hello, World! 123')
+end
+
+-- MARK: - 80. Popup two-mode geometry: feedback content/layout vs legacy, and a mode switch re-erases
+--
+-- See the layout table in docs/config-lua-history.md#controller_midi_out-reports-real-parameter-
+-- values-with-a-screen-control-2026-09-17. FEEDBACK mode paints popupTitle/popupKnob/popupValue at
+-- the FB y-coordinates with MainStage's own name/valueString; LEGACY mode is untouched (sections
+-- 19/20/59/60/74 already cover its byte shapes). A mode switch mid-session must re-erase, since the
+-- two modes place popupValue at different y positions and memoization never clears a vacated one.
+do
+	local savedDrawn, savedPending, savedEid, savedFeedbackActive, savedFeedbackName, savedValueString,
+		savedValue, savedControlName, savedCcNumber, savedModeIsFeedback, savedActive, savedFeedback =
+		drawn, pendingMessages, popupEid, popupFeedbackActive, popupFeedbackName, popupValueString,
+		popupValue, popupControlName, popupCcNumber, popupModeIsFeedback, popupActive, midiOutFeedback
+
+	midiOutFeedback = {}
+
+	-- (a) FEEDBACK mode content: title carries MainStage's reported name, value carries its
+	-- valueString (not the raw number) at the FB position, not the legacy in-ring position.
+	drawn, pendingMessages = {}, {}
+	popupEid = EID_ZONE1
+	popupFeedbackActive = true
+	popupFeedbackName = 'Volume'
+	popupValueString = '+0,0 dB'
+	popupValue = 90
+	paint_popup_screen()
+	check('feedback mode (no mute mapping) queues bg + 4 border strips + title + knob + value = 8 messages',
+		#pendingMessages == 8)
+	local byRegion = {}
+	for i = 1, #pendingMessages do byRegion[pendingMessages[i].regionId] = pendingMessages[i] end
+	check('...popupTitle carries the reported name, not the physical encoder label',
+		byRegion['popupTitle'] ~= nil and write_text_body(byRegion['popupTitle']) == 'Volume')
+	check('...popupValue carries the reported valueString, not the raw number',
+		byRegion['popupValue'] ~= nil and write_text_body(byRegion['popupValue']) == '+0,0 dB')
+
+	-- (b) LEGACY mode is unchanged: popupLabel names the physical encoder + CC, popupValue is the raw
+	-- number - same 8-message shape sections 19/20 already pin, reached here via the SAME dispatcher
+	-- (paint_popup_screen) rather than calling paint_popup_legacy() directly, so this also proves the
+	-- popupFeedbackActive branch itself, not just paint_popup_legacy() in isolation.
+	drawn, pendingMessages = {}, {}
+	popupFeedbackActive = false
+	popupControlName = ENCODER_NAME[EID_ZONE1]
+	popupCcNumber = CC_MAP[ENCODER_CC[EID_ZONE1]]
+	popupValue = 90
+	paint_popup_screen()
+	check('legacy mode (dispatched via paint_popup_screen) queues the same 8-message shape',
+		#pendingMessages == 8)
+	byRegion = {}
+	for i = 1, #pendingMessages do byRegion[pendingMessages[i].regionId] = pendingMessages[i] end
+	check('...popupLabel names the physical encoder and CC, not a MainStage parameter name',
+		byRegion['popupLabel'] ~= nil and write_text_body(byRegion['popupLabel']):find('ENC 1', 1, true) ~= nil)
+	check('...popupValue is the raw number, not a formatted string',
+		byRegion['popupValue'] ~= nil and write_text_body(byRegion['popupValue']) == '90')
+
+	-- (c) A mode switch mid-session (show_popup called again while popupActive, for a DIFFERENT
+	-- control whose feedback status differs) must re-erase the whole panel first - proven by the
+	-- erase being the first message queued, exactly like a fresh popup entry (section 53).
+	local ccWithFeedback = CC_MAP['ENC1_TURN']
+	midiOutFeedback[ccWithFeedback] = { name = 'Volume', valueString = '+0,0 dB', value = 90 }
+	drawn, pendingMessages = {}, {}
+	popupActive = true
+	popupModeIsFeedback = false -- as if a legacy popup was showing just before this call
+	show_popup(EID_ZONE1) -- now has feedback - mode switches false -> true
+	check('a mode switch re-erases: the erase is the FIRST message queued',
+		#pendingMessages >= 1 and pendingMessages[1].regionId == 'popupErase')
+	check('...and popupModeIsFeedback now tracks the new mode', popupModeIsFeedback == true)
+
+	-- (d) The converse switch (feedback -> legacy) also re-erases.
+	midiOutFeedback[ccWithFeedback] = nil
+	drawn, pendingMessages = {}, {}
+	popupActive = true
+	popupModeIsFeedback = true -- as if a feedback popup was showing just before this call
+	show_popup(EID_ZONE1) -- no feedback now - mode switches true -> false
+	check('the converse switch (feedback -> legacy) also re-erases',
+		#pendingMessages >= 1 and pendingMessages[1].regionId == 'popupErase')
+	check('...and popupModeIsFeedback tracks the switch back', popupModeIsFeedback == false)
+
+	-- (e) Two calls that DON'T change mode must NOT re-erase (this is what section 53's ordinary
+	-- repeat-call path already relies on) - proven here specifically for the mode-switch check itself,
+	-- not just the general per-region memoization it sits alongside.
+	drawn, pendingMessages = {}, {}
+	popupActive = true
+	popupModeIsFeedback = false
+	show_popup(EID_ZONE1) -- still no feedback - mode unchanged
+	check('no mode change means no re-erase',
+		#pendingMessages == 0 or pendingMessages[1].regionId ~= 'popupErase')
+
+	drawn, pendingMessages, popupEid, popupFeedbackActive, popupFeedbackName, popupValueString,
+		popupValue, popupControlName, popupCcNumber, popupModeIsFeedback, popupActive, midiOutFeedback =
+		savedDrawn, savedPending, savedEid, savedFeedbackActive, savedFeedbackName, savedValueString,
+		savedValue, savedControlName, savedCcNumber, savedModeIsFeedback, savedActive, savedFeedback
+end
+
+-- MARK: - 81. Mute indicator: hint/LED only when the paired push button's name contains 'Mute',
+-- lit = unmuted
+--
+-- Only A and B encoders have a ring LED (WLID_A_ENC/WLID_B_ENC); Zone 1-4 and the joystick show the
+-- hint text only. The paired button is each encoder's OWN push (BID_ZONE*_ENC/BID_B_ENC/
+-- BID_JOY_MAIN, not the SEL buttons) - see ENCODER_MUTE_BUTTON.
+do
+	local savedDrawn, savedPending, savedEid, savedFeedbackActive, savedFeedbackName, savedValueString,
+		savedValue, savedFeedback, savedLedSent =
+		drawn, pendingMessages, popupEid, popupFeedbackActive, popupFeedbackName, popupValueString,
+		popupValue, midiOutFeedback, encoderMuteLedSent
+
+	midiOutFeedback = {}
+	encoderMuteLedSent = {}
+
+	local function set_up_feedback_popup(eid)
+		drawn, pendingMessages = {}, {}
+		popupEid = eid
+		popupFeedbackActive = true
+		popupFeedbackName = 'Volume'
+		popupValueString = '+0,0 dB'
+		popupValue = 90
+	end
+
+	-- (a) A paired button with an UNRELATED name: no hint, no LED.
+	local zone1Cc = CC_MAP['ENC1_PRESS_SHORT']
+	midiOutFeedback[zone1Cc] = { name = 'Bypass', valueString = 'Off', value = 0 }
+	set_up_feedback_popup(EID_ZONE1)
+	paint_popup_screen()
+	check('an unrelated paired-button name shows no mute hint', drawn['popupMuteHint'] == nil)
+
+	-- (b) The paired button's name contains 'Mute' (case-insensitive): hint shown. Zone 1 has no ring
+	-- LED, so no White LED message either.
+	midiOutFeedback[zone1Cc] = { name = 'Zone 1 MUTE', valueString = 'Off', value = 0 }
+	set_up_feedback_popup(EID_ZONE1)
+	paint_popup_screen()
+	local hintMsg
+	for _, m in ipairs(pendingMessages) do if m.regionId == 'popupMuteHint' then hintMsg = m end end
+	check("a paired-button name containing 'Mute' (any case) shows the hint, carrying the PUSH TO MUTE/UNMUTE text",
+		hintMsg ~= nil and write_text_body(hintMsg):find('MUTE', 1, true) ~= nil)
+	local ledMsg
+	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then ledMsg = m end end
+	check('Zone 1 has no ring LED - no White LED message even with a mute mapping', ledMsg == nil)
+
+	-- (c) B DOES have a ring LED (WLID_B_ENC): paired button unmuted (value 0) -> hint shown AND the
+	-- LED is lit (state=1), matching the A ring's existing 'lit = unmuted' convention.
+	local bCc = CC_MAP['ENCB_PRESS_SHORT']
+	midiOutFeedback[bCc] = { name = 'Master Mute', valueString = 'Off', value = 0 }
+	set_up_feedback_popup(EID_B)
+	paint_popup_screen()
+	local bLed
+	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then bLed = m end end
+	check('B ring LED is queued when a mute mapping exists', bLed ~= nil and bLed[9] == WLID_B_ENC)
+	check('unmuted (paired value 0) lights the LED (state=1)', bLed ~= nil and bLed[10] == 1)
+
+	-- (d) The paired button reports MUTED (nonzero value): hint stays shown, LED goes OFF (state=0).
+	encoderMuteLedSent = {} -- clear the cache so the state change is actually re-sent
+	midiOutFeedback[bCc] = { name = 'Master Mute', valueString = 'On', value = 127 }
+	set_up_feedback_popup(EID_B)
+	paint_popup_screen()
+	bLed = nil
+	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then bLed = m end end
+	check('muted (paired value nonzero) turns the LED off (state=0)', bLed ~= nil and bLed[10] == 0)
+
+	-- (e) The LED write is only queued on an actual state change, not on every popup repaint -
+	-- encoderMuteLedSent caches the last state sent per WLID.
+	pendingMessages = {}
+	paint_popup_screen() -- same muted state as (d), nothing changed
+	bLed = nil
+	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then bLed = m end end
+	check('an unchanged mute state does not re-queue the White LED message', bLed == nil)
+
+	drawn, pendingMessages, popupEid, popupFeedbackActive, popupFeedbackName, popupValueString,
+		popupValue, midiOutFeedback, encoderMuteLedSent =
+		savedDrawn, savedPending, savedEid, savedFeedbackActive, savedFeedbackName, savedValueString,
+		savedValue, savedFeedback, savedLedSent
 end
 
 -- MARK: - Summary

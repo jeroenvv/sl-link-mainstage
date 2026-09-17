@@ -130,9 +130,11 @@ BID_A_ENC = 0x0B -- SLButtonID.aEncoderButton; toggles Master Volume mute (handl
 	-- spec calls this reserved for USB audio, but A traffic reaches the host, see
 	-- docs/implementing-sl-link.md §7
 
--- White LED id for the A encoder's ring (IT_LED). Confirmed on hardware 2026-09-17 by sweeping
--- every id; the full table is in docs/implementing-sl-link.md §5. B's ring is 0x0B.
+-- White LED ids for the A/B encoder rings (IT_LED). Confirmed on hardware 2026-09-17 by sweeping
+-- every id; the full table is in docs/implementing-sl-link.md §5. Only A and B have a ring LED -
+-- Zone 1-4 and the joystick have none.
 WLID_A_ENC = 0x0A
+WLID_B_ENC = 0x0B
 
 -- Button press-event byte, e[9] of an IT_BUTTON frame
 PRESS_SHORT = 0x01
@@ -156,6 +158,7 @@ EID_B = 0x06
 -- MIDI (the old Q1a spike's approach) can never reach it. See docs/mainstage-integration.md for the
 -- full table and the one-time mapping procedure.
 CC_CHANNEL = 0x0F -- channel 16; nothing else is expected to be routed here
+CC_STATUS = 0xB0 + CC_CHANNEL -- our CC channel's Control Change status byte - controller_midi_out's filter
 
 CC_MAP = {
 	JOY_UP_SHORT = 40,    JOY_UP_LONG = 41,
@@ -1011,6 +1014,25 @@ function append_text(msg, text, maxLength)
 	table.insert(msg, 0x00)
 end
 
+-- Known non-ASCII units MainStage's locale-formatted valueString can contain, substituted before
+-- the ASCII strip below runs - see docs/config-lua-history.md#controller_midi_out-reports-real-parameter-values-with-a-screen-control-2026-09-17.
+UNIT_SUBSTITUTIONS = { ['\xE3\x8F\x88'] = 'dB' } -- U+33C8 SQUARE DB, 3 UTF-8 bytes
+
+-- Substitutes known unit glyphs, then DROPS any remaining byte outside 0x20-0x80 (rather than
+-- letting append_text's own per-byte clamp turn a multi-byte glyph into a run of spaces).
+function sanitize_value_string(s)
+	if s == nil then return nil end
+	for glyph, ascii in pairs(UNIT_SUBSTITUTIONS) do
+		s = s:gsub(glyph, ascii)
+	end
+	local out = {}
+	for i = 1, #s do
+		local b = string.byte(s, i)
+		if b >= 0x20 and b <= 0x80 then out[#out + 1] = string.char(b) end
+	end
+	return table.concat(out)
+end
+
 -- Splits a value >127 into (msb, lsb), per the spec's 7-bit MIDI payload encoding.
 function append_msb_lsb(msg, value)
 	if value == nil or value < 0 then value = 0 end
@@ -1368,12 +1390,11 @@ ROW_COLORS = {
 
 -- MARK: - Encoder value popup
 --
--- Shows a transient panel - the control's name and wire CC number above, the native Knob bitmap
--- centred as a filling ring gauge, the 0-127 value below it - whenever ANY mapped encoder moves,
--- so the value and its CC number are visible without a MainStage round-trip. controller_midi_out
--- was confirmed on hardware to report nil name/valueString/color for the mapped CC itself, so this
--- never attempts to show a MainStage parameter name, only the encoder's own name, its CC number,
--- and its value, all already known locally via ENCODER_NAME/CC_MAP/ENCODER_CC/encoderValue.
+-- Shows a transient panel whenever ANY mapped encoder moves. Two modes: FEEDBACK, when
+-- controller_midi_out has reported a MainStage screen control for this CC (real parameter name/
+-- value/absolute position); LEGACY, the original ENCODER_NAME/CC-number/encoderValue-only layout,
+-- for a control with no screen control assigned. See docs/config-lua-history.md#controller_midi_out-
+-- reports-real-parameter-values-with-a-screen-control-2026-09-17 for the layout table and rules.
 --
 -- v6 replaced a hand-drawn 20-segment ring with the native Knob bitmap (BMP_GROUP_KNOB, verified on
 -- hardware - see docs/implementing-sl-link.md §5) once Plot Bitmap was confirmed working; see
@@ -1419,6 +1440,14 @@ POPUP_LABEL_Y = POPUP_KNOB_Y + BMP_ICON_H + 12 -- below the ring, 12px gap under
 -- plus POPUP_MUTE_HINT_GAP.
 POPUP_HINT_Y = POPUP_LABEL_Y + 27 + POPUP_MUTE_HINT_GAP
 
+-- FEEDBACK-mode geometry (a screen control exists - see the layout table this file's comment above
+-- points at). Exact y's from that table; panel spans POPUP_Y..POPUP_Y+POPUP_H (35-204). Legacy-mode
+-- geometry (POPUP_KNOB_Y etc. above) is untouched.
+POPUP_FB_TITLE_Y = 45
+POPUP_FB_KNOB_Y = 70
+POPUP_FB_VALUE_Y = 132
+POPUP_FB_HINT_Y = 165
+
 -- Knob icon's inner hole width - UNMEASURED, an eyeball fit against hardware pending a real
 -- measurement (see docs/config-lua-history.md#value-moved-inside-the-ring-2026-09-14). Must stay
 -- narrower than the hole: Write Text's background box fills its whole maxWidth, so a box wider
@@ -1450,6 +1479,16 @@ popupControlName = nil
 popupCcNumber = nil
 popupValue = 0
 popupMax = 127 -- popupValue's scale for popup_knob_icon's ring fill; 127 for CC encoders, 100 for Master Volume
+-- FEEDBACK-mode state: eid currently showing (nil for the Master Volume popup, which never has
+-- feedback - it has no CC), whether it currently has MainStage feedback, and the reported name/
+-- sanitised valueString to paint when it does. popupModeIsFeedback tracks which geometry was last
+-- PAINTED (not just "has feedback"), so a mode switch mid-session can be detected and re-erased -
+-- see show_popup()'s mode-switch check.
+popupEid = nil
+popupFeedbackActive = false
+popupFeedbackName = nil
+popupValueString = nil
+popupModeIsFeedback = nil
 -- displayMode to restore when the popup dismisses - set by show_popup() to whatever displayMode was
 -- BEFORE it switched to 'popup' (only on the transition into showing, never overwritten while
 -- already active - see show_popup's popupActive guard), consumed once by dismiss_popup().
@@ -1495,7 +1534,7 @@ end
 -- MARK: - Per-region memoization above): a caller that can't avoid overlap must clear all the
 -- shared ids' drawn[] entries together so they resend as one unit.
 POPUP_ERASE_OVERLAP_IDS = { 'popupBg', 'popupBorderTop', 'popupBorderBottom', 'popupBorderLeft',
-	'popupBorderRight', 'popupLabel', 'popupKnob', 'popupValue', 'popupMuteHint' }
+	'popupBorderRight', 'popupTitle', 'popupLabel', 'popupKnob', 'popupValue', 'popupMuteHint' }
 
 -- Default entry behaviour for every popup (called once by enter_popup_mode(), never by a mid-session
 -- repaint): one filled rect over the WHOLE panel (border included), queued first, so the previous
@@ -1527,6 +1566,14 @@ function draw_popup_label(name, ccNumber)
 		POPUP_LABEL_FG[3], POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
+-- FEEDBACK mode only: the MainStage screen control's own name, above the ring (see the layout
+-- table). SIZE_SMALL, unlike popupLabel's SIZE_MEDIUM - it is a secondary line here, not the star.
+function draw_popup_title(name)
+	draw_text('popupTitle', name or '', POPUP_CONTENT_X, POPUP_FB_TITLE_Y, POPUP_CONTENT_W,
+		ALIGN_CENTER, SIZE_SMALL, POPUP_LABEL_FG[1], POPUP_LABEL_FG[2], POPUP_LABEL_FG[3],
+		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
+end
+
 -- Same SIZE_MEDIUM/non-zero-maxWidth safety as draw_popup_label above - a 1-3 digit value is even
 -- shorter than the label, so truncation is not in play here either.
 -- value may be nil - shown as '--', never as a number (defensive; no current caller passes nil
@@ -1541,13 +1588,22 @@ function draw_popup_value(value)
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
--- Master Volume popup only (show=true when popupCcNumber is nil - see draw_popup_label above).
--- Non-zero maxWidth text is self-clearing (same idiom as draw_popup_label), so a control switch
--- mid-popup that turns the hint off draws blank text over it once rather than leaving it stale - see
--- paint_popup_screen's call site.
-function draw_popup_mute_hint(show)
+-- FEEDBACK mode only: MainStage's own formatted valueString, below the ring rather than inside it
+-- (a real string like '+0,0 dB' does not fit POPUP_VALUE_W's narrow ring-hole box) - full content
+-- width, same idiom as draw_popup_label.
+function draw_popup_feedback_value(text)
+	return draw_text('popupValue', text or '', POPUP_CONTENT_X, POPUP_FB_VALUE_Y, POPUP_CONTENT_W,
+		ALIGN_CENTER, SIZE_MEDIUM, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
+		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
+end
+
+-- y differs by mode (POPUP_HINT_Y legacy / POPUP_FB_HINT_Y feedback - see paint_popup_legacy/
+-- paint_popup_feedback). Non-zero maxWidth text is self-clearing (same idiom as draw_popup_label),
+-- so a control switch that turns the hint off draws blank text over it once rather than leaving it
+-- stale - see the paint_popup_* call sites.
+function draw_popup_mute_hint(show, y)
 	local text = show and 'PUSH TO MUTE/UNMUTE' or ''
-	draw_text('popupMuteHint', text, POPUP_CONTENT_X, POPUP_HINT_Y, POPUP_CONTENT_W,
+	draw_text('popupMuteHint', text, POPUP_CONTENT_X, y, POPUP_CONTENT_W,
 		ALIGN_CENTER, SIZE_SMALL, 120, 120, 120,
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
@@ -1561,34 +1617,39 @@ function popup_knob_icon(value)
 	return math.floor(value * (BMP_KNOB_LEVELS - 1) / popupMax)
 end
 
--- NON-OVERLAP RULE escape hatch (see MARK: - Per-region memoization above): popupValue draws inside
--- this bitmap's rect, so a knob redraw (which repaints the whole icon) must always be queued BEFORE
--- its value. queue_message coalesces a same-regionId update at its OLD queue position, so a
--- popupValue queued earlier (a prior value-only change) would otherwise stay ahead of a knob queued
--- just now - drop it and force it to re-append behind the knob. See
+-- y is POPUP_KNOB_Y (legacy) or POPUP_FB_KNOB_Y (feedback) - see the two paint_popup_* functions.
+-- legacyOverlap is true only for legacy mode, where popupValue draws INSIDE this bitmap's rect
+-- (feedback mode's popupValue sits below the ring - no overlap, see draw_popup_feedback_value).
+--
+-- NON-OVERLAP RULE escape hatch (see MARK: - Per-region memoization above), legacy mode only: a knob
+-- redraw (which repaints the whole icon) must always be queued BEFORE its value. queue_message
+-- coalesces a same-regionId update at its OLD queue position, so a popupValue queued earlier (a
+-- prior value-only change) would otherwise stay ahead of a knob queued just now - drop it and force
+-- it to re-append behind the knob. See
 -- docs/config-lua-history.md#popup-value-wiped-by-its-own-ring-redraw-2026-09-17.
-function draw_popup_knob(value)
+function draw_popup_knob(value, y, legacyOverlap)
 	local icon = popup_knob_icon(value)
-	local queued = draw_bitmap('popupKnob', POPUP_KNOB_X, POPUP_KNOB_Y, BMP_GROUP_KNOB, icon,
+	local queued = draw_bitmap('popupKnob', POPUP_KNOB_X, y, BMP_GROUP_KNOB, icon,
 		POPUP_KNOB_FG[1], POPUP_KNOB_FG[2], POPUP_KNOB_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
-	if queued then
+	if queued and legacyOverlap then
 		drop_queued_region('popupValue')
 		drawn['popupValue'] = nil
 	end
 	return queued
 end
 
--- Throttled entry point for popupValue - call this instead of draw_popup_value() directly (see
--- POPUP_VALUE_THROTTLE_TICKS). `drawn['popupValue'] == nil` means either the very first paint or
--- draw_popup_knob() just invalidated it for an icon change; either way that must win over the
--- throttle immediately, or the value stays blank/stale until the throttle next allows a repaint.
+-- Throttled entry point for popupValue - call this instead of draw_popup_value()/
+-- draw_popup_feedback_value() directly (see POPUP_VALUE_THROTTLE_TICKS). `drawn['popupValue'] ==
+-- nil` means either the very first paint or draw_popup_knob() just invalidated it for an icon
+-- change; either way that must win over the throttle immediately, or the value stays blank/stale
+-- until the throttle next allows a repaint.
 function queue_popup_value()
 	local forced = drawn['popupValue'] == nil
 	if forced or timerTicks - popupValueLastPaintTick >= POPUP_VALUE_THROTTLE_TICKS then
 		popupValueLastPaintTick = timerTicks
 		popupValueDirty = false
-		draw_popup_value(popupValue)
+		if popupFeedbackActive then draw_popup_feedback_value(popupValueString) else draw_popup_value(popupValue) end
 	else
 		popupValueDirty = true
 	end
@@ -1602,28 +1663,92 @@ function flush_popup_value_if_due()
 	if timerTicks - popupValueLastPaintTick < POPUP_VALUE_THROTTLE_TICKS then return end
 	popupValueLastPaintTick = timerTicks
 	popupValueDirty = false
-	draw_popup_value(popupValue)
+	if popupFeedbackActive then draw_popup_feedback_value(popupValueString) else draw_popup_value(popupValue) end
+end
+
+-- CC-mapped encoder (eid, in ENCODER_CC's domain) -> the BID of its own paired push button, for the
+-- mute indicator below. The joystick pairs with its own centre press; every zone encoder and B pair
+-- with their own push button.
+ENCODER_MUTE_BUTTON = {
+	[EID_ZONE1] = BID_ZONE1_ENC, [EID_ZONE2] = BID_ZONE2_ENC,
+	[EID_ZONE3] = BID_ZONE3_ENC, [EID_ZONE4] = BID_ZONE4_ENC,
+	[EID_JOYSTICK] = BID_JOY_MAIN, [EID_B] = BID_B_ENC,
+}
+
+-- Ring LED id for an encoder's mute state - only A and B have a ring LED (WLID_A_ENC/WLID_B_ENC);
+-- Zone 1-4 and the joystick show the mute hint text only, no LED.
+ENCODER_MUTE_WLID = { [EID_B] = WLID_B_ENC }
+
+-- Last White LED state actually sent per WLID, so paint_popup_feedback (called on every popup
+-- repaint) only queues msg_white_led on a real change, not on every tick - same idea as drawn[]
+-- memoization but for LED state rather than display content.
+encoderMuteLedSent = {}
+
+-- Returns (showHint, muted) for eid's paired push button: showHint is true only when that button
+-- itself has MainStage feedback (see controller_midi_out) AND its reported name contains 'Mute'
+-- (case-insensitive); muted is that feedback's absolute value ~= 0, meaningful only when showHint is
+-- true. See docs/config-lua-history.md#controller_midi_out-reports-real-parameter-values-with-a-
+-- screen-control-2026-09-17.
+function encoder_mute_state(eid)
+	local bid = eid and ENCODER_MUTE_BUTTON[eid]
+	local buttonCc = bid and BUTTON_CC[bid]
+	local cc = buttonCc and CC_MAP[buttonCc.short]
+	local fb = cc and midiOutFeedback[cc]
+	if fb == nil or fb.name == nil or not fb.name:lower():find('mute', 1, true) then
+		return false, false
+	end
+	return true, (fb.value or 0) ~= 0
+end
+
+-- LEGACY-mode content: unchanged from before controller_midi_out reported real feedback - the
+-- physical encoder's name/CC number, encoderValue's ring, and the mute hint for Master Volume only.
+function paint_popup_legacy()
+	draw_popup_label(popupControlName, popupCcNumber)
+	draw_popup_knob(popupValue, POPUP_KNOB_Y, true)
+	queue_popup_value()
+	if popupCcNumber == nil then
+		draw_popup_mute_hint(true, POPUP_HINT_Y)
+	elseif drawn['popupMuteHint'] ~= nil then
+		draw_popup_mute_hint(false, POPUP_HINT_Y) -- clear a stale hint left by a Master Volume popup before a control switch
+	end
+end
+
+-- FEEDBACK-mode content: the reported MainStage parameter name/value, and the mute hint/LED driven
+-- by the paired push button's own feedback (encoder_mute_state) rather than Master Volume.
+function paint_popup_feedback()
+	draw_popup_title(popupFeedbackName)
+	draw_popup_knob(popupValue, POPUP_FB_KNOB_Y, false)
+	queue_popup_value()
+
+	local showHint, muted = encoder_mute_state(popupEid)
+	if showHint then
+		draw_popup_mute_hint(true, POPUP_FB_HINT_Y)
+	elseif drawn['popupMuteHint'] ~= nil then
+		draw_popup_mute_hint(false, POPUP_FB_HINT_Y)
+	end
+
+	local wlid = ENCODER_MUTE_WLID[popupEid]
+	if wlid ~= nil and showHint then
+		local ledOn = not muted -- lit = unmuted, matching the A ring's existing convention
+		if encoderMuteLedSent[wlid] ~= ledOn then
+			encoderMuteLedSent[wlid] = ledOn
+			queue_message(msg_white_led(wlid, ledOn))
+		end
+	end
 end
 
 -- The popup's own content-painting function, in the same family as paint_zoom_screen()/
 -- paint_list_screen() - dispatched to from enter_popup_mode() (once per popup 'session') and from
--- paint_screen() (an ordinary content-driven repaint that lands while
--- displayMode=='popup', e.g. a patch-name change arriving mid-popup - see paint_screen's 3-way
--- branch). Reads popupControlName/popupCcNumber/popupValue rather than taking parameters, since
--- both call sites dispatch generically by mode with no encoder id in hand. Safe to call repeatedly -
--- every draw_* call underneath is per-id memoized (drawn[]), so a call that changes nothing queues
--- nothing (see show_popup's repeat-call path, which relies on exactly this).
+-- paint_screen() (an ordinary content-driven repaint that lands while displayMode=='popup', e.g. a
+-- patch-name change arriving mid-popup - see paint_screen's 3-way branch). Reads popup* module state
+-- rather than taking parameters, since both call sites dispatch generically by mode with no encoder
+-- id in hand. Safe to call repeatedly - every draw_* call underneath is per-id memoized (drawn[]), so
+-- a call that changes nothing queues nothing (see show_popup's repeat-call path, which relies on
+-- exactly this).
 function paint_popup_screen()
 	draw_popup_bg()
 	draw_popup_border()
-	draw_popup_label(popupControlName, popupCcNumber)
-	draw_popup_knob(popupValue)
-	queue_popup_value()
-	if popupCcNumber == nil then
-		draw_popup_mute_hint(true)
-	elseif drawn['popupMuteHint'] ~= nil then
-		draw_popup_mute_hint(false) -- clear a stale hint left by a Master Volume popup before a control switch
-	end
+	if popupFeedbackActive then paint_popup_feedback() else paint_popup_legacy() end
 end
 
 -- Call from handle_sl_frame's IT_ENCODER branch, right after encoderValue[eid] is updated, for
@@ -1631,33 +1756,47 @@ end
 --
 -- FIRST call of a popup 'session' (popupActive false -> true) runs enter_popup_mode() ONCE, whose
 -- own paint dispatch does the drawing. REPEAT calls (continued scrubbing) must NOT re-run it - that
--- would re-invalidate everything on every tick. Instead call paint_popup_screen() directly: its
--- draw_* calls are per-id memoized, so unchanged content (background/border/label while
--- popupCcNumber matches) queues nothing and only a genuinely new value re-queues - a DIFFERENT
--- control taking over redraws the label for free, since its CC number differs.
+-- would re-invalidate everything on every tick, UNLESS the mode itself is switching (legacy <->
+-- feedback - two feedback controls share geometry, so switching between THEM needs no re-erase):
+-- the two modes place popupValue (and popupTitle/popupLabel) at different y positions, and
+-- memoization never clears a position a region vacated - see
+-- docs/config-lua-history.md#controller_midi_out-reports-real-parameter-values-with-a-screen-control-2026-09-17.
 function show_popup(eid)
 	local control = ENCODER_CC[eid]
 	if control == nil then return end
 
+	local cc = CC_MAP[control]
+	local fb = midiOutFeedback[cc]
+
+	popupEid = eid
 	popupControlName = ENCODER_NAME[eid]
-	popupCcNumber = CC_MAP[control]
-	popupValue = encoderValue[eid]
+	popupCcNumber = cc
+	popupValue = fb and fb.value or encoderValue[eid]
 	popupMax = 127
+	popupFeedbackActive = fb ~= nil
+	popupFeedbackName = fb and fb.name
+	popupValueString = fb and fb.valueString
 	popupLastActivityIdleTick = idleTicks
 
 	if not popupActive then
 		popupPreviousMode = displayMode
 		popupActive = true
+		popupModeIsFeedback = popupFeedbackActive
 		enter_popup_mode()
 	else
+		if popupModeIsFeedback ~= popupFeedbackActive then
+			draw_popup_erase()
+			popupModeIsFeedback = popupFeedbackActive
+		end
 		paint_popup_screen()
 		request_quick_rearm()
 	end
 end
 
--- EID_A's popup: same structure as show_popup, but for Master Volume (no CC number, 0-100 scale)
--- rather than an ENCODER_CC entry.
+-- EID_A's popup: same structure as show_popup, but for Master Volume (no CC number, 0-100 scale,
+-- never has feedback - Master Volume is not a CC_MAP entry) rather than an ENCODER_CC entry.
 function show_master_volume_popup()
+	popupEid = nil
 	popupControlName = 'Main Volume'
 	popupCcNumber = nil
 	-- The value being SENT (masterVolume), tracked locally only - never reseeded from
@@ -1665,13 +1804,19 @@ function show_master_volume_popup()
 	-- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12.
 	popupValue = masterVolume
 	popupMax = 100
+	popupFeedbackActive = false
 	popupLastActivityIdleTick = idleTicks
 
 	if not popupActive then
 		popupPreviousMode = displayMode
 		popupActive = true
+		popupModeIsFeedback = false
 		enter_popup_mode()
 	else
+		if popupModeIsFeedback ~= false then
+			draw_popup_erase()
+			popupModeIsFeedback = false
+		end
 		paint_popup_screen()
 		request_quick_rearm()
 	end
@@ -3017,30 +3162,44 @@ end
 --   select a set:      patchname="2. Jacob & Sons / Joseph's Coat"  setname='Joseph key2'
 --                       (setname is actually the CONCERT)
 --   select the concert: patchname='Joseph key2'                    setname=''
--- PROBE ONLY - dumps what MainStage actually passes, so the popup can be wired to real parameter
--- values instead of config.lua's own accumulator. Returns nil on every path: nil passes the outbound
--- event through unchanged, and this callback must not alter what reaches the SL88. Remove once the
--- capture is recorded. See docs/mainstage-device-scripts.md#3-callbacks.
-probeMidiOutSeen = {} -- probe only: last logged tuple per status/data1, to cut the repeat flood
+-- Reverse of CC_MAP (CC number -> CC_MAP key), built once at load so controller_midi_out - which
+-- fires constantly, thousands of times per idle session - never scans CC_MAP per call. See
+-- docs/config-lua-history.md#controller_midi_out-reports-real-parameter-values-with-a-screen-control-2026-09-17.
+CC_NUMBER_TO_KEY = {}
+for key, cc in pairs(CC_MAP) do CC_NUMBER_TO_KEY[cc] = key end
 
+-- Per-CC cached MainStage feedback (name/valueString/absolute 0-127 value/color), keyed by CC
+-- number. Populated only for a control MainStage has assigned a screen control to - every other CC
+-- has no entry here and the popup falls back to legacy mode. Read by show_popup() and
+-- encoder_mute_state().
+midiOutFeedback = {}
+
+-- MainStage's own outbound-MIDI-feedback callback: reports the screen control assigned to a control
+-- we emit, if any (name/valueString/color, absolute value in midiEvent[2]) - see the spec section
+-- above for the hardware capture. Returns nil on EVERY path: our own outbound SL Link SysEx passes
+-- through this same callback, and returning a table here would alter or swallow it.
 function controller_midi_out(midiEvent, name, valueString, color)
-	if midiEvent == nil then return nil end
-	local status, d1, d2 = midiEvent[0], midiEvent[1], midiEvent[2]
-	local col = 'nil'
-	if type(color) == 'table' then
-		col = string.format('%.2f/%.2f/%.2f', color.r or -1, color.g or -1, color.b or -1)
-	elseif color ~= nil then
-		col = type(color) .. ':' .. tostring(color)
+	if midiEvent == nil or midiEvent[0] ~= CC_STATUS then return nil end
+
+	local cc = midiEvent[1]
+	local key = CC_NUMBER_TO_KEY[cc]
+	if key == nil then return nil end -- not one of ours
+
+	-- MainStage reports the literal string 'Unmapped' (see
+	-- Native Instruments/KOMPLETE KONTROL S61.device/config.lua:173 in the 4.3.1 bundle) for a
+	-- control with no screen control assigned, same as nil - either way, no feedback for this CC.
+	if name == nil or name == 'Unmapped' then
+		midiOutFeedback[cc] = nil
+		return nil
 	end
-	local line = string.format('midi_out st=%02X d1=%s d2=%s name=%s valueString=%s color=%s',
-		status or 0, tostring(d1), tostring(d2), tostring(name), tostring(valueString), col)
-	-- Log only when the tuple for this control CHANGES: one static button produced 2,929 identical
-	-- calls in the first capture, which is why every shipped implementation caches before drawing.
-	local key = tostring(status) .. ':' .. tostring(d1)
-	if probeMidiOutSeen[key] ~= line then
-		probeMidiOutSeen[key] = line
-		slog(line)
+
+	local value = midiEvent[2]
+	local cleanValueString = sanitize_value_string(valueString)
+	local prev = midiOutFeedback[cc]
+	if prev and prev.name == name and prev.valueString == cleanValueString and prev.value == value then
+		return nil -- unchanged tuple - a single static control reports this identically thousands of times
 	end
+	midiOutFeedback[cc] = { name = name, valueString = cleanValueString, value = value, color = color }
 	return nil
 end
 
