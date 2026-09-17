@@ -40,13 +40,16 @@
 --     its own settle guard. See docs/config-lua-history.md#the-clear-screen-ban-and-its-lift.
 --  4. Never truncate strings. Max Width truncates visually in pixels and
 --     appends '...' itself.
---  5. Display messages must be paced to at most ONE per timer tick. The
---     Identification Query's reply is itself an inbound SL frame, so an
---     ungated flush_pending() re-enters controller_midi_in and drains the
---     whole queue at the ~2ms round-trip rate instead of the timer's rate -
---     FLUSH_SOON_MS looks like it paces this but does not. The SL88 silently
---     drops a display message that arrives while it is still painting the
---     previous one. See displayFlushReady.
+--  5. Queued messages must be paced to at most ONE per timer tick - ALL of
+--     them, not just display. The Identification Query's reply is itself an
+--     inbound SL frame, so an ungated flush_pending() re-enters
+--     controller_midi_in and drains the queue at the ~2ms round-trip rate
+--     instead of the timer's rate - FLUSH_SOON_MS looks like it paces this
+--     but does not. The SL88 silently drops a message that arrives while it
+--     is still handling the previous one. Pacing only display and MVOL_WRITE
+--     is what made one-shot LED/mute/READ messages vanish and forced a 3x
+--     repeat workaround. See slFlushReady (shared permit) and
+--     displayFlushReady (display's extra settle guard).
 --  6. Never call settriggertimer unconditionally from a handler that runs on
 --     EVERY inbound MIDI event. controller_midi_in calls rearm_timer() for
 --     every note on/off, not just SL frames, and settriggertimer is a
@@ -130,13 +133,6 @@ BID_A_ENC = 0x0B -- SLButtonID.aEncoderButton; toggles Master Volume mute (handl
 -- White LED id for the A encoder's ring (IT_LED). Confirmed on hardware 2026-09-17 by sweeping
 -- every id; the full table is in docs/implementing-sl-link.md §5. B's ring is 0x0B.
 WLID_A_ENC = 0x0A
-
--- The mute WRITE and the A encoder LED are each sent this many times per gesture, rather than once.
--- Both are one-shot (unlike a volume turn, which re-sends every tick and so survives a drop for
--- free); one dropped copy is otherwise unrecoverable - see
--- docs/config-lua-history.md#mute-and-led-writes-are-dropped-from-mainstage-2026-09-14. 3 survives up
--- to two drops. See queue_repeated()'s comment for how the repeats reach the wire as separate sends.
-MUTE_LED_REPEATS = 3
 
 -- Button press-event byte, e[9] of an IT_BUTTON frame
 PRESS_SHORT = 0x01
@@ -564,6 +560,16 @@ mvolFlushReady = true
 -- slow turn's write is never tagged, so it stays at exactly the pre-existing one-per-tick pace.
 mvolFastWritesThisTick = 0
 
+-- The per-tick permit EVERY queued message needs, on top of any class-specific flag above - granted
+-- once per tick by controller_timer_trigger, consumed by flush_pending the moment any queued message
+-- goes out. flush_pending runs once per tick PLUS once per inbound SL frame, so before this flag the
+-- per-class flags bounded display and MVOL_WRITE to one per tick but let LED, MVOL_READ and protocol
+-- messages leave 2ms apart within the same tick - which is what made one-shot messages vanish and
+-- forced the 3x repeat workaround. See docs/config-lua-history.md#one-sl-message-per-tick-2026-09-17.
+-- The fast-turn MVOL bypass is the single documented exception. Starts true for the same reason
+-- displayFlushReady does.
+slFlushReady = true
+
 -- A full-screen Clear Screen plausibly takes the panel longer to paint than an ordinary text line.
 -- Set to MODE_SWITCH_SETTLE_TICKS by flush_pending() the moment it emits a Clear Screen;
 -- decremented by controller_timer_trigger, which withholds that tick's displayFlushReady grant
@@ -731,6 +737,31 @@ function queue_message(msg, regionId)
 	table.insert(pendingMessages, msg)
 end
 
+-- Removes a single pending queue entry by regionId, without touching drawn[] - unlike
+-- drop_queued_display() below, which drops every display message. Used when a region must be
+-- forced back to the tail instead of coalescing at its old position - see draw_popup_knob.
+-- Drops every queued Identification Request. They carry no regionId (they must never coalesce), so
+-- drop_queued_region cannot reach them - see handle_identification_approved for why they must go.
+function drop_queued_identification_requests()
+	local keep = {}
+	for i = 1, #pendingMessages do
+		local m = pendingMessages[i]
+		if not (m[8] == IT_IDENTIFICATION and m[9] == ID_REQUEST) then
+			keep[#keep + 1] = m
+		end
+	end
+	pendingMessages = keep
+end
+
+function drop_queued_region(regionId)
+	for i = 1, #pendingMessages do
+		if pendingMessages[i].regionId == regionId then
+			table.remove(pendingMessages, i)
+			return
+		end
+	end
+end
+
 -- Queues `count` fresh messages from `builder()`, one call per copy, all with regionId nil so
 -- PER-REGION COALESCING (queue_message's own comment above) never collapses them back into one -
 -- that would defeat the whole point of repeating a one-shot write. `builder` is called once per
@@ -786,17 +817,27 @@ function flush_pending(includeQuery)
 	-- never reorder relative to OTHER paced messages of the same kind - only an unblocked message can
 	-- jump ahead of ones still waiting on their flag. Still at most one queued message per flush, still
 	-- paired with the query below.
+	local function is_fast_bypass(msg)
+		-- Fast-turn bypass: a write tagged .fast (handle_sl_frame) may still go out once
+		-- mvolFlushReady is spent, up to MVOL_FAST_WRITES_PER_TICK - 1 of them this tick window - see
+		-- mvolFastWritesThisTick. The one exception to the one-message-per-tick rule below.
+		return msg[8] == IT_MASTER_VOLUME and msg[9] == MVOL_WRITE
+			and msg.fast and mvolFastWritesThisTick < MVOL_FAST_WRITES_PER_TICK - 1
+	end
+
 	local function is_paced_and_blocked(msg)
+		if not slFlushReady then return not is_fast_bypass(msg) end
 		if msg[8] == IT_DISPLAY then return not displayFlushReady end
 		if msg[8] == IT_MASTER_VOLUME and msg[9] == MVOL_WRITE then
-			if mvolFlushReady then return false end
-			-- Fast-turn bypass: a write tagged .fast (handle_sl_frame) may still go out, up to
-			-- MVOL_FAST_WRITES_PER_TICK - 1 of them this tick window - see mvolFastWritesThisTick.
-			return not (msg.fast and mvolFastWritesThisTick < MVOL_FAST_WRITES_PER_TICK - 1)
+			return not (mvolFlushReady or is_fast_bypass(msg))
 		end
 		return false
 	end
 
+	-- The keepalive takes its turn in queue order like everything else. slFlushReady caps the drain at
+	-- one message per tick, but a non-empty queue rearms the timer at FLUSH_SOON_MS, so a keepalive
+	-- behind a full repaint waits milliseconds, not the ~5s that would cost us the APP list (rule 6,
+	-- docs/config-lua-history.md#the-unconditional-keepalive).
 	local index, m = nil, nil
 	if #pendingMessages > 0 then
 		local head = pendingMessages[1]
@@ -833,6 +874,9 @@ function flush_pending(includeQuery)
 				mvolFastWritesThisTick = mvolFastWritesThisTick + 1
 			end
 		end
+		-- Spend the shared one-message-per-tick permit. Later fast-turn writes in the same tick don't
+		-- need it back: with it spent they go out via is_paced_and_blocked's fast-bypass branch.
+		slFlushReady = false
 		flushCounter = flushCounter + 1
 		-- `tick=` ties this FLUSH to controller_timer_trigger's tick print, so a captured log reads as
 		-- 'tick N emitted region R, depth D' - flushes can also happen off-tick (inbound-frame flushes
@@ -1155,18 +1199,23 @@ function tuple_equal(a, b, n)
 	return true
 end
 
+-- Returns true when it actually queued a message, false when memoization skipped it as unchanged -
+-- callers that need to know whether a redraw really landed (e.g. draw_popup_knob, below) use this
+-- instead of re-deriving it from drawn[id] themselves.
 function draw_text(id, text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, bb)
 	local t = { text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, bb }
-	if tuple_equal(drawn[id], t, #t) then return end
+	if tuple_equal(drawn[id], t, #t) then return false end
 	drawn[id] = t
 	queue_message(msg_write_text(text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, bb), id)
+	return true
 end
 
 function draw_rect(id, x, y, w, h, r, g, b)
 	local t = { x, y, w, h, r, g, b }
-	if tuple_equal(drawn[id], t, #t) then return end
+	if tuple_equal(drawn[id], t, #t) then return false end
 	drawn[id] = t
 	queue_message(msg_draw_rect(x, y, w, h, r, g, b), id)
+	return true
 end
 
 -- Like draw_text/draw_rect, but for Plot Bitmap. A bitmap fully replaces the pixels beneath it -
@@ -1174,9 +1223,10 @@ end
 -- Write Text redraw is, and satisfies the non-overlap rule above on its own.
 function draw_bitmap(id, x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb)
 	local t = { x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb }
-	if tuple_equal(drawn[id], t, #t) then return end
+	if tuple_equal(drawn[id], t, #t) then return false end
 	drawn[id] = t
 	queue_message(msg_plot_bitmap(x, y, groupIndex, iconIndex, fr, fg, fb, br, bg, bb), id)
+	return true
 end
 
 -- MARK: - Screen
@@ -1486,7 +1536,7 @@ end
 -- (see its declaration above) so Write Text's opaque background box never crosses into the ring.
 function draw_popup_value(value)
 	local text = value and tostring(value) or '--'
-	draw_text('popupValue', text, POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
+	return draw_text('popupValue', text, POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
 		ALIGN_CENTER, SIZE_MEDIUM, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
@@ -1512,20 +1562,21 @@ function popup_knob_icon(value)
 end
 
 -- NON-OVERLAP RULE escape hatch (see MARK: - Per-region memoization above): popupValue draws inside
--- this bitmap's rect, and the icon has only 13 fill levels against 128 possible values, so a knob
--- redraw is not always paired with a value change - clear popupValue's memo so a knob redraw (which
--- repaints the whole icon, wiping the centre) always forces the value to resend on the same tick.
--- Compares just the icon index (draw_bitmap's tuple field 4) since it is the only field that varies
--- at this call site. See docs/config-lua-history.md#value-moved-inside-the-ring-2026-09-14.
+-- this bitmap's rect, so a knob redraw (which repaints the whole icon) must always be queued BEFORE
+-- its value. queue_message coalesces a same-regionId update at its OLD queue position, so a
+-- popupValue queued earlier (a prior value-only change) would otherwise stay ahead of a knob queued
+-- just now - drop it and force it to re-append behind the knob. See
+-- docs/config-lua-history.md#popup-value-wiped-by-its-own-ring-redraw-2026-09-17.
 function draw_popup_knob(value)
 	local icon = popup_knob_icon(value)
-	local prior = drawn['popupKnob']
-	if prior == nil or prior[4] ~= icon then
-		drawn['popupValue'] = nil
-	end
-	draw_bitmap('popupKnob', POPUP_KNOB_X, POPUP_KNOB_Y, BMP_GROUP_KNOB, icon,
+	local queued = draw_bitmap('popupKnob', POPUP_KNOB_X, POPUP_KNOB_Y, BMP_GROUP_KNOB, icon,
 		POPUP_KNOB_FG[1], POPUP_KNOB_FG[2], POPUP_KNOB_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
+	if queued then
+		drop_queued_region('popupValue')
+		drawn['popupValue'] = nil
+	end
+	return queued
 end
 
 -- Throttled entry point for popupValue - call this instead of draw_popup_value() directly (see
@@ -2075,6 +2126,10 @@ end
 
 function handle_identification_approved()
 	state = STATE_LISTED
+	-- Any Identification Request still queued is now obsolete, and at one message per tick a deep
+	-- queue can hold one for many ticks - it would go out after approval and draw a REJECTED that
+	-- restarts the whole retry cycle. See docs/config-lua-history.md#stale-identification-requests-2026-09-17.
+	drop_queued_identification_requests()
 	-- Cleanly cancels any pending reidentify-wait: this instanceID is now confirmed good, so a LATER
 	-- rejection (a fresh re-init down the line) should get the full retry budget again, not whatever
 	-- was left over.
@@ -2093,6 +2148,14 @@ function handle_identification_rejected(reason)
 	slog('<- IDENTIFICATION REJECTED (reason ' ..
 		string.format('%02X', reason or 0) .. ') for instance ' ..
 		string.format('%02X', instanceID))
+
+	-- We only ever send an Identification Request while identifying, so a rejection arriving once we
+	-- are already approved is the echo of a stale request, not a real collision - acting on it would
+	-- tear down a working session. See the same anchor as handle_identification_approved.
+	if state == STATE_LISTED or state == STATE_ACTIVE or state == STATE_STANDBY then
+		slog('  ignored - already approved, so this is a stale request echo')
+		return
+	end
 
 	if reidentifyRetriesLeft > 0 then
 		reidentifyRetriesLeft = reidentifyRetriesLeft - 1
@@ -2130,8 +2193,8 @@ end
 -- a differing READ reply) and once at session start to establish the LED - see enter_active_session.
 function set_master_mute(muted)
 	masterMuted = muted
-	queue_repeated(function() return msg_white_led(WLID_A_ENC, not muted) end, MUTE_LED_REPEATS)
-	slog('-> A ENCODER LED x' .. MUTE_LED_REPEATS .. ': ' .. (muted and 'muted' or 'unmuted'))
+	queue_message(msg_white_led(WLID_A_ENC, not muted))
+	slog('-> A ENCODER LED: ' .. (muted and 'muted' or 'unmuted'))
 end
 
 -- Builds, logs and queues a Master Volume READ to sync masterVolume with the hardware's current
@@ -2156,8 +2219,8 @@ function check_mvol_settle()
 	mvolSettlePending = false
 
 	local vol = masterVolume
-	queue_repeated(function() return msg_master_volume_write(vol) end, MUTE_LED_REPEATS)
-	slog('-> MASTER VOLUME SETTLE: resend x' .. MUTE_LED_REPEATS .. ' vol=' .. vol)
+	queue_message(msg_master_volume_write(vol))
+	slog('-> MASTER VOLUME SETTLE: resend vol=' .. vol)
 
 	if mvolLastSettleReadTick == nil or (timerTicks - mvolLastSettleReadTick) >= MVOL_SETTLE_READ_MIN_TICKS then
 		mvolLastSettleReadTick = timerTicks
@@ -2445,21 +2508,20 @@ end
 -- SHORT toggles mute alone (VOL=MVOL_IGNORE_VOL so the volume is untouched); LONG resets volume to
 -- MVOL_SEED_DEFAULT (plain write, no MUTE byte - see msg_master_volume_write's own comment) and
 -- separately unmutes, satisfying the project's LONG-must-never-be-a-no-op rule (see
--- handle_zoom_button's own comment) since it always lands on a known volume/mute pair. The mute
--- write itself is repeated via queue_repeated() - see MUTE_LED_REPEATS' declaration.
+-- handle_zoom_button's own comment) since it always lands on a known volume/mute pair.
 function handle_a_encoder_button(pressKind)
 	if pressKind == PRESS_LONG then
 		masterVolume = MVOL_SEED_DEFAULT
 		local writeMsg = msg_master_volume_write(MVOL_SEED_DEFAULT)
 		slog('-> A BUTTON LONG: reset volume ' .. dump_bytes(writeMsg))
 		queue_message(writeMsg, 'mvol')
-		queue_repeated(function() return msg_master_volume_mute_write(MVOL_IGNORE_VOL, false) end, MUTE_LED_REPEATS)
-		slog('-> A BUTTON LONG: unmute x' .. MUTE_LED_REPEATS)
+		queue_message(msg_master_volume_mute_write(MVOL_IGNORE_VOL, false))
+		slog('-> A BUTTON LONG: unmute')
 		set_master_mute(false)
 	else
 		local newMuted = not masterMuted
-		queue_repeated(function() return msg_master_volume_mute_write(MVOL_IGNORE_VOL, newMuted) end, MUTE_LED_REPEATS)
-		slog('-> A BUTTON SHORT: mute toggle x' .. MUTE_LED_REPEATS .. ' -> ' .. tostring(newMuted))
+		queue_message(msg_master_volume_mute_write(MVOL_IGNORE_VOL, newMuted))
+		slog('-> A BUTTON SHORT: mute toggle -> ' .. tostring(newMuted))
 		set_master_mute(newMuted)
 	end
 	show_master_volume_popup()
@@ -2614,6 +2676,9 @@ function controller_timer_trigger()
 	-- declaration.
 	mvolFlushReady = true
 	mvolFastWritesThisTick = 0 -- fresh fast-turn budget for this tick window - see its own declaration
+	-- The shared permit: one queued message leaves per tick, whatever its itemType. See its
+	-- declaration for why the per-class flags above were not enough.
+	slFlushReady = true
 	-- Only ticks that arrive at the full keepalive cadence count towards the periodic refresh; fast
 	-- drain ticks must not.
 	local draining = has_pending()

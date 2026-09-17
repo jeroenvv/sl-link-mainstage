@@ -2245,16 +2245,18 @@ delta is 3 or more. That is a deliberate trade — loosening the pacing further 
 unevenness it was added to fix, and crowding the budget the Identification Query and keepalive share,
 which has previously got the app dropped from the APP list.
 
-**Still unexplained, and now worked around rather than understood:** single messages from MainStage are
-silently dropped, while byte-identical ones from `Scripts/probe-mute-led.swift` always arrive. Ruled out
-by hardware test: the message bytes (spec-verified against upstream `docs/hardware-io.md`), and the
-`[message, query]` pairing shape `flush_pending()` uses. The workaround throughout is repetition —
-mute, the LED, and the settled volume are each sent three times.
+**Single messages from MainStage are silently dropped**, while byte-identical ones from
+`Scripts/probe-mute-led.swift` always arrive. Ruled out by hardware test: the message bytes
+(spec-verified against upstream `docs/hardware-io.md`), and the `[message, query]` pairing shape
+`flush_pending()` uses. The workaround throughout is repetition — mute, the LED, and the settled volume
+are each sent three times. **Diagnosed and the workaround removed on 2026-09-17 — see
+[One SL message per tick](#one-sl-message-per-tick-2026-09-17) below.**
 
 **The settle read-back produced no data.** Seven `SETTLE: resend x3` lines in the capture and zero
 `settled volume confirmed` / `MISMATCH` lines, so the diagnostic READ either never went out or was never
-answered. The re-send half works; the verification half is silent and remains unproven. Worth chasing
-before anyone relies on that oracle.
+answered. **Resolved on 2026-09-17:** it went out every time and was dropped every time, for the same
+pacing reason as the mute and LED writes — it now answers reliably. See
+[One SL message per tick](#one-sl-message-per-tick-2026-09-17).
 
 ## Every LED id swept and identified (2026-09-17)
 
@@ -2285,3 +2287,184 @@ each gave the correct table. Nothing in the log distinguished the two runs; both
 send errors, because an LED has no reply and no log signal of its own. When the only oracle is a person
 watching the hardware, slow the sweep down rather than widening it, and confirm any surprising negative
 at a slower pace before recording it.
+
+## One SL message per tick (2026-09-17)
+
+The 3x repeat workaround above was hiding a bug in our own pacing. `MUTE_LED_REPEATS` is gone and the
+mute write, the LED write and the settle write are single sends again.
+
+**Root cause.** `flush_pending`'s `is_paced_and_blocked` only ever gated two itemTypes — `IT_DISPLAY`
+and `IT_MASTER_VOLUME`/`MVOL_WRITE`. `IT_LED`, `IT_SYSTEM`, `IT_IDENTIFICATION` and `MVOL_READ` hit the
+final `return false` and could never be blocked. That would be harmless if `flush_pending` ran once per
+tick, but it runs **once per tick plus once per inbound SL frame**, from four call sites. During a
+gesture that is 2-3 flushes per tick window, so an ungated message left on whichever flush came first —
+typically the query-reply flush trailing ~2ms behind the tick flush.
+
+A traced mute press put the three LED writes on the wire at **2ms, 37ms and 39ms**. Two of them land
+inside the inbound round-trip window, immediately behind another SL message — the exact condition rule
+5 says the SL88 silently drops. `Scripts/probe-mute-led.swift` wins because it sends one message with
+nothing in front of it. The asymmetry was ours, not the hardware's.
+
+Two facts corroborate it. The **settle READ produced zero replies** (seven `SETTLE: resend x3` lines,
+no confirm/mismatch lines) — `MVOL_READ` was explicitly unpaced, and harness section 54 *asserted* that
+as intended. And the **volume path never showed the bug**, because it writes dozens of times per
+gesture, so a dropped write is corrected by the next tick's.
+
+**The fix.** `slFlushReady`, a shared per-tick permit that every queued message needs on top of its
+class flag, granted once per tick by `controller_timer_trigger` and consumed by whichever queued
+message goes out. The `.fast` Master Volume bypass is the single exception, so fast turns keep their
+feel. The trailing Identification Query is untouched — it is appended rather than dequeued, so the
+session clock is unaffected.
+
+**Rejected: giving the keepalive priority for the permit.** Tried first, to protect rule 6's ~5s
+APP-list timeout now that only one message leaves per tick. It was over-cautious and delayed the
+settled popup value by a tick. A non-empty queue rearms the timer at `FLUSH_SOON_MS` (35ms), so a
+keepalive behind a full repaint waits milliseconds, not seconds; it takes its turn in queue order like
+everything else.
+
+**Harness.** New section 73: one queued message per tick across mixed itemTypes, and a ledger assertion
+that every message removed from `pendingMessages` appears in the flush's `.midi` — sections 3 and 8
+drain the queue but discard the return value, so they could not tell "emitted" from "dropped on the
+floor". Section 54's `a Master Volume READ is never paced` survives as written (it is about
+`mvolFlushReady` specifically); (d) in section 73 asserts the READ *is* paced by the shared permit.
+Mutation-tested by a separate agent across eight mutations; no assertion passed when it should have
+failed.
+
+**Confirmed on hardware (2026-09-17).** SL88 MK2, script 2.2.0, one session of 1,275 log lines.
+
+The settle READ — the sharpest signal, silent on every prior run — produced **five**
+`settled volume confirmed` lines (vol=75, 78, 77, 60, 86), each preceded by its `MASTER VOLUME READ
+reply`. The login-time READ was answered too (`07 00 3C 00` → `vol=60 mute=0`). The diagnosis is
+right: the READ was always going out and always being dropped for arriving behind another message.
+
+Everything else the fix touched held. Mute and unmute each cost **one** LED write and **one** mute
+write — `FLUSH #33 ... msg=F0 00 20 1A 16 03 33 02 0A 01 F7` is the whole of the login LED paint,
+where three copies used to go. A LONG press reset to 60 and unmuted, twice. The queue drained strictly
+one message per tick throughout (ticks 25-34 emptied an 8-deep repaint one message at a time). The
+keepalive never missed a flush and the app was not dropped from the APP list, which was the regression
+the rejected keepalive-priority variant existed to guard against — it was not needed.
+
+Jeroen's verdict: **"looks good ... reaction speed is much better"**, with one regression, below.
+
+## Popup value wiped by its own ring redraw (2026-09-17)
+
+Found at the hardware gate for the change above, and caused by it. In some situations the number
+inside the popup's ring gauge is no longer visible.
+
+`popupValue` draws *inside* `popupKnob`'s rect — the documented escape hatch to the non-overlap rule —
+so a knob redraw repaints the whole icon and wipes the centre. The number must therefore always be
+painted **after** its knob.
+
+**Root cause: `queue_message` coalesces in place.** An entry already in `pendingMessages` keeps its
+original queue position when a later draw updates it (`pendingMessages[i] = msg; return`). So:
+
+1. A paint where only the value changed queues `popupValue` at position *k*.
+2. Before *k* drains, a paint where the icon changed appends `popupKnob` at the tail — and the paired
+   `queue_popup_value()` coalesces the value back into position *k*, now **ahead of its own knob**.
+3. The value is emitted first, the knob repaints over it and wipes the centre, and nothing follows.
+
+The hardware trace shows exactly that: `FLUSH #116 tick=115 regionId=popupValue`, then
+`FLUSH #119 tick=118 regionId=popupKnob`, then nothing, then dismissal with the centre still blank.
+Invisible before the change above, because both messages left inside one display refresh and the
+order never showed; under one-message-per-tick they are three ticks apart.
+
+**Rejected: a `popupValueOwed` debt flag.** Built first, on the theory that the paired value redraw was
+being *stranded* by the repaint throttle or by `dismiss_popup`. It cannot be: `draw_popup_knob` has one
+caller, `paint_popup_screen`, with `queue_popup_value()` on the next line, so the pairing is
+unconditionally synchronous — and `draw_popup_knob` already cleared `drawn['popupValue']` in the same
+branch, so the new flag was always in lockstep with the existing signal and changed no behaviour. The
+mutation pass proved it: deleting the owed bypass from `flush_popup_value_if_due`, and deleting the
+`owed` term from `queue_popup_value`'s `forced` condition, each left the suite green at 442/442. The
+flag was untestable because it was unreachable as a distinct state. Worth recording as a case where the
+tests were green, the mechanism was plausible, and the fix was a placebo — the independent mutation
+pass is what caught it.
+
+**Not fixed by relaxing the pacing.** Letting the pair share a flush or a tick is precisely what rule 5
+forbids and what the change above removed. The value trailing its knob by one tick (~35ms at
+`FLUSH_SOON_MS`) is fine; being emitted *before* it is not. The fix drops any pending `popupValue`
+entry when the knob re-queues, so the value is appended behind it instead of coalescing into an older,
+earlier slot.
+
+## Follow-up: can settings be stored and read back? (registered 2026-09-17)
+
+Idea, not yet investigated: wire the SETTINGS button to a settings screen that edits the CC mappings
+live, instead of them being constants in `CC_MAP` that require an edit-and-redeploy.
+
+The screen itself is the easy half — it is another paint function in the same family as the list and
+zoom screens, and SETTINGS already reaches the host as a button event. The open question is
+**persistence**, and there are two candidate homes for it, neither confirmed:
+
+- **Host side.** MainStage's Lua sandbox has no `io`/`os` and no `UserDefaults` equivalent, so nothing
+  currently survives a script reload except what MainStage re-derives — which is why `instanceID` is
+  generated per run rather than persisted. Worth checking with the `probe-mainstage-internals` skill
+  whether the host exposes any storage or preference API at all before assuming it does not; that
+  skill reads the shipped application rather than guessing.
+- **Keyboard side.** The SL88 stores its own configuration, and the spec's Hardware/Pedal Settings
+  queries are currently out of scope for this project. If those can be read and written over SL Link,
+  the mappings could live on the keyboard, which would also make them survive a machine change. Start
+  from the upstream spec's `docs/` tables rather than from our code.
+
+Without persistence the screen is still worth something (edits lasting the session), but the value is
+mostly in the mappings sticking, so settle the storage question first.
+
+**Note the versioning consequence:** changing a CC mapping is what the policy calls a **major** bump,
+because the 34 CCs are MIDI-Learned by hand in MainStage and renumbering one silently breaks a working
+rig. A settings screen that lets the user re-map at runtime makes that breakage a user action rather
+than a release event, so it needs a deliberate answer for what happens to an existing concert's learned
+assignments.
+
+## Stale identification requests (2026-09-17)
+
+Found on the second hardware run of the one-message-per-tick change, when Jeroen reported the app
+dropping out of the APP list during slow encoder turns.
+
+Not the keepalive, which was the predicted risk: the capture showed 338 ticks contiguous and 338
+identification replies, so the session clock never faltered. The cause was the startup queue. During
+identification the script queues an Identification Request, retries it, and queues more. Approval then
+arrives — but at one message per tick a 15-deep startup queue still holds those requests, and they go
+out *after* approval:
+
+```
+FLUSH #11 tick=10 ... queueDepthAfter=7 msg=F0 00 20 1A 16 03 11 7F 00 ... F7   <- stale Request
+<- IDENTIFICATION REJECTED (reason 00) for instance 11
+re-identify retry 1/2 as (03 11)
+```
+
+Each stale request draws a `REJECTED (reason 00)`, `handle_identification_rejected` treats it as a real
+DeviceID collision, and re-identification restarts — tearing down a working session. The cycle repeated
+several times in one run. Before the pacing change the queue drained several messages per tick, so the
+stale requests cleared around approval rather than long after it.
+
+**Two fixes, because either alone leaves a hole.** `handle_identification_approved` now purges queued
+Identification Requests (`drop_queued_identification_requests` — they carry no regionId, so
+`drop_queued_region` cannot reach them). And `handle_identification_rejected` ignores a rejection that
+arrives once the state is already LISTED/ACTIVE/STANDBY: a Request is only ever sent while identifying,
+so a rejection after approval can only be a stale echo. A rejection *during* identification still takes
+the retry path unchanged.
+
+Harness section 76 covers all three behaviours, mutation-checked: removing the purge fails the purge
+assertions, and removing the state guard fails the stale-echo assertions.
+
+**Worth noting as a pattern.** This is the second latent defect that one-message-per-tick pacing
+exposed rather than caused — the first being the popup value/knob ordering. Slowing the drain turned
+queue contents that used to clear within a tick into state that persists for many, and anything queued
+speculatively during a transition now outlives the transition.
+
+## Second hardware run: both fixes confirmed (2026-09-17)
+
+Re-ran after the popup ordering fix and the stale-request purge. SL88 MK2, script 2.2.0, 419 ticks.
+
+- **Zero post-approval rejections.** Two rejections before approval (the ordinary startup retry), then
+  `APPROVED as 03 40`, then `LOGIN`, and nothing after. The stale-echo guard in
+  `handle_identification_rejected` never had to fire, because the purge stopped the requests reaching
+  the wire at all - the guard stays as a backstop for any path that queues one later.
+- **Popup ordering holds.** Every `popupKnob` flush is followed by its `popupValue` flush, never the
+  reverse; the temporary pairing diagnostic fired 25 times and resolved every time. Jeroen confirmed
+  the number stays visible through slow turns, fast turns and an abrupt stop.
+- Settle READ confirmed twice, no mismatches. 419 ticks contiguous, 419 keepalive replies.
+
+**Unlooked-for improvement: logout via CANCEL reacts much quicker.** Jeroen noticed this without being
+asked to look for it. It follows from the same change - logout is a request/confirm pair, and the
+confirm used to queue behind whatever else was pending and, before the pacing fix, could be one of the
+messages lost to arriving behind another. Worth remembering that the pacing work paid off somewhere
+nobody was measuring.
