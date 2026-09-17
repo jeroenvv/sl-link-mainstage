@@ -988,6 +988,9 @@ do
 		encoderValue[EID_ZONE1] = 64
 		handle_sl_frame(encoder_frame(EID_ZONE1, 0x40 + delta))
 		local out = flush_pending_cc()
+		-- nil is the "nothing emitted" return (a net-zero delta) - not an empty table, which would
+		-- swallow the inbound event. See flush_pending_cc's own comment.
+		if out == nil then return nil end
 		return cc_value_in(out.midi, ENC1_CC)
 	end
 
@@ -996,6 +999,35 @@ do
 	check('encoder tick +5 emits wire value 0x05', tick(5) == 0x05)
 	check('encoder tick -5 emits wire value 0x7B', tick(-5) == 0x7B)
 	check('encoder tick of 0 emits nothing', tick(0) == nil)
+
+	-- THE REGRESSION: a net-zero batch must return nil, never { midi = {} } - an empty table swallows
+	-- the inbound event and costs the round its SL flush for no MIDI at all.
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	encoderValue[EID_ZONE1] = 64
+	handle_sl_frame(encoder_frame(EID_ZONE1, 0x40 + 1))
+	handle_sl_frame(encoder_frame(EID_ZONE1, 0x40 - 1))
+	check('THE REGRESSION: a net-zero CC batch returns nil, not an event-swallowing empty table',
+		flush_pending_cc() == nil)
+
+	-- ...and controller_midi_in must then FALL THROUGH to the SL flush, not return that nil. A
+	-- net-zero batch pre-empting the flush costs the round its display drain and its keepalive query.
+	do
+		local savedState, savedPending = state, pendingMessages
+		state, pendingMessages = STATE_ACTIVE, {}
+		pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+		queue_relative_cc('ENC1_TURN', 1)
+		queue_relative_cc('ENC1_TURN', -1) -- queued, nets to zero, so the batch emits nothing
+		local inOut = controller_midi_in(encoder_frame(EID_ZONE2, 0x40), 'LINK')
+		local sawQuery = false
+        if inOut ~= nil and inOut.midi ~= nil then
+            for _, m in ipairs(split_messages(inOut.midi)) do
+                if item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_QUERY then sawQuery = true end
+            end
+        end
+		check('THE REGRESSION: a net-zero CC batch still lets the round take its SL flush',
+			sawQuery == true)
+		state, pendingMessages = savedState, savedPending
+	end
 
 	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
 	encoderValue[EID_ZONE1] = 125
@@ -1031,7 +1063,8 @@ do
 	queue_relative_cc('ENC1_TURN', 1)
 	queue_relative_cc('ENC1_TURN', -1)
 	out = flush_pending_cc()
-	check('a +1 then a -1 before a flush emits nothing for that control', #out.midi == 0)
+	-- nil, not { midi = {} }: an empty table would swallow the inbound event - see flush_pending_cc.
+	check('a +1 then a -1 before a flush emits nothing for that control', out == nil)
 	check('a net-zero relative control does not remain queued', pendingCCOrder[1] == nil)
 
 	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
@@ -1088,7 +1121,7 @@ do
 	state = STATE_ACTIVE
 	handle_sl_frame(button_frame(BID_CANCEL, PRESS_SHORT))
 	local ccOut = flush_pending_cc()
-	check('Cancel button emits no CC (BID_CANCEL is not in BUTTON_CC)', #ccOut.midi == 0)
+	check('Cancel button emits no CC (BID_CANCEL is not in BUTTON_CC)', ccOut == nil)
 
 	local function system_frame(func)
 		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_SYSTEM, func, 0xF7)
