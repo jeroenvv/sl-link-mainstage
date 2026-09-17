@@ -4505,10 +4505,17 @@ do
 	for _, m in ipairs(pendingMessages) do if m.regionId == 'popupMuteHint' then hintMsg = m end end
 	check("a paired-button name containing 'Mute' (any case) shows the hint, carrying the PUSH TO MUTE/UNMUTE text",
 		hintMsg ~= nil and write_text_body(hintMsg):find('MUTE', 1, true) ~= nil)
+	local savedStateS81 = state
+	state = STATE_ACTIVE -- flush_mute_leds is ACTIVE-only; see its own guard
 	flush_mute_leds()
-	local ledMsg
-	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then ledMsg = m end end
-	check('Zone 1 has no ring LED - no White LED message even with a mute mapping', ledMsg == nil)
+	-- Zone 1 has no ring LED at all, so no White LED message may target one. B's ring is separately
+	-- dark-asserted every session, so the check is 'nothing addressed to a Zone ring', not 'no LED'.
+	local zoneLed = false
+	check('ENCODER_MUTE_WLID has no entry for Zone 1', ENCODER_MUTE_WLID[EID_ZONE1] == nil)
+	for _, m in ipairs(pendingMessages) do
+		if item_type_of(m) == IT_LED and m[9] ~= WLID_B_ENC then zoneLed = true end
+	end
+	check('Zone 1 has no ring LED - no White LED message targets one', zoneLed == false)
 
 	-- (c) B DOES have a ring LED (WLID_B_ENC): paired button unmuted (value 0) -> hint shown AND the
 	-- LED is lit (state=1), matching the A ring's existing 'lit = unmuted' convention.
@@ -4569,7 +4576,25 @@ do
 	end
 	check('THE REGRESSION: controller_timer_trigger itself drains the mute LEDs',
 		bLed ~= nil and bLed[9] == WLID_B_ENC and bLed[10] == 0)
-	timerPending, framesSinceTick = savedTimerPending, savedFrames
+	-- (h) No mute mapping at all: the ring must be driven DARK, not skipped. Skipping left a lamp
+	-- lit from a previous concert or session.
+	encoderMuteLedSent, pendingMessages = {}, {}
+	midiOutFeedback[bCc] = nil -- no mute feedback for B any more
+	flush_mute_leds()
+	bLed = nil
+	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then bLed = m end end
+	check('THE REGRESSION: with no mute mapping the ring is driven dark, not left alone',
+		bLed ~= nil and bLed[9] == WLID_B_ENC and bLed[10] == 0)
+
+	-- (i) A fresh session must forget what was last sent, so the rings are re-established rather
+	-- than trusting a memo from before the SL88 confirmed us.
+	encoderMuteLedSent = { [WLID_B_ENC] = true }
+	state = STATE_LISTED
+	enter_active_session()
+	check('entering an active session clears the mute LED memo',
+		next(encoderMuteLedSent) == nil)
+
+	timerPending, framesSinceTick, state = savedTimerPending, savedFrames, savedStateS81
 
 	drawn, pendingMessages, popupEid, popupFeedbackActive, popupFeedbackName, popupValueString,
 		popupValue, midiOutFeedback, encoderMuteLedSent =
