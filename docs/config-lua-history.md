@@ -2245,11 +2245,12 @@ delta is 3 or more. That is a deliberate trade — loosening the pacing further 
 unevenness it was added to fix, and crowding the budget the Identification Query and keepalive share,
 which has previously got the app dropped from the APP list.
 
-**Still unexplained, and now worked around rather than understood:** single messages from MainStage are
-silently dropped, while byte-identical ones from `Scripts/probe-mute-led.swift` always arrive. Ruled out
-by hardware test: the message bytes (spec-verified against upstream `docs/hardware-io.md`), and the
-`[message, query]` pairing shape `flush_pending()` uses. The workaround throughout is repetition —
-mute, the LED, and the settled volume are each sent three times.
+**Single messages from MainStage are silently dropped**, while byte-identical ones from
+`Scripts/probe-mute-led.swift` always arrive. Ruled out by hardware test: the message bytes
+(spec-verified against upstream `docs/hardware-io.md`), and the `[message, query]` pairing shape
+`flush_pending()` uses. The workaround throughout is repetition — mute, the LED, and the settled volume
+are each sent three times. **Diagnosed and the workaround removed on 2026-09-17 — see
+[One SL message per tick](#one-sl-message-per-tick-2026-09-17) below.**
 
 **The settle read-back produced no data.** Seven `SETTLE: resend x3` lines in the capture and zero
 `settled volume confirmed` / `MISMATCH` lines, so the diagnostic READ either never went out or was never
@@ -2285,3 +2286,51 @@ each gave the correct table. Nothing in the log distinguished the two runs; both
 send errors, because an LED has no reply and no log signal of its own. When the only oracle is a person
 watching the hardware, slow the sweep down rather than widening it, and confirm any surprising negative
 at a slower pace before recording it.
+
+## One SL message per tick (2026-09-17)
+
+The 3x repeat workaround above was hiding a bug in our own pacing. `MUTE_LED_REPEATS` is gone and the
+mute write, the LED write and the settle write are single sends again.
+
+**Root cause.** `flush_pending`'s `is_paced_and_blocked` only ever gated two itemTypes — `IT_DISPLAY`
+and `IT_MASTER_VOLUME`/`MVOL_WRITE`. `IT_LED`, `IT_SYSTEM`, `IT_IDENTIFICATION` and `MVOL_READ` hit the
+final `return false` and could never be blocked. That would be harmless if `flush_pending` ran once per
+tick, but it runs **once per tick plus once per inbound SL frame**, from four call sites. During a
+gesture that is 2-3 flushes per tick window, so an ungated message left on whichever flush came first —
+typically the query-reply flush trailing ~2ms behind the tick flush.
+
+A traced mute press put the three LED writes on the wire at **2ms, 37ms and 39ms**. Two of them land
+inside the inbound round-trip window, immediately behind another SL message — the exact condition rule
+5 says the SL88 silently drops. `Scripts/probe-mute-led.swift` wins because it sends one message with
+nothing in front of it. The asymmetry was ours, not the hardware's.
+
+Two facts corroborate it. The **settle READ produced zero replies** (seven `SETTLE: resend x3` lines,
+no confirm/mismatch lines) — `MVOL_READ` was explicitly unpaced, and harness section 54 *asserted* that
+as intended. And the **volume path never showed the bug**, because it writes dozens of times per
+gesture, so a dropped write is corrected by the next tick's.
+
+**The fix.** `slFlushReady`, a shared per-tick permit that every queued message needs on top of its
+class flag, granted once per tick by `controller_timer_trigger` and consumed by whichever queued
+message goes out. The `.fast` Master Volume bypass is the single exception, so fast turns keep their
+feel. The trailing Identification Query is untouched — it is appended rather than dequeued, so the
+session clock is unaffected.
+
+**Rejected: giving the keepalive priority for the permit.** Tried first, to protect rule 6's ~5s
+APP-list timeout now that only one message leaves per tick. It was over-cautious and delayed the
+settled popup value by a tick. A non-empty queue rearms the timer at `FLUSH_SOON_MS` (35ms), so a
+keepalive behind a full repaint waits milliseconds, not seconds; it takes its turn in queue order like
+everything else.
+
+**Harness.** New section 73: one queued message per tick across mixed itemTypes, and a ledger assertion
+that every message removed from `pendingMessages` appears in the flush's `.midi` — sections 3 and 8
+drain the queue but discard the return value, so they could not tell "emitted" from "dropped on the
+floor". Section 54's `a Master Volume READ is never paced` survives as written (it is about
+`mvolFlushReady` specifically); (d) in section 73 asserts the READ *is* paced by the shared permit.
+Mutation-tested by a separate agent across eight mutations; no assertion passed when it should have
+failed.
+
+**Unproven until hardware.** The mechanism above is inferred from the code and the timing, not
+measured on the device. The sharpest single signal will be the settle READ: if it starts producing
+`settled volume confirmed` / `MISMATCH` lines where it has always been silent, the diagnosis is right.
+If single sends still vanish, the pacing theory is wrong — restore the repeats and say so rather than
+raising the count.

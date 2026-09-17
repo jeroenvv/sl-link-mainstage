@@ -184,6 +184,7 @@ do
 	pendingMessages = {}
 	invalidate_all()
 	displayFlushReady = true
+	slFlushReady = true
 	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:flush-budget')
 
 	local out = flush_pending(true)
@@ -213,10 +214,12 @@ do
 
 	local flushes, cap = 0, 200
 	displayFlushReady = true
+	slFlushReady = true
 	while has_pending() and flushes <= cap do
 		flushes = flushes + 1
 		flush_pending(true)
 		displayFlushReady = true
+		slFlushReady = true
 	end
 
 	check(
@@ -353,6 +356,7 @@ do
 	lastPaintTick = 0
 	timerPending = false
 	displayFlushReady = true
+	slFlushReady = true
 
 	local originalPaintScreen = paint_screen
 	local paintCalls = 0
@@ -373,6 +377,7 @@ do
 		while has_pending() and drains < drainCap do
 			flush_pending(true)
 			displayFlushReady = true
+			slFlushReady = true
 			drains = drains + 1
 		end
 	end
@@ -429,6 +434,7 @@ do
 	pendingMessages = {}
 	invalidate_all()
 	displayFlushReady = true
+	slFlushReady = true
 	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:two-display-a')
 	queue_message(msg_draw_rect(20, 20, 10, 10, 0, 0, 0), 'test:two-display-b')
 
@@ -455,6 +461,7 @@ do
 	pendingMessages = {}
 	invalidate_all()
 	displayFlushReady = true
+	slFlushReady = true
 	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:display-then-keepalive')
 	queue_message(msg_system(SYS_DEVICE_NOTIFICATION))
 
@@ -474,6 +481,7 @@ do
 	pendingMessages = {}
 	invalidate_all()
 	displayFlushReady = false
+	slFlushReady = true -- tick permit fresh; only the display grant is spent
 	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:display-blocked-keepalive-behind')
 	queue_message(msg_system(SYS_DEVICE_NOTIFICATION))
 
@@ -491,6 +499,7 @@ do
 	)
 	check('the keepalive jumps ahead of a display message it cannot dequeue yet', k2 == 1)
 	displayFlushReady = true
+	slFlushReady = true
 end
 
 -- MARK: - 12. queue_message: regionId coalesces, protocol messages never do
@@ -1395,9 +1404,9 @@ do
 		return reads
 	end
 
-	-- controller_midi_in() flushes what it queues before returning (see flush_pending's "one message
-	-- per flush" rule), so by the time this function returns pendingMessages is already empty - the
-	-- queued read must be found in the returned flush output instead.
+	-- controller_midi_in() flushes only ONE queued message before returning (flush_pending's
+	-- one-message-per-tick permit, slFlushReady), and entering ACTIVE queues the LED alongside the
+	-- read - so the read may still be sitting in pendingMessages. Count both places.
 	local function mvol_reads_in(bytes)
 		local reads = {}
 		for _, m in ipairs(split_messages(bytes or {})) do
@@ -1415,6 +1424,7 @@ do
 	pendingMessages = {}
 	local out = controller_midi_in(qreply(), 'LINK')
 	local reads = mvol_reads_in(out and out.midi)
+	for _, m in ipairs(mvol_reads()) do reads[#reads + 1] = m end
 	check('ID_QUERY reply into STATE_ACTIVE queues exactly one Master Volume read', #reads == 1)
 	if #reads == 1 then
 		checkHex(
@@ -1723,6 +1733,7 @@ do
 
 	-- (a) A Master Volume write goes out PAIRED with the query, like any other message.
 	pendingMessages = {}
+	slFlushReady = true
 	queue_message(msg_master_volume_write(77), 'mvol')
 	local out = flush_pending(true)
 	check('a Master Volume flush returns output', out ~= nil and out.midi ~= nil)
@@ -1737,6 +1748,7 @@ do
 	-- confirming the revert didn't touch this path either.
 	pendingMessages = {}
 	displayFlushReady = true
+	slFlushReady = true
 	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:mvol-query-regression')
 	out = flush_pending(true)
 	check('a display flush still returns output', out ~= nil and out.midi ~= nil)
@@ -1811,6 +1823,7 @@ do
 	-- REGARDLESS of the write-pacing gate's state, not the gate's own behaviour - see section 54 for
 	-- that.
 	mvolFlushReady = true
+	slFlushReady = true
 
 	for _ = 1, 20 do
 		controller_midi_in(encoder_frame(0x41), 'LINK') -- delta +1 each tick
@@ -2450,6 +2463,7 @@ do
 	-- NEWEST value, not a stale intermediate one.
 	pendingMessages = {}
 	mvolFlushReady = true
+	slFlushReady = true
 	mvolFastWritesThisTick = 0 -- this section tests mvolFlushReady alone; the fast-turn bypass is section 72's concern
 	queue_message(msg_master_volume_write(10), 'mvol')
 	queue_message(msg_master_volume_write(20), 'mvol')
@@ -2475,6 +2489,7 @@ do
 	-- (c) The next tick re-grants the gate (mirrors controller_timer_trigger's unconditional
 	-- mvolFlushReady = true) - the write left over from (b) now goes out, still carrying its value.
 	mvolFlushReady = true
+	slFlushReady = true
 	mvolFastWritesThisTick = 0
 	out = flush_pending(false)
 	writes = mvol_writes_in(out and out.midi)
@@ -2486,6 +2501,7 @@ do
 	-- exactly like flush_pending's existing display/keepalive scan-forward (section 11).
 	pendingMessages = {}
 	mvolFlushReady = false
+	slFlushReady = true -- tick permit fresh; only the mvol grant is spent
 	mvolFastWritesThisTick = 0
 	queue_message(msg_master_volume_write(55), 'mvol')
 	queue_message(msg_system(SYS_DEVICE_NOTIFICATION))
@@ -2503,6 +2519,7 @@ do
 	-- itemType - confirms the gate keys off func, not just itemType, so a READ is never paced either.
 	pendingMessages = {}
 	mvolFlushReady = false
+	slFlushReady = true -- tick permit fresh; only the mvol grant is spent
 	mvolFastWritesThisTick = 0
 	queue_message(msg_master_volume_read())
 	out = flush_pending(false)
@@ -3230,6 +3247,7 @@ do
 	popupMax = 127
 	displayFlushReady = true
 	mvolFlushReady = true
+	slFlushReady = true
 	displaySettleTicks = 0
 	timerPending = false
 	framesSinceTick = 0
@@ -3388,14 +3406,14 @@ do
 	check('A button SHORT does not change masterVolume', masterVolume == 77)
 	check('A button SHORT flips masterMuted to true', masterMuted == true)
 	local muteWrites = mute_writes()
-	check('A button SHORT queues MUTE_LED_REPEATS separate mute writes', #muteWrites == MUTE_LED_REPEATS)
+	check('A button SHORT queues exactly one mute write', #muteWrites == 1)
 	checkHex(
 		'...carrying VOL=MVOL_IGNORE_VOL (0x7F, ignored since > 0x64) and MUTE=1',
 		muteWrites[1],
 		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 7F 01 F7'
 	)
 	local ledWrites = led_writes()
-	check('A button SHORT queues MUTE_LED_REPEATS separate LED writes', #ledWrites == MUTE_LED_REPEATS)
+	check('A button SHORT queues exactly one LED write', #ledWrites == 1)
 	checkHex(
 		'...carrying WLID_A_ENC and state=0 (off, muted)',
 		ledWrites[1],
@@ -3407,7 +3425,7 @@ do
 	handle_sl_frame(button_frame(BID_A_ENC, PRESS_SHORT))
 	check('A second SHORT flips masterMuted back to false', masterMuted == false)
 	muteWrites = mute_writes()
-	check('...and still queues MUTE_LED_REPEATS mute writes', #muteWrites == MUTE_LED_REPEATS)
+	check('...and still queues exactly one mute write', #muteWrites == 1)
 	checkHex(
 		'...and the mute write now carries MUTE=0',
 		muteWrites[1],
@@ -3437,14 +3455,14 @@ do
 		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 3C F7'
 	)
 	local unmuteWrites = mute_writes()
-	check('A button LONG also queues MUTE_LED_REPEATS separate unmute writes', #unmuteWrites == MUTE_LED_REPEATS)
+	check('A button LONG also queues exactly one unmute write', #unmuteWrites == 1)
 	checkHex(
 		'...carrying VOL=MVOL_IGNORE_VOL and MUTE=0',
 		unmuteWrites[1],
 		'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 7F 00 F7'
 	)
 	ledWrites = led_writes()
-	check('A button LONG (from muted) also queues MUTE_LED_REPEATS LED writes', #ledWrites == MUTE_LED_REPEATS)
+	check('A button LONG (from muted) also queues exactly one LED write', #ledWrites == 1)
 	checkHex(
 		'...carrying state=1 (on, unmuted)',
 		ledWrites[1],
@@ -3459,8 +3477,8 @@ do
 	masterMuted = false
 	handle_sl_frame(button_frame(BID_A_ENC, PRESS_LONG))
 	ledWrites = led_writes()
-	check('A button LONG resends MUTE_LED_REPEATS LED writes even when mute was already false',
-		#ledWrites == MUTE_LED_REPEATS)
+	check('A button LONG resends one LED write even when mute was already false',
+		#ledWrites == 1)
 
 	masterVolume, masterMuted, pendingMessages, popupActive, displayMode, popupPreviousMode, timerPending =
 		savedMasterVolume, savedMasterMuted, savedPending, savedPopupActive, savedDisplayMode,
@@ -3499,14 +3517,14 @@ do
 	masterMuted = false
 	handle_sl_frame(mvol_read_frame(50, 1))
 	check('READ reply with MUTE=1 seeds masterMuted true', masterMuted == true)
-	check('...and queues MUTE_LED_REPEATS LED writes reflecting it', #led_writes() == MUTE_LED_REPEATS)
+	check('...and queues exactly one LED write reflecting it', #led_writes() == 1)
 
 	-- (b) READ reply WITH MUTE=0 seeds masterMuted false from a true starting point.
 	pendingMessages = {}
 	masterMuted = true
 	handle_sl_frame(mvol_read_frame(50, 0))
 	check('READ reply with MUTE=0 seeds masterMuted false', masterMuted == false)
-	check('...and queues MUTE_LED_REPEATS LED writes reflecting it', #led_writes() == MUTE_LED_REPEATS)
+	check('...and queues exactly one LED write reflecting it', #led_writes() == 1)
 
 	-- (c) READ reply WITHOUT a MUTE byte leaves masterMuted at whatever it already was (the assumed
 	-- default, per docs/implementing-sl-link.md §7's optional-trailing-byte rule) - and queues no LED
@@ -3609,8 +3627,8 @@ do
 	idleTicks = 100 + MVOL_SETTLE_IDLE_TICKS
 	check_mvol_settle()
 	local writesB = settle_writes()
-	check('(b) at MVOL_SETTLE_IDLE_TICKS of quiet: settle re-sends MUTE_LED_REPEATS copies',
-		#writesB == MUTE_LED_REPEATS)
+	check('(b) at MVOL_SETTLE_IDLE_TICKS of quiet: settle re-sends the value once',
+		#writesB == 1)
 	for i = 1, #writesB do
 		checkHex('(b) settle re-send #' .. i .. ' carries the settled value (60=0x3C), no MUTE byte',
 			writesB[i], 'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 3C F7')
@@ -3644,8 +3662,8 @@ do
 	idleTicks = idleAtGesture + MVOL_SETTLE_IDLE_TICKS
 	check_mvol_settle()
 	local writesD = settle_writes()
-	check('(d) settling again after resumed motion re-sends MUTE_LED_REPEATS copies of the NEW value',
-		#writesD == MUTE_LED_REPEATS)
+	check('(d) settling again after resumed motion re-sends the NEW value once',
+		#writesD == 1)
 	checkHex('(d) ...carrying VOL=51 (0x33)', writesD[1], 'F0 00 20 1A 16 03 ' .. id2() .. ' 07 01 33 F7')
 
 	-- (e) The diagnostic READ is rate-limited over MVOL_SETTLE_READ_MIN_TICKS of timerTicks: a second
@@ -3669,7 +3687,7 @@ do
 	mvolSettlePending = true
 	check_mvol_settle()
 	check('(e) a settle inside the READ rate-limit window still re-sends the write',
-		#settle_writes() == MUTE_LED_REPEATS)
+		#settle_writes() == 1)
 	check('(e) ...but queues no further READ', #read_messages() == 0)
 
 	pendingMessages = {}
@@ -3743,8 +3761,8 @@ do
 	pendingMessages = {}
 	handle_login()
 	local writes = led_writes()
-	check('a login confirmation while already ACTIVE (self-heal) resends the LED MUTE_LED_REPEATS times',
-		#writes == MUTE_LED_REPEATS)
+	check('a login confirmation while already ACTIVE (self-heal) resends the LED once',
+		#writes == 1)
 	if #writes > 0 then
 		checkHex(
 			'...carrying WLID_A_ENC and state=1 (on, unmuted)',
@@ -3760,7 +3778,7 @@ do
 	pendingMessages = {}
 	handle_login()
 	writes = led_writes()
-	check('...and MUTE_LED_REPEATS times again when the current state is muted', #writes == MUTE_LED_REPEATS)
+	check('...and once again when the current state is muted', #writes == 1)
 	if #writes > 0 then
 		checkHex(
 			'...this time carrying state=0 (off, muted)',
@@ -3786,7 +3804,7 @@ do
 	handle_login()
 	writes = led_writes()
 	check('a login confirmation that itself triggers the ACTIVE transition sends the LED exactly once (not doubled)',
-		#writes == MUTE_LED_REPEATS)
+		#writes == 1)
 
 	state, masterMuted, pendingMessages = savedState, savedMasterMuted, savedPending
 end
@@ -3843,6 +3861,7 @@ do
 	pendingMessages = {}
 	timerPending = false
 	mvolFlushReady = true
+	slFlushReady = true
 	mvolFastWritesThisTick = 0
 	masterVolume = 50
 	local out = controller_midi_in(encoder_frame(0x41), 'LINK') -- delta +1
@@ -3860,6 +3879,7 @@ do
 	-- stays spent (mvolFlushReady is never re-granted here - only controller_timer_trigger does that).
 	pendingMessages = {}
 	mvolFlushReady = false
+	slFlushReady = true -- tick permit fresh; only the mvol grant is spent
 	mvolFastWritesThisTick = 0
 	masterVolume = 50
 	out = controller_midi_in(encoder_frame(0x48), 'LINK') -- delta +8, fast
@@ -3875,6 +3895,7 @@ do
 	-- the budget resets - protecting the keepalive/Identification Query from an unbounded write burst.
 	pendingMessages = {}
 	mvolFlushReady = false
+	slFlushReady = true -- tick permit fresh; only the mvol grant is spent
 	mvolFastWritesThisTick = 0
 	masterVolume = 50
 	local flushedCount = 0
@@ -3900,6 +3921,7 @@ do
 	-- (e) The budget is a PER-TICK-WINDOW allowance, not a permanent lockout: the next real timer tick
 	-- resets it, and the backlog left over from (c) then drains via the ordinary base grant.
 	mvolFlushReady = true -- mirrors controller_timer_trigger's own unconditional grant
+	slFlushReady = true
 	mvolFastWritesThisTick = 0 -- mirrors controller_timer_trigger's own reset
 	out = controller_midi_in(encoder_frame(0x41), 'LINK') -- delta +1, arrives after the reset
 	writes = mvol_writes_in(out and out.midi)
@@ -3911,6 +3933,133 @@ do
 		popupActive, displayMode =
 		savedState, savedPending, savedTimerPending, savedArmed, savedMvolFlushReady,
 		savedMvolFastWritesThisTick, savedMasterVolume, savedPopupActive, savedDisplayMode
+end
+
+-- MARK: - 73. One queued SL message per tick, whatever its itemType (slFlushReady), and nothing is
+-- ever dequeued without being emitted. flush_pending runs once per tick PLUS once per inbound SL
+-- frame; before slFlushReady only IT_DISPLAY and MVOL_WRITE were bounded, so LED, MVOL_READ and
+-- protocol messages could leave milliseconds apart within one tick and get dropped by the SL88 -
+-- the bug the 3x repeat workaround was hiding. See
+-- docs/config-lua-history.md#one-sl-message-per-tick-2026-09-17.
+do
+	local savedPending, savedDisplay, savedMvol, savedFast, savedSl =
+		pendingMessages, displayFlushReady, mvolFlushReady, mvolFastWritesThisTick, slFlushReady
+
+	local function queued_message_count(out)
+		-- Everything the flush emitted EXCEPT the trailing Identification Query, which is appended
+		-- rather than dequeued and is deliberately exempt from the permit.
+		local n = 0
+		for _, m in ipairs(split_messages(out and out.midi or {})) do
+			if not (item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_QUERY) then
+				n = n + 1
+			end
+		end
+		return n
+	end
+
+	-- (a) A mixed queue, one tick's permit: exactly one queued message leaves, and repeated flushes
+	-- within the same tick emit nothing more.
+	pendingMessages = {}
+	displayFlushReady, mvolFlushReady, mvolFastWritesThisTick, slFlushReady = true, true, 0, true
+	queue_message(msg_draw_rect(0, 0, 10, 10, 0, 0, 0), 'test:oneper-display')
+	queue_message(msg_white_led(WLID_A_ENC, true))
+	queue_message(msg_master_volume_mute_write(MVOL_IGNORE_VOL, true))
+	queue_message(msg_master_volume_read())
+	queue_message(msg_system(SYS_DEVICE_NOTIFICATION))
+	local depthBefore = #pendingMessages
+
+	local first = flush_pending(true)
+	check('one-per-tick: the first flush of a tick emits exactly one queued message',
+		queued_message_count(first) == 1)
+	check('one-per-tick: ...and removes exactly one from the queue', #pendingMessages == depthBefore - 1)
+
+	-- The inbound-frame flushes that follow in the same tick are where the dropped one-shots used to
+	-- escape - they must now carry the query alone.
+	local emittedRest = 0
+	for _ = 1, 4 do
+		emittedRest = emittedRest + queued_message_count(flush_pending(true))
+	end
+	check('one-per-tick: later flushes in the SAME tick emit no further queued messages',
+		emittedRest == 0)
+	check('one-per-tick: ...and leave the queue untouched', #pendingMessages == depthBefore - 1)
+
+	-- (b) Each fresh tick releases exactly one more, until the queue is empty.
+	local drained, ticks = 1, 0
+	while #pendingMessages > 0 and ticks < 50 do
+		displayFlushReady, mvolFlushReady, mvolFastWritesThisTick, slFlushReady = true, true, 0, true
+		local n = queued_message_count(flush_pending(true))
+		check('one-per-tick: tick ' .. (ticks + 1) .. ' of the drain emits exactly one message', n == 1)
+		drained = drained + n
+		ticks = ticks + 1
+	end
+	check('one-per-tick: the whole mixed queue drains, one message per tick', drained == depthBefore)
+
+	-- (c) Nothing is dequeued without reaching the wire. Sections 3 and 8 drain the queue but discard
+	-- flush_pending's return value, so they prove the queue empties without proving anything was
+	-- emitted - this is the assertion that tells those two apart.
+	pendingMessages = {}
+	displayFlushReady, mvolFlushReady, mvolFastWritesThisTick, slFlushReady = true, true, 0, true
+	queue_message(msg_white_led(WLID_A_ENC, false))
+	queue_message(msg_master_volume_read())
+	queue_message(msg_draw_rect(0, 0, 8, 8, 0, 0, 0), 'test:oneper-ledger')
+	local ledgerDepth = #pendingMessages
+	local emittedBytes, removed = {}, 0
+	for _ = 1, ledgerDepth do
+		displayFlushReady, mvolFlushReady, mvolFastWritesThisTick, slFlushReady = true, true, 0, true
+		local before = #pendingMessages
+		local out = flush_pending(true)
+		removed = removed + (before - #pendingMessages)
+		for _, m in ipairs(split_messages(out and out.midi or {})) do
+			if not (item_type_of(m) == IT_IDENTIFICATION and func_of(m) == ID_QUERY) then
+				emittedBytes[#emittedBytes + 1] = hex(m)
+			end
+		end
+	end
+	check('no silent drops: every message removed from the queue appears in a flush',
+		removed == ledgerDepth and #emittedBytes == ledgerDepth)
+	-- Membership, not position: which index a message lands on depends on queue order, so an
+	-- index-coupled check can fail with a label naming the wrong message.
+	local function was_emitted(msg)
+		for _, h in ipairs(emittedBytes) do
+			if h == hex(msg) then return true end
+		end
+		return false
+	end
+	check('no silent drops: the LED write reached the wire',
+		was_emitted(msg_white_led(WLID_A_ENC, false)))
+	check('no silent drops: the Master Volume READ reached the wire',
+		was_emitted(msg_master_volume_read()))
+
+	-- (d) MVOL_READ is paced by the shared permit even though mvolFlushReady never gates it. This is
+	-- the settle read-back that produced zero replies on hardware.
+	pendingMessages = {}
+	slFlushReady = false
+	mvolFlushReady = true
+	queue_message(msg_master_volume_read())
+	check('one-per-tick: an MVOL_READ is blocked once the tick permit is spent',
+		queued_message_count(flush_pending(true)) == 0 and #pendingMessages == 1)
+
+	-- (e) An LED write is paced too - it was never gated by anything before.
+	pendingMessages = {}
+	slFlushReady = false
+	queue_message(msg_white_led(WLID_A_ENC, true))
+	check('one-per-tick: an LED write is blocked once the tick permit is spent',
+		queued_message_count(flush_pending(true)) == 0 and #pendingMessages == 1)
+
+	-- (f) The fast-turn bypass is the documented exception: it still gets through with the permit
+	-- spent, so a fast sweep keeps its feel.
+	pendingMessages = {}
+	slFlushReady = false
+	mvolFlushReady = false
+	mvolFastWritesThisTick = 0
+	local fast = msg_master_volume_write(42)
+	fast.fast = true
+	queue_message(fast)
+	check('one-per-tick: a .fast Master Volume write still bypasses the spent permit',
+		queued_message_count(flush_pending(true)) == 1)
+
+	pendingMessages, displayFlushReady, mvolFlushReady, mvolFastWritesThisTick, slFlushReady =
+		savedPending, savedDisplay, savedMvol, savedFast, savedSl
 end
 
 -- MARK: - Summary
