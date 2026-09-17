@@ -6,6 +6,20 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-09-17
+
+- feat: show MainStage's real parameter name and value in the popup
+- feat: light the ZOOM lamp in list mode, dark in zoom mode
+- fix: drive the mute ring LED from the timer tick, not the popup paint
+- fix: make the mute ring LED prompt and correct from the start
+- fix: drop stored parameter feedback when the concert changes
+- fix: re-assert the mute rings after login confirmation
+- fix: a net-zero CC batch no longer swallows the inbound event
+- docs: spec the two-mode popup layout from the midi_out probe
+- docs: correct the midi_out return-value claim
+- docs: record the four mute LED faults found on hardware
+- docs: record the controller_midi_in contract review
+
 ## [2.3.0] - 2026-09-17
 
 - feat: release the registration when MainStage quits
