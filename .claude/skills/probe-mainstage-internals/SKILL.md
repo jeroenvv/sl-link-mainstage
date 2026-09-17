@@ -31,6 +31,23 @@ MainStage versions such as 3.7.1):
 /Applications/MainStage.app/Contents/Frameworks/LogicMainStage.framework/Versions/A/LogicMainStage
 ```
 
+## Two frameworks, and the trap between them
+
+`LogicMainStage.framework` holds the `controller_info` parser and the table of **injected globals** —
+the names the script may *call* (`settriggertimer`, `get_host_version`) plus the `MIDI_*` constants.
+
+**The callbacks the host calls ON the script are NOT there.** They live in
+`MainStageCore.framework/Versions/A/MainStageCore` — `controller_midi_out`, `controller_midi_out_clear`,
+`controller_select_patch_done`, `update_layer`. `controller_midi_in` is in neither framework's string
+table despite plainly working.
+
+This cost this project a wrong conclusion: probing LogicMainStage for a way to read a mapped
+parameter's value found only two callables and the search was reported as "no such API exists". The API
+did exist — `controller_midi_out(midiEvent, name, valueString, color)` — as a callback, in the other
+framework, and used by 14 shipped scripts. **So a negative from the injected-globals table says nothing
+about callbacks.** Search both frameworks, and search the bundled scripts for `function controller_`
+before concluding anything is absent.
+
 ## Finding the key vocabulary
 
 The parser's recognised keys sit in one contiguous string table, interleaved with its own error
