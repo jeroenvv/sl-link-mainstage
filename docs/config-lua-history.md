@@ -2384,3 +2384,31 @@ forbids and what the change above removed. The value trailing its knob by one ti
 `FLUSH_SOON_MS`) is fine; being emitted *before* it is not. The fix drops any pending `popupValue`
 entry when the knob re-queues, so the value is appended behind it instead of coalescing into an older,
 earlier slot.
+
+## Follow-up: can settings be stored and read back? (registered 2026-09-17)
+
+Idea, not yet investigated: wire the SETTINGS button to a settings screen that edits the CC mappings
+live, instead of them being constants in `CC_MAP` that require an edit-and-redeploy.
+
+The screen itself is the easy half — it is another paint function in the same family as the list and
+zoom screens, and SETTINGS already reaches the host as a button event. The open question is
+**persistence**, and there are two candidate homes for it, neither confirmed:
+
+- **Host side.** MainStage's Lua sandbox has no `io`/`os` and no `UserDefaults` equivalent, so nothing
+  currently survives a script reload except what MainStage re-derives — which is why `instanceID` is
+  generated per run rather than persisted. Worth checking with the `probe-mainstage-internals` skill
+  whether the host exposes any storage or preference API at all before assuming it does not; that
+  skill reads the shipped application rather than guessing.
+- **Keyboard side.** The SL88 stores its own configuration, and the spec's Hardware/Pedal Settings
+  queries are currently out of scope for this project. If those can be read and written over SL Link,
+  the mappings could live on the keyboard, which would also make them survive a machine change. Start
+  from the upstream spec's `docs/` tables rather than from our code.
+
+Without persistence the screen is still worth something (edits lasting the session), but the value is
+mostly in the mappings sticking, so settle the storage question first.
+
+**Note the versioning consequence:** changing a CC mapping is what the policy calls a **major** bump,
+because the 34 CCs are MIDI-Learned by hand in MainStage and renumbering one silently breaks a working
+rig. A settings screen that lets the user re-map at runtime makes that breakage a user action rather
+than a release event, so it needs a deliberate answer for what happens to an existing concert's learned
+assignments.
