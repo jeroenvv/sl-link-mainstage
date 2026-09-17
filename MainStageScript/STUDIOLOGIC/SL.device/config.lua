@@ -1735,14 +1735,18 @@ end
 -- track the feedback rather than the popup. Not queued from controller_midi_out either, which must
 -- never queue. Lit = unmuted, matching the A ring.
 function flush_mute_leds()
+	-- ACTIVE only. An LED write before the app is selected is discarded by the SL88 anyway, and
+	-- queueing one during identification competes with the retry for the per-tick permit and delays
+	-- re-identification - a harness assertion caught exactly that.
+	if state ~= STATE_ACTIVE then return end
 	for eid, wlid in pairs(ENCODER_MUTE_WLID) do
 		local showHint, muted = encoder_mute_state(eid)
-		if showHint then
-			local ledOn = not muted
-			if encoderMuteLedSent[wlid] ~= ledOn then
-				encoderMuteLedSent[wlid] = ledOn
-				queue_message(msg_white_led(wlid, ledOn))
-			end
+		-- No mute mapping means the ring must go DARK, not be left at whatever it happened to show:
+		-- skipping here left a stale lamp from a previous concert or session lit.
+		local ledOn = showHint and not muted or false
+		if encoderMuteLedSent[wlid] ~= ledOn then
+			encoderMuteLedSent[wlid] = ledOn
+			queue_message(msg_white_led(wlid, ledOn))
 		end
 	end
 end
@@ -2399,6 +2403,10 @@ function enter_active_session()
 	recoveryAttempts = 0
 	queue_master_volume_read()
 	set_master_mute(masterMuted) -- establish the LED for this session; the READ reply may correct it
+	-- Forget what the mute rings were last sent, so the next tick re-establishes them for this
+	-- session rather than trusting a memo from before the SL88 confirmed us - same reasoning as
+	-- invalidate_all() for the display. See docs/config-lua-history.md#startup-led-discarded-before-login-confirmation-2026-09-16.
+	encoderMuteLedSent = {}
 	return true
 end
 
@@ -3211,7 +3219,16 @@ function controller_midi_out(midiEvent, name, valueString, color)
 	if prev and prev.name == name and prev.valueString == cleanValueString and prev.value == value then
 		return nil -- unchanged tuple - a single static control reports this identically thousands of times
 	end
+	local wasMuted = prev and prev.value ~= 0
 	midiOutFeedback[cc] = { name = name, valueString = cleanValueString, value = value, color = color }
+
+	-- A mute flipping is a one-off the user is waiting to SEE, and the LED only goes out on a tick -
+	-- at KEEPALIVE_MS that is a ~3s lag. Pull the next tick forward. Safe from this flood-prone
+	-- callback because request_quick_rearm only acts when the timer is armed at the slow interval,
+	-- and only a real state change reaches here.
+	if name:lower():find('mute', 1, true) and wasMuted ~= (value ~= 0) then
+		request_quick_rearm()
+	end
 	return nil
 end
 
