@@ -2255,3 +2255,33 @@ mute, the LED, and the settled volume are each sent three times.
 `settled volume confirmed` / `MISMATCH` lines, so the diagnostic READ either never went out or was never
 answered. The re-send half works; the verification half is silent and remains unproven. Worth chasing
 before anyone relies on that oracle.
+
+## Every LED id swept and identified (2026-09-17)
+
+`Scripts/probe-leds.swift`, a new standalone probe, lit every White LED id `0x00`-`0x1F` and every RGB
+`LID` `0x00`-`0x07` one at a time with the id named on the SL88's own screen. The resulting table is in
+`docs/implementing-sl-link.md` §5. Run logged in, fw 1.1.2, zero `MIDISend` errors.
+
+**All 12 white LEDs are contiguous from `0x00`**: ten button lamps (Buttons 1-4, APP, CHECK, CANCEL,
+ZOOM, SETTINGS, DAW) at `0x00`-`0x09`, then the A encoder ring at `0x0A` and the B encoder ring at
+`0x0B`. `0x0C` and above are dark. This **confirms `WLID_A_ENC = 0x0A`**, which had carried a
+"PROBABLE, NOT CERTAIN" caveat in `config.lua` since it was first guessed from the upstream docs, and
+establishes `0x0B` as B's ring.
+
+**A B encoder ring LED exists.** This was the open question behind the sweep: `docs/full-functionality-plan.md`
+had B's LED as an unverified id, so nothing could be built on it. It is real, and on/off only — it can
+show B's mute state but never a volume level.
+
+**Ids wrap: the lamp is `WLID mod 13`.** Twelve lamps plus the dark `0x0C` slot give a period of 13,
+so `0x0D` is Button 1 again, `0x18` the B ring, `0x19` dark, `0x1A` Button 1. Confirmed by lighting
+`0x00`, `0x0D`, `0x1A`, `0x18`, `0x19`, `0x0C` on a logged-in session. This means an out-of-range id
+silently lights the wrong lamp rather than being ignored - there is no safe no-op `WLID`.
+
+**Pacing matters more than range when a human is the instrument.** The first run stepped 32 ids at 3s
+each and produced a confident but wrong reading — a ten-lamp cycle, making `0x0A` look like Button 1
+and implying the encoder rings did not exist at all. The wrap it spotted was real; the period was not,
+because the two ring lamps at `0x0A`/`0x0B` are easy to miss when the eye is on the button row. Re-running the same ids at 8s
+each gave the correct table. Nothing in the log distinguished the two runs; both were logged in with no
+send errors, because an LED has no reply and no log signal of its own. When the only oracle is a person
+watching the hardware, slow the sweep down rather than widening it, and confirm any surprising negative
+at a slower pace before recording it.

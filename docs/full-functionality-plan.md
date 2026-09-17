@@ -411,7 +411,9 @@ Depends on Q3.
   on it. A ring can express *state* (colour + brightness) but **never a value** — level feedback must
   come from the pop-up and the on-screen readout instead.
 - The other 12 LEDs are **white, on/off only** (`ItemType 0x02`, `LST` 0/1), and that includes the A and
-  B encoder LEDs (`0x0A`, `0x0B`). So **B cannot indicate the main volume level either**.
+  B encoder LEDs (`0x0A`, `0x0B`) — both confirmed on hardware 2026-09-17, full table in
+  `docs/implementing-sl-link.md` §5. So **B cannot indicate the main volume level either**; the ring can
+  show B's mute state and nothing finer.
 
 **Proposed state → appearance** (brightness values are a starting point; check on hardware):
 

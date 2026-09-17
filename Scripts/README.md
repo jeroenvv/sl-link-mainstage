@@ -85,6 +85,7 @@ dependencies between them.
 | `list-midi.swift` | Dumps every CoreMIDI endpoint with name, display name, manufacturer, model and parent device. Confirms the `SL LINK` port is present before suspecting the protocol. |
 | `probe-sllink.swift` | Minimal handshake: sends an Identification Request, keepalives every 3 s, decodes and logs replies, then logs out cleanly. |
 | `probe-display.swift` | Full session plus a painted UI on the LCD, reacting live to buttons and encoders. Includes SysEx reassembly. |
+| `probe-leds.swift` | Identifies every LED. Lights each White LED id (`0x02`) and RGB LED id (`0x05`) in turn with the id named on the SL88's own screen, so a human watching the keyboard can map id → lamp. Starts from the two already-confirmed ids as a control, since an unlit sweep and a failed session look identical. |
 | `sniff.swift` | Passive — connects to the `SL LINK` source and logs every inbound frame in hex, plus any non-SysEx channel-voice traffic. Sends nothing, so it can watch traffic alongside another session. |
 | `sniff-all-sl-ports.swift` | Passive multi-port sniffer — connects to every CoreMIDI source whose name starts with `SL ` and logs raw bytes per port. Compiled by the `test-mainstage-script` skill on every hardware run. |
 

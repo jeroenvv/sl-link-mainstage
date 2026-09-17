@@ -234,6 +234,32 @@ not add an acceleration curve on top; it fights the hardware.
 **White LEDs** (`0x02`, Host → SL): `<WLID> <state 0|1>`. 12 of them, **on/off only** — including the A
 and B encoder LEDs, so those can never show a level.
 
+The upstream `WLID` table is not vendored here, so it was swept on hardware with
+`Scripts/probe-leds.swift` (2026-09-17, fw 1.1.2). All 12 are contiguous from `0x00`, with `0x0C`
+dark:
+
+| WLID | Lamp | WLID | Lamp |
+|:---|:---|:---|:---|
+| `0x00` | Button 1 (Zone 1) | `0x06` | CANCEL |
+| `0x01` | Button 2 (Zone 2) | `0x07` | ZOOM |
+| `0x02` | Button 3 (Zone 3) | `0x08` | SETTINGS |
+| `0x03` | Button 4 (Zone 4) | `0x09` | DAW |
+| `0x04` | APP | `0x0A` | A encoder ring |
+| `0x05` | CHECK | `0x0B` | B encoder ring |
+
+Note the A and B rings are **lamps, not rings** despite the name — each is one white on/off light, so
+neither can show a volume level. Note also that `0x0B` is `BID_A_ENC` in the *button* id namespace;
+the two tables are unrelated.
+
+**The table repeats every 13 ids: the lamp is `WLID mod 13`.** Twelve lamps plus the dark `0x0C` slot
+make a period of 13, so `0x0D` is Button 1 again, `0x18` is the B ring, `0x19` is dark, `0x1A` is
+Button 1, and so on. Confirmed on hardware by lighting `0x00`, `0x0D`, `0x1A`, `0x18`, `0x19` and
+`0x0C` on a logged-in session.
+
+Practical consequence: **an out-of-range `WLID` is not ignored, it aliases onto a real lamp.** There is
+no safe "no-op" id and no error — a typo'd id silently lights the wrong LED. Always address
+`0x00`-`0x0B` directly.
+
 **RGB LEDs** (`0x05`, Host → SL): `<LID 0-3> <R> <G> <B> <BR 0-127>`. Only the four zone encoders. Each
 is **a single lamp, not a segmented ring** — it can express state through colour and brightness, never
 a value.

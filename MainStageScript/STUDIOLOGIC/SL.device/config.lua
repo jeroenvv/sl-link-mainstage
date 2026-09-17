@@ -127,8 +127,8 @@ BID_A_ENC = 0x0B -- SLButtonID.aEncoderButton; toggles Master Volume mute (handl
 	-- spec calls this reserved for USB audio, but A traffic reaches the host, see
 	-- docs/implementing-sl-link.md §7
 
--- White LED id for the A encoder's ring (IT_LED). PROBABLE, NOT CERTAIN: sourced from
--- docs/full-functionality-plan.md - the authoritative table lives upstream and is not vendored here.
+-- White LED id for the A encoder's ring (IT_LED). Confirmed on hardware 2026-09-17 by sweeping
+-- every id; the full table is in docs/implementing-sl-link.md §5. B's ring is 0x0B.
 WLID_A_ENC = 0x0A
 
 -- The mute WRITE and the A encoder LED are each sent this many times per gesture, rather than once.
