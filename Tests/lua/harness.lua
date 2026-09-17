@@ -4505,6 +4505,7 @@ do
 	for _, m in ipairs(pendingMessages) do if m.regionId == 'popupMuteHint' then hintMsg = m end end
 	check("a paired-button name containing 'Mute' (any case) shows the hint, carrying the PUSH TO MUTE/UNMUTE text",
 		hintMsg ~= nil and write_text_body(hintMsg):find('MUTE', 1, true) ~= nil)
+	flush_mute_leds()
 	local ledMsg
 	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then ledMsg = m end end
 	check('Zone 1 has no ring LED - no White LED message even with a mute mapping', ledMsg == nil)
@@ -4514,7 +4515,7 @@ do
 	local bCc = CC_MAP['ENCB_PRESS_SHORT']
 	midiOutFeedback[bCc] = { name = 'Master Mute', valueString = 'Off', value = 0 }
 	set_up_feedback_popup(EID_B)
-	paint_popup_screen()
+	flush_mute_leds() -- the LED is driven by the tick drain, NOT by the popup paint
 	local bLed
 	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then bLed = m end end
 	check('B ring LED is queued when a mute mapping exists', bLed ~= nil and bLed[9] == WLID_B_ENC)
@@ -4524,18 +4525,51 @@ do
 	encoderMuteLedSent = {} -- clear the cache so the state change is actually re-sent
 	midiOutFeedback[bCc] = { name = 'Master Mute', valueString = 'On', value = 127 }
 	set_up_feedback_popup(EID_B)
-	paint_popup_screen()
+	flush_mute_leds()
 	bLed = nil
 	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then bLed = m end end
 	check('muted (paired value nonzero) turns the LED off (state=0)', bLed ~= nil and bLed[10] == 0)
 
-	-- (e) The LED write is only queued on an actual state change, not on every popup repaint -
+	-- (e) The LED write is only queued on an actual state change, not on every tick -
 	-- encoderMuteLedSent caches the last state sent per WLID.
 	pendingMessages = {}
-	paint_popup_screen() -- same muted state as (d), nothing changed
+	flush_mute_leds() -- same muted state as (d), nothing changed
 	bLed = nil
 	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then bLed = m end end
 	check('an unchanged mute state does not re-queue the White LED message', bLed == nil)
+
+	-- (f) THE REGRESSION: the mute is pressed on the paired push button, which neither opens nor
+	-- repaints the popup - and the popup dismisses after ~2s regardless. So the LED must follow the
+	-- feedback with NO popup involvement at all.
+	encoderMuteLedSent, pendingMessages = {}, {}
+	popupActive, popupEid, popupFeedbackActive = false, nil, false
+	midiOutFeedback[bCc] = { name = 'Master Mute', valueString = 'Off', value = 0 }
+	flush_mute_leds()
+	bLed = nil
+	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then bLed = m end end
+	check('THE REGRESSION: the mute LED tracks feedback with no popup open and nothing painted',
+		bLed ~= nil and bLed[9] == WLID_B_ENC and bLed[10] == 1)
+	check('THE REGRESSION: it queues the LED and nothing else', #pendingMessages == 1)
+
+	-- (g) And prove the TICK is what drives it - (f) calls flush_mute_leds() directly, which would
+	-- still pass if controller_timer_trigger stopped calling it at all.
+	local savedTimerPending, savedFrames = timerPending, framesSinceTick
+	encoderMuteLedSent, pendingMessages = {}, {}
+	midiOutFeedback[bCc] = { name = 'Master Mute', valueString = 'On', value = 127 }
+	state, timerPending = STATE_ACTIVE, true
+	local tickOut = controller_timer_trigger()
+	-- The tick flushes as it returns, so the LED may be in the returned midi OR still queued behind
+	-- the one-message-per-tick permit - either proves the drain ran.
+	bLed = nil
+	for _, m in ipairs(pendingMessages) do if item_type_of(m) == IT_LED then bLed = m end end
+	if bLed == nil and tickOut ~= nil and tickOut.midi ~= nil then
+		for _, m in ipairs(split_messages(tickOut.midi)) do
+			if item_type_of(m) == IT_LED then bLed = m end
+		end
+	end
+	check('THE REGRESSION: controller_timer_trigger itself drains the mute LEDs',
+		bLed ~= nil and bLed[9] == WLID_B_ENC and bLed[10] == 0)
+	timerPending, framesSinceTick = savedTimerPending, savedFrames
 
 	drawn, pendingMessages, popupEid, popupFeedbackActive, popupFeedbackName, popupValueString,
 		popupValue, midiOutFeedback, encoderMuteLedSent =
