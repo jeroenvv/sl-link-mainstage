@@ -740,6 +740,19 @@ end
 -- Removes a single pending queue entry by regionId, without touching drawn[] - unlike
 -- drop_queued_display() below, which drops every display message. Used when a region must be
 -- forced back to the tail instead of coalescing at its old position - see draw_popup_knob.
+-- Drops every queued Identification Request. They carry no regionId (they must never coalesce), so
+-- drop_queued_region cannot reach them - see handle_identification_approved for why they must go.
+function drop_queued_identification_requests()
+	local keep = {}
+	for i = 1, #pendingMessages do
+		local m = pendingMessages[i]
+		if not (m[8] == IT_IDENTIFICATION and m[9] == ID_REQUEST) then
+			keep[#keep + 1] = m
+		end
+	end
+	pendingMessages = keep
+end
+
 function drop_queued_region(regionId)
 	for i = 1, #pendingMessages do
 		if pendingMessages[i].regionId == regionId then
@@ -2116,6 +2129,10 @@ end
 
 function handle_identification_approved()
 	state = STATE_LISTED
+	-- Any Identification Request still queued is now obsolete, and at one message per tick a deep
+	-- queue can hold one for many ticks - it would go out after approval and draw a REJECTED that
+	-- restarts the whole retry cycle. See docs/config-lua-history.md#stale-identification-requests-2026-09-17.
+	drop_queued_identification_requests()
 	-- Cleanly cancels any pending reidentify-wait: this instanceID is now confirmed good, so a LATER
 	-- rejection (a fresh re-init down the line) should get the full retry budget again, not whatever
 	-- was left over.
@@ -2134,6 +2151,14 @@ function handle_identification_rejected(reason)
 	slog('<- IDENTIFICATION REJECTED (reason ' ..
 		string.format('%02X', reason or 0) .. ') for instance ' ..
 		string.format('%02X', instanceID))
+
+	-- We only ever send an Identification Request while identifying, so a rejection arriving once we
+	-- are already approved is the echo of a stale request, not a real collision - acting on it would
+	-- tear down a working session. See the same anchor as handle_identification_approved.
+	if state == STATE_LISTED or state == STATE_ACTIVE or state == STATE_STANDBY then
+		slog('  ignored - already approved, so this is a stale request echo')
+		return
+	end
 
 	if reidentifyRetriesLeft > 0 then
 		reidentifyRetriesLeft = reidentifyRetriesLeft - 1

@@ -4208,6 +4208,48 @@ do
 	pendingMessages = savedPending
 end
 
+-- MARK: - 76. A stale Identification Request cannot survive approval, or restart the retry cycle
+-- Hardware 2026-09-17: at one message per tick a deep startup queue still held retry Identification
+-- Requests when approval landed. Each went out afterwards, drew a REJECTED (reason 00), and
+-- re-triggered re-identification - the app dropped out of the APP list mid-session.
+do
+	local savedPending, savedState, savedRetries = pendingMessages, state, reidentifyRetriesLeft
+
+	-- (a) Approval purges queued Identification Requests, and leaves everything else alone.
+	pendingMessages = {}
+	state = STATE_IDENTIFYING
+	queue_message(msg_identification_request())
+	queue_message({ 0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_DISPLAY, 0x01, 0xF7 })
+	queue_message(msg_identification_request())
+	check('stale request setup: two requests and one display message queued', #pendingMessages == 3)
+
+	handle_identification_approved()
+	check('THE REGRESSION: approval drops every queued Identification Request',
+		#pendingMessages == 1)
+	check('approval leaves non-identification traffic queued untouched',
+		#pendingMessages == 1 and pendingMessages[1][8] == IT_DISPLAY)
+
+	-- (b) A rejection arriving after approval is a stale echo and must NOT restart identification.
+	state = STATE_ACTIVE
+	reidentifyRetriesLeft = 2
+	handle_identification_rejected(0x00)
+	check('THE REGRESSION: a rejection while active is ignored, not acted on',
+		state == STATE_ACTIVE)
+	check('a rejection while active does not spend a retry',
+		reidentifyRetriesLeft == 2)
+	check('a rejection while active queues no new Identification Request',
+		#pendingMessages == 1 and pendingMessages[1][8] == IT_DISPLAY)
+
+	-- (c) But a rejection while still identifying is a REAL collision and must still be acted on.
+	state = STATE_IDENTIFYING
+	reidentifyRetriesLeft = 2
+	handle_identification_rejected(0x00)
+	check('a rejection while identifying still triggers the retry path',
+		state == STATE_REIDENTIFY_WAIT and reidentifyRetriesLeft == 1)
+
+	pendingMessages, state, reidentifyRetriesLeft = savedPending, savedState, savedRetries
+end
+
 -- MARK: - Summary
 
 realPrint('')

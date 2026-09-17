@@ -2412,3 +2412,40 @@ because the 34 CCs are MIDI-Learned by hand in MainStage and renumbering one sil
 rig. A settings screen that lets the user re-map at runtime makes that breakage a user action rather
 than a release event, so it needs a deliberate answer for what happens to an existing concert's learned
 assignments.
+
+## Stale identification requests (2026-09-17)
+
+Found on the second hardware run of the one-message-per-tick change, when Jeroen reported the app
+dropping out of the APP list during slow encoder turns.
+
+Not the keepalive, which was the predicted risk: the capture showed 338 ticks contiguous and 338
+identification replies, so the session clock never faltered. The cause was the startup queue. During
+identification the script queues an Identification Request, retries it, and queues more. Approval then
+arrives — but at one message per tick a 15-deep startup queue still holds those requests, and they go
+out *after* approval:
+
+```
+FLUSH #11 tick=10 ... queueDepthAfter=7 msg=F0 00 20 1A 16 03 11 7F 00 ... F7   <- stale Request
+<- IDENTIFICATION REJECTED (reason 00) for instance 11
+re-identify retry 1/2 as (03 11)
+```
+
+Each stale request draws a `REJECTED (reason 00)`, `handle_identification_rejected` treats it as a real
+DeviceID collision, and re-identification restarts — tearing down a working session. The cycle repeated
+several times in one run. Before the pacing change the queue drained several messages per tick, so the
+stale requests cleared around approval rather than long after it.
+
+**Two fixes, because either alone leaves a hole.** `handle_identification_approved` now purges queued
+Identification Requests (`drop_queued_identification_requests` — they carry no regionId, so
+`drop_queued_region` cannot reach them). And `handle_identification_rejected` ignores a rejection that
+arrives once the state is already LISTED/ACTIVE/STANDBY: a Request is only ever sent while identifying,
+so a rejection after approval can only be a stale echo. A rejection *during* identification still takes
+the retry path unchanged.
+
+Harness section 76 covers all three behaviours, mutation-checked: removing the purge fails the purge
+assertions, and removing the state guard fails the stale-echo assertions.
+
+**Worth noting as a pattern.** This is the second latent defect that one-message-per-tick pacing
+exposed rather than caused — the first being the popup value/knob ordering. Slowing the drain turned
+queue contents that used to clear within a tick into state that persists for many, and anything queued
+speculatively during a transition now outlives the transition.
