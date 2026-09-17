@@ -2565,3 +2565,37 @@ than emitting runs of spaces.
 
 **Scope reality:** only controls with a screen control report. In the test concert that was two -
 `PANIC!` and `Volume`. Every other encoder falls back to legacy mode.
+
+### Mute ring LED: four faults found on hardware (2026-09-17)
+
+The LED half of the feedback work needed four fixes, each found by Jeroen on a separate run. Recorded
+because three of them are timing/lifecycle traps rather than logic errors, and the last one repeats a
+mistake this document already warned about.
+
+1. **Driven from the popup paint.** The LED write lived in `paint_popup_feedback`, so it needed an
+   encoder *turn* to fire - but the mute is pressed on the paired push button, which neither opens nor
+   repaints the popup, and the popup dismisses after ~2s regardless. It is a persistent indicator, so
+   it now drains from `flush_mute_leds()` once per timer tick, independent of the popup.
+   `controller_midi_out` cannot queue it directly - that callback must never queue.
+2. **~3s lag.** The tick is `KEEPALIVE_MS` when idle. A mute state change now calls
+   `request_quick_rearm()`, pulling the next tick to `FLUSH_SOON_MS`. Safe from a callback MainStage
+   floods, because that helper only acts when the timer is armed at the slow interval and only a real
+   state change reaches it.
+3. **No mapping left the lamp lit.** With no mute feedback the code *skipped* the ring, leaving
+   whatever it happened to show. It now dark-asserts. Related: a **concert change** must drop stored
+   feedback entirely (`midiOutFeedback = {}`), because MainStage never announces that a control it used
+   to report is gone - it sends `'Unmapped'` only for controls that still exist. Feedback is
+   deliberately KEPT across patch changes within a concert; clearing per patch would blank the popup
+   until MainStage happened to re-report.
+4. **Discarded before login.** The dark-assert went out at tick 6, before `LOGIN` - and the SL88
+   discards anything sent before the app is selected, exactly as
+   [Startup LED discarded before login confirmation](#startup-led-discarded-before-login-confirmation-2026-09-16)
+   records. The memo clear had been put in `enter_active_session`, which `handle_login` calls only on
+   the *not already active* path - i.e. not the normal one. `handle_login` now clears
+   `encoderMuteLedSent` unconditionally, alongside the `set_master_mute` re-send that was already there
+   for the A ring. **The lesson is that the existing A-ring re-send is the pattern to copy for any new
+   LED, not an A-specific quirk.**
+
+A regression the harness caught on the way: `flush_mute_leds` initially queued during
+`STATE_REIDENTIFY_WAIT`, competing with the identification retry for the one-message-per-tick permit.
+It is ACTIVE-only.
