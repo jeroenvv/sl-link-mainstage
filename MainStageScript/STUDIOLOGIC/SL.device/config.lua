@@ -987,6 +987,10 @@ function flush_pending_cc()
 	pendingCCOrder = remaining
 	slog('CC batch: ' .. emitted .. ' CC(s) [' .. table.concat(emittedCCs, ', ') .. '], ' .. #out .. ' bytes' ..
 		(#remaining > 0 and (', ' .. #remaining .. ' deferred to next round') or ''))
+	-- Nothing emitted (every queued relative delta netted to zero): return nil, NOT { midi = {} }.
+	-- An empty table swallows the inbound event and costs the round its SL flush for no MIDI at all -
+	-- see docs/mainstage-device-scripts.md section 4's return-value table.
+	if #out == 0 then return nil end
 	return { midi = out }
 end
 
@@ -3122,10 +3126,14 @@ function controller_midi_in(midiEvent, portName)
 		-- unconditionally, so skipping the Identification Query this round does not stall the session
 		-- clock (this inbound frame is itself the 'reply' the clock needs - see the SESSION CLOCK note
 		-- above rearm_timer).
+		-- Only pre-empt the SL flush when the CC batch actually produced bytes; a net-zero batch
+		-- returns nil and falls through, so the round still gets its SL flush.
 		if #pendingCCOrder > 0 then
 			local out = flush_pending_cc()
-			rearm_timer()
-			return out
+			if out ~= nil then
+				rearm_timer()
+				return out
+			end
 		end
 
 		-- Protocol traffic, not music: swallow it, and use the opportunity to flush whatever the handler
