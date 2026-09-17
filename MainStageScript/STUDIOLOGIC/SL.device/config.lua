@@ -1720,19 +1720,29 @@ function paint_popup_feedback()
 	draw_popup_knob(popupValue, POPUP_FB_KNOB_Y, false)
 	queue_popup_value()
 
-	local showHint, muted = encoder_mute_state(popupEid)
+	-- Hint only; the ring LED is driven by flush_mute_leds() on the timer tick, not from here.
+	local showHint = encoder_mute_state(popupEid)
 	if showHint then
 		draw_popup_mute_hint(true, POPUP_FB_HINT_Y)
 	elseif drawn['popupMuteHint'] ~= nil then
 		draw_popup_mute_hint(false, POPUP_FB_HINT_Y)
 	end
+end
 
-	local wlid = ENCODER_MUTE_WLID[popupEid]
-	if wlid ~= nil and showHint then
-		local ledOn = not muted -- lit = unmuted, matching the A ring's existing convention
-		if encoderMuteLedSent[wlid] ~= ledOn then
-			encoderMuteLedSent[wlid] = ledOn
-			queue_message(msg_white_led(wlid, ledOn))
+-- Drains the mute ring LEDs, once per timer tick from controller_timer_trigger. NOT driven from the
+-- popup paint: the mute is pressed on the paired push button, which neither opens nor repaints the
+-- popup, and the popup dismisses after ~2s anyway - the LED is a persistent indicator, so it has to
+-- track the feedback rather than the popup. Not queued from controller_midi_out either, which must
+-- never queue. Lit = unmuted, matching the A ring.
+function flush_mute_leds()
+	for eid, wlid in pairs(ENCODER_MUTE_WLID) do
+		local showHint, muted = encoder_mute_state(eid)
+		if showHint then
+			local ledOn = not muted
+			if encoderMuteLedSent[wlid] ~= ledOn then
+				encoderMuteLedSent[wlid] = ledOn
+				queue_message(msg_white_led(wlid, ledOn))
+			end
 		end
 	end
 end
@@ -2845,6 +2855,8 @@ function controller_timer_trigger()
 	-- Drain a throttle-withheld popupValue redraw once it's due (see POPUP_VALUE_THROTTLE_TICKS) -
 	-- this is what guarantees a settled value is never left stale.
 	flush_popup_value_if_due()
+	-- Mute ring LEDs track their parameter's feedback, not the popup - see flush_mute_leds().
+	flush_mute_leds()
 	-- `tick=`/`pending=`/`draining=` here let a captured hardware log be read as 'N drain ticks
 	-- elapsed while M messages went out' - pair against the `tick=` field flush_pending's own FLUSH
 	-- print carries.
