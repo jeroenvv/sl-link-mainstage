@@ -2524,9 +2524,16 @@ midi_out st=BF d1=63 d2=85 name=Volume valueString=-1,0 ㏈ color=1.00/0.90/0.31
 - **It fires unprompted and repeatedly.** A single static button produced 2,929 identical calls with no
   user input at all, which is why every shipped implementation caches before drawing. Cache on the
   tuple, not on the event.
-- **Our own outbound SL Link SysEx passes through this callback** (`st=F0`, all metadata nil). KORG's
-  scripts use `return {}` as their unhandled default, which *swallows* the event - copying that would
-  destroy every display message we send. Return `nil` on every unhandled path.
+- **Our own outbound SL Link SysEx passes through this callback** (`st=F0`, all metadata nil), so what
+  this callback returns for an unhandled event decides whether our display traffic survives. Return
+  `nil` on every unhandled path.
+
+  The shipped scripts disagree on the default, so the corpus is not a single answer: 12 of the 14 fall
+  through to `nil` (all six Arturia, TranzPort, Komplete Kontrol S61, GTR Ground, all three Axiom Pro),
+  while KONTROL49 and microKONTROL fall through to `{}` - *"filter everything, that hasn't been
+  processed, the controller ignores it anyway"*. But **none of them swallows SysEx**: both KORG scripts
+  make passing it their very first branch, `return nil -- always forward SysEx to the device`. So the
+  danger is not KORG's default as such, it is copying that default without its SysEx exemption.
 
 ### Popup layout: two modes
 
