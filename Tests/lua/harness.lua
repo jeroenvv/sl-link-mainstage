@@ -5047,6 +5047,30 @@ do
 	handle_login()
 	check('login clears the ring memo so the rings re-assert', next(encoderRingSent) == nil)
 
+	-- A COLOUR-ONLY change must still update the stored feedback. controller_midi_out returns early on an
+	-- unchanged tuple, and a patch change can report the same parameter name and value in a different
+	-- colour - leaving colour out of that comparison left the ring on the previous patch's colour with
+	-- nothing in any log.
+	state, pendingMessages, midiOutFeedback, encoderRingSent = STATE_ACTIVE, {}, {}, {}
+	local function feedback(cc, name, value, color)
+		local e = { [0] = CC_STATUS, [1] = cc, [2] = value }
+		controller_midi_out(e, name, '0,0', color)
+	end
+	feedback(zone1Cc, 'Volume', 100, { r = 1.0, g = 0.0, b = 0.0 })
+	flush_encoder_rings()
+	pendingMessages = {}
+	feedback(zone1Cc, 'Volume', 100, { r = 0.0, g = 0.0, b = 1.0 })
+	flush_encoder_rings()
+	m = ringFor(lid)
+	check('a colour-only change still repaints the ring',
+		m ~= nil and m[10] == 0 and m[12] == 127)
+
+	-- ...and an identical report still costs nothing.
+	pendingMessages = {}
+	feedback(zone1Cc, 'Volume', 100, { r = 0.0, g = 0.0, b = 1.0 })
+	flush_encoder_rings()
+	check('an identical colour report does not re-queue the ring', ringFor(lid) == nil)
+
 	state, pendingMessages, midiOutFeedback, encoderRingSent =
 		savedState, savedPending, savedFeedback, savedRings
 end
