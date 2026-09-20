@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-09-20
+
+- feat: add a config screen on the SETTINGS button
+- fix: leave the ZOOM lamp alone in config, bigger title, no popup over it
+- docs: record the config screen, the SETTINGS button id and the nav icons
+- test: cover the config screen, its scroll and the unmappable SETTINGS button
+
 ## [2.4.1] - 2026-09-20
 
 - fix: size the popup value box to the measured knob hole
