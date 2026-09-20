@@ -1934,6 +1934,10 @@ function show_popup(eid)
 	-- out - only the panel is skipped. See
 	-- docs/config-lua-history.md#no-popup-over-the-config-screen-2026-09-20.
 	if displayMode == 'config' then return end
+	-- No popup for the joystick ring either: it selects patches (see the IT_ENCODER branch), and the
+	-- patch list IS the feedback - a popup would cover the very screen showing what was selected, and
+	-- every step would then repaint the list underneath it. Its CC still goes out.
+	if eid == EID_JOYSTICK then return end
 	local control = ENCODER_CC[eid]
 	if control == nil then return end
 
