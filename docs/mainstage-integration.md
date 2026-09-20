@@ -368,6 +368,10 @@ Bank must precede the PC - MainStage latches the bank and acts on the program ch
 
 Turning on the Patch List's bank/PC number display makes all of this verifiable at a glance.
 
+**No popup on the ring.** The patch list is the feedback for a patch change, and a popup would cover the
+very screen showing it - plus every step would repaint the list underneath. Suppressed in `show_popup`
+alongside the config-screen guard; the ring's CC still goes out. Zone encoders pop up as before.
+
 **Do not map the ring's relative CC 50 to patch selection as well** - it still goes out alongside, so the
 two would fight. It remains available for ordinary relative parameters.
 

@@ -5276,6 +5276,18 @@ do
 	check('the ring injects no program change while the config screen shows', pendingProgram == nil)
 	check('...and does not move the patch target either', ringPatchTarget == 1)
 
+	-- NO popup for the ring: the patch list is the feedback, and a popup would cover it. A zone encoder
+	-- still pops up, so this is a ring-specific suppression rather than the popup being broken.
+	displayMode, listRows = 'list', concert(10)
+	local savedPopupActive, savedPopupEid = popupActive, popupEid
+	popupActive, popupEid, midiOutFeedback = false, nil, {}
+	handle_sl_frame(ring(1))
+	check('the ring shows no popup - the patch list is the feedback', popupActive == false)
+	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_ZONE1,
+		0x41, 0xF7))
+	check('a zone encoder still shows its popup', popupActive == true)
+	popupActive, popupEid = savedPopupActive, savedPopupEid
+
 	-- A patch change re-syncs the target, however the patch was selected.
 	displayMode, listRows = 'list', concert(10)
 	ringPatchTarget = 99
