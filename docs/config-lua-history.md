@@ -2702,3 +2702,14 @@ previously unverifiable, because no real glyph height existed to check it agains
 mutation-tested: widening the value box to 45, nudging it 3px above the hole, setting
 `TEXT_H_MEDIUM = 40`, shrinking the hint row to 12, and moving `zname` to y=60 each fail exactly one
 assertion, and the first of those fails only the hole check - not the icon-bounds checks.
+
+### Confirmed on hardware (2026-09-20)
+
+Run under MainStage with the measured constants in place: the value box clears the ring's sides at
+`POPUP_VALUE_W = 36`, the value reads correctly centred at `KNOB_HOLE_DY = 18` with no nudge, and the
+Master Volume hint row is right 4px higher. That settles the conflict above in favour of the
+measurement — dy=18 is correct, and the 2026-09-14 in-situ reading that pushed it to 21 was wrong.
+
+`LUA_DEBUG` capture: 503 timer ticks, 0 Lua errors, 0 STANDBY. Two `IDENTIFICATION REJECTED
+(reason 00)` at init, recovered by the same-DeviceID retry path — see
+`docs/mainstage-integration.md`.
