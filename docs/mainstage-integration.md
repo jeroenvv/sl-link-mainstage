@@ -344,12 +344,23 @@ Copied from `CC_MAP` in `config.lua`:
 expected to be routed to channel 16, it wasn't worth the ambiguity of using it for something else if
 it ever is.
 
-### Ring colours are a mapping attribute, not a strip colour
+### Two MainStage mapping attributes drive what the SL88 shows
 
-The four zone encoder rings show the colour MainStage reports for each knob's mapping
-(`controller_midi_out`'s `color`). That comes from the **knob mapping's Custom Color attribute**, whose
-default is yellow — so every ring is amber until Custom Color is set per knob. Confirmed on hardware
-2026-09-20. A ring is dark when the channel is muted or nothing is mapped.
+Everything the screen and the rings know about a mapping comes from `controller_midi_out`'s
+`name`/`valueString`/`color`, and two attributes on the **knob mapping** in MainStage decide what
+arrives. Both are setup steps the script cannot infer. Confirmed on hardware 2026-09-20:
+
+| Attribute | Effect on the SL88 |
+|:---|:---|
+| **Custom Color** (default **yellow**) | colours that encoder's RGB ring. Every ring reads amber until this is set per knob |
+| **Replace Parameter Label** | becomes the popup's title. Without it MainStage sends the raw parameter name, so three mapped volumes all read "Volume"; name them and the popups become distinct |
+
+**Watch the checkbox-with-empty-field case:** "Replace Parameter Label" ticked but left blank makes
+MainStage report an **empty** name. The script treats that as no name — the popup falls back to the
+physical encoder's own label and CC, and the ring keeps its colour — rather than painting a blank title.
+
+A ring is dark when the channel is muted or nothing is mapped; a knob mapped to a volume also dims with
+its level.
 
 ### Mapping procedure
 
