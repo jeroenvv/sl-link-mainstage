@@ -1481,16 +1481,17 @@ POPUP_CENTER_X = POPUP_X + POPUP_W / 2 -- the panel is itself screen-centred, so
 -- draw_popup_knob() below). Offsets sized against TEXT_H_MEDIUM and the Knob bitmap's fixed
 -- BMP_ICON_W x BMP_ICON_H size.
 POPUP_KNOB_X = math.floor(POPUP_CENTER_X - BMP_ICON_W / 2) -- horizontally centred (screen-centred, see above); floored - BMP_ICON_W is odd, so the raw centring math lands on a half-pixel
-POPUP_KNOB_Y = POPUP_Y + 22 -- clears the border's inner top edge (+4) with headroom
-POPUP_LABEL_Y = POPUP_KNOB_Y + BMP_ICON_H + 12 -- below the ring, 12px gap under it
--- Third band, Master Volume popup only: below the label (TEXT_H_MEDIUM) plus POPUP_MUTE_HINT_GAP.
-POPUP_HINT_Y = POPUP_LABEL_Y + TEXT_H_MEDIUM + POPUP_MUTE_HINT_GAP
+-- SHARED by both popup modes: the control's name on top at SIZE_MEDIUM, then the ring. Both modes used
+-- to place these differently (the legacy label sat BELOW its ring), which made the two popups disagree
+-- about where the name lives - Jeroen asked for the name above the ring in both, in the larger font.
+POPUP_TITLE_Y = 42
+POPUP_KNOB_Y = 70
+-- Third band, Master Volume popup only: below the RING now that the name is above it.
+POPUP_HINT_Y = POPUP_KNOB_Y + BMP_ICON_H + 12
 
 -- FEEDBACK-mode geometry (a screen control exists - see the layout table this file's comment above
 -- points at). Exact y's from that table; panel spans POPUP_Y..POPUP_Y+POPUP_H (35-204). Legacy-mode
 -- geometry (POPUP_KNOB_Y etc. above) is untouched.
-POPUP_FB_TITLE_Y = 45
-POPUP_FB_KNOB_Y = 70
 POPUP_FB_VALUE_Y = 132
 POPUP_FB_HINT_Y = 165
 
@@ -1605,7 +1606,7 @@ end
 function draw_popup_label(name, ccNumber)
 	-- ccNumber is nil for controls with no CC (Master Volume/EID_A) - show just the name.
 	local label = ccNumber and (name .. ' - CC ' .. ccNumber) or name
-	draw_text('popupLabel', label, POPUP_CONTENT_X, POPUP_LABEL_Y,
+	draw_text('popupLabel', label, POPUP_CONTENT_X, POPUP_TITLE_Y,
 		POPUP_CONTENT_W, ALIGN_CENTER, SIZE_MEDIUM, POPUP_LABEL_FG[1], POPUP_LABEL_FG[2],
 		POPUP_LABEL_FG[3], POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
@@ -1613,8 +1614,8 @@ end
 -- FEEDBACK mode only: the MainStage screen control's own name, above the ring (see the layout
 -- table). SIZE_SMALL, unlike popupLabel's SIZE_MEDIUM - it is a secondary line here, not the star.
 function draw_popup_title(name)
-	draw_text('popupTitle', name or '', POPUP_CONTENT_X, POPUP_FB_TITLE_Y, POPUP_CONTENT_W,
-		ALIGN_CENTER, SIZE_SMALL, POPUP_LABEL_FG[1], POPUP_LABEL_FG[2], POPUP_LABEL_FG[3],
+	draw_text('popupTitle', name or '', POPUP_CONTENT_X, POPUP_TITLE_Y, POPUP_CONTENT_W,
+		ALIGN_CENTER, SIZE_MEDIUM, POPUP_LABEL_FG[1], POPUP_LABEL_FG[2], POPUP_LABEL_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
@@ -1779,7 +1780,7 @@ end
 -- by the paired push button's own feedback (encoder_mute_state) rather than Master Volume.
 function paint_popup_feedback()
 	draw_popup_title(popupFeedbackName)
-	draw_popup_knob(popupValue, POPUP_FB_KNOB_Y, false)
+	draw_popup_knob(popupValue, POPUP_KNOB_Y, false)
 	queue_popup_value()
 
 	-- Hint only; the ring LED is driven by flush_mute_leds() on the timer tick, not from here.
@@ -1959,7 +1960,7 @@ function show_master_volume_popup()
 	-- docs/config-lua-history.md#no-popup-over-the-config-screen-2026-09-20.
 	if displayMode == 'config' then return end
 	popupEid = nil
-	popupControlName = 'Main Volume'
+	popupControlName = 'AUDIO MASTER' -- what the SL88's own board calls it, so the two agree
 	popupCcNumber = nil
 	-- The value being SENT (masterVolume), tracked locally only - never reseeded from
 	-- masterVolumeRead, which does not track our writes on this hardware. See
