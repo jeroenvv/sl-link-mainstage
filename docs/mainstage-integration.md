@@ -142,10 +142,6 @@ injected substitution.
   (`docs/config-lua-history.md#flush_soon_ms-retuned-to-25-backed-out-2026-08-29`) — is another
   unexplained dropout with a healthy-looking session clock; whether the two share a cause is
   speculation, not established.
-- **Whether the popup value still reads high in the ring** once it sits at the measured hole offset
-  rather than the old hand-tuned nudge — a 2026-09-14 in-situ look and the 2026-09-20 caliper
-  disagree about the same y. See
-  [`config-lua-history.md#a-conflict-with-the-2026-09-14-note`](config-lua-history.md#a-conflict-with-the-2026-09-14-note).
 
 ## `FLUSH_SOON_MS` sweep: settled at 35 (2026-08-29)
 
@@ -509,8 +505,12 @@ Not yet exercised, so treat as unproven — neither is a regression, both were a
 this branch:
 
 - **Zoom LONG press** (the force-full-repaint path in `handle_zoom_button`).
-- **The re-identification wait path** (`STATE_REIDENTIFY_WAIT`, `handle_identification_rejected`) —
-  needs a deliberate DeviceID collision.
+
+**The re-identification wait path is no longer unproven (2026-09-20).** It fired unprompted on an
+ordinary relaunch: one instance was rejected twice with reason `00`, retried on the *same* DeviceID
+both times per `MAX_SAME_ID_RETRIES`, and was approved on the third request — so
+`STATE_REIDENTIFY_WAIT` and the retry budget work on hardware. The instance **bump** past those
+retries is still unproven, since it never had to run.
 
 ## `action_<app>` spike: verified inert (2026-09-05)
 
