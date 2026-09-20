@@ -2880,6 +2880,14 @@ channel strip's colour, and the script does not compute it.
 So distinct ring colours are a **setup step in MainStage**, not something the script can infer: set
 Custom Color per knob mapping. Confirmed working by Jeroen once he did.
 
+The companion attribute is **Replace Parameter Label**, which supplies the popup's title - the answer to
+"three popups all called Volume". One trap found on hardware the same day: ticked with an empty field,
+MainStage reports an **empty name**, which would have painted a blank title band. An empty name is now
+normalised to nil, keeping the entry so the ring still has its colour while the popup falls back to the
+physical encoder's label. That path also crashed the mute-flip branch (`name:lower()` on nil) - caught by
+the new assertion before it reached hardware, which is the second time a nilable field from this callback
+has needed guarding.
+
 **Semantics, agreed with Jeroen:** the ring shows MainStage's own colour for whatever the knob is mapped
 to, and a muted channel goes **fully dark**. A knob mapped to a **volume** also tracks its level in the
 ring's *brightness* - the ring dims as the fader comes down and bottoms out dark (added on his request
