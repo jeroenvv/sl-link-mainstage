@@ -24,42 +24,16 @@ MainStage's stdout — turn it back off afterward, since it measurably slows Mai
 
 ## Setting up patch switching from the joystick ring
 
-Turning the joystick's rotary ring selects patches. It works by injecting a **Bank Select** pair followed
-by a **Program Change**, so MainStage needs to be told to accept those — until it is, the ring does
-nothing at all. Verified against MainStage 4.3.1.
+The joystick's rotary ring selects patches by sending Bank Select + Program Change, so the concert's
+patches need program change numbers: in the Patch List's action menu, run the command that **resets
+program change numbers**. It numbers them in list order and rolls into the next bank past 128 patches.
+⚠️ It deletes any numbering you already have.
 
-**1. Concert Settings → Attributes** (select the concert itself in the Patch List, then the Attributes
-tab):
+That is the only step verified as necessary (MainStage 4.3.1, 133-patch concert). If the ring changes
+nothing, check **Concert Settings → Attributes**: *Program Changes Device* must admit this device and
+*Program Changes Channel* must admit channel 16 — both plausible gates, neither isolated in testing.
 
-| Setting | Set it to | Why |
-|:---|:---|:---|
-| **Program Changes Device** | the SL88 — or **All** | The gate. MainStage only lets program changes select patches when they come from this source. Nothing works until this is right |
-| **Program Changes Channel** | **16** — or All | The script sends on channel 16 |
-| **Program Change Range** | **1–128** | The script assumes this numbering |
-| **Reload Patches from saved state when receiving program change** | **off** (recommended) | Otherwise re-selecting the patch you are already on reloads it from its saved state mid-performance |
-
-**2. Give the patches program change numbers.** From the Patch List's action menu, choose the command
-that **resets program change numbers** — it numbers every non-skipped patch in Patch List order and rolls
-into the next bank past 128. ⚠️ It **deletes any numbering you already have**, so check before running it
-on a concert you numbered by hand.
-
-**3. Optional, but makes it obvious:** turn on the Patch List option that **shows each patch's bank and
-program change number** beside its name. The ring should then walk exactly down that column.
-
-Then load the concert, select **MainStage** in the SL88's APP list, and turn the ring.
-
-Notes:
-
-- **Skipped patches are untested.** MainStage excludes them when numbering, but the script counts patches
-  from the list MainStage hands it, and whether that list also omits them has not been checked. If you use
-  skip and the ring lands one or two patches off, that is the likely cause — say so and it can be fixed.
-- **Concerts longer than 128 patches work**: the numbering rolls into bank 2, 3 … and the script sends the
-  matching bank before each program change.
-- The ring sends **nothing but the patch selection** — no CC, and no popup on the SL88's screen, since the
-  patch list is already the feedback. Its old CC 50 was removed in v3.0.0.
-- If patch switching behaves oddly, check that **nothing else in the concert is mapped to patch selection**
-  (a knob mapped to *current patch number*, or an assignment left over from experimenting) — two sources
-  fighting looks like the ring skipping or sticking.
+The ring sends nothing else: no CC, and no popup, since the patch list is already the feedback.
 
 ## Versioning
 
