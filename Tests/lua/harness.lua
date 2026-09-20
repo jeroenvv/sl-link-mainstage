@@ -5189,6 +5189,112 @@ do
 		savedDrawn, savedPending, savedName, savedCc, savedFeedback
 end
 
+-- MARK: - 87. The ring selects patches: Bank Select + Program Change injection
+--
+-- Confirmed on hardware 2026-09-20 (MainStage 4.3.1): injecting a Bank Select pair followed by a Program
+-- Change selects a patch EXACTLY - no scaling, no skipped patches - and banks lift the 128 ceiling. The
+-- earlier absolute-CC approach is gone; see
+-- docs/mainstage-integration.md#the-ring-selects-patches-with-bank-select-and-program-change.
+do
+	local savedRows, savedTarget, savedSet, savedPatch, savedMode =
+		listRows, ringPatchTarget, activeSetIndex, activePatchIndex, displayMode
+	local savedCC, savedDelta, savedOrder = pendingCC, pendingDelta, pendingCCOrder
+	local savedProgram, savedBank = pendingProgram, pendingBank
+
+	-- A concert with set headers interleaved: the ordinal counts patches, not rows.
+	local function concert(patchCount)
+		local rows = { { label = 'Set A', isPatch = false, setIndex = 0 } }
+		for i = 1, patchCount do
+			if i == 4 then rows[#rows + 1] = { label = 'Set B', isPatch = false, setIndex = 1 } end
+			rows[#rows + 1] = { label = 'P' .. i, isPatch = true, setIndex = i < 4 and 0 or 1,
+				patchIndex = i - 1 }
+		end
+		return rows
+	end
+	local function ring(delta)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_JOYSTICK,
+			0x40 + delta, 0xF7)
+	end
+
+	displayMode, listRows = 'list', concert(10)
+	check('the concert patch count skips set headers', concert_patch_count() == 10)
+
+	-- The target moves by the delta and the injection carries ITS bank and program.
+	ringPatchTarget, pendingCC, pendingDelta, pendingCCOrder = 1, {}, {}, {}
+	pendingProgram, pendingBank = nil, nil
+	handle_sl_frame(ring(2))
+	check('a ring turn moves the patch target', ringPatchTarget == 3)
+	check('...and queues that patch as a program change', pendingProgram == 2)
+	check('...in bank 0 for the first 128 patches', pendingBank == 0)
+
+	-- The injected bytes: Bank MSB, Bank LSB, then the PC - the order Apple's guidance requires, since
+	-- MainStage latches the bank and acts on the program change.
+	local out = flush_pending_cc()
+	local bytes = out ~= nil and out.midi or {}
+	local tail = {}
+	for i = math.max(1, #bytes - 7), #bytes do tail[#tail + 1] = bytes[i] end
+	check('the injection ends with Bank MSB, Bank LSB, then Program Change',
+		hex(tail) == string.format('%02X 00 00 %02X 20 00 %02X 02',
+			0xB0 + CC_CHANNEL, 0xB0 + CC_CHANNEL, 0xC0 + CC_CHANNEL))
+	check('the pending program is consumed by the flush', pendingProgram == nil)
+	check('the pending bank is consumed by the flush', pendingBank == nil)
+
+	-- The relative CC still goes out alongside, so an existing mapping keeps working.
+	ringPatchTarget, pendingCC, pendingDelta, pendingCCOrder = 1, {}, {}, {}
+	handle_sl_frame(ring(1))
+	check('the ring still emits its relative delta too', pendingDelta['JOY_ROTATE'] == 1)
+
+	-- Past 128 patches the bank advances instead of the program wrapping silently: patch 129 is bank 1,
+	-- program 0. This is what lifts the 128-patch ceiling, and it was verified across the boundary.
+	listRows = concert(200)
+	ringPatchTarget, pendingCC, pendingDelta, pendingCCOrder = 128, {}, {}, {}
+	pendingProgram, pendingBank = nil, nil
+	handle_sl_frame(ring(1))
+	check('patch 129 crosses into bank 1', pendingBank == 1)
+	check('...with the program wrapping to 0', pendingProgram == 0)
+	ringPatchTarget = 128
+	pendingProgram, pendingBank = nil, nil
+	handle_sl_frame(ring(0 - 1))
+	check('patch 127 stays in bank 0', pendingBank == 0 and pendingProgram == 126)
+
+	-- Clamps at the concert's own ends.
+	listRows = concert(10)
+	ringPatchTarget, pendingProgram = 2, nil
+	handle_sl_frame(ring(-8))
+	check('scrolling back past the first patch clamps there', ringPatchTarget == 1)
+	check('...and selects program 0', pendingProgram == 0)
+	ringPatchTarget, pendingProgram = 9, nil
+	handle_sl_frame(ring(8))
+	check('scrolling past the last patch clamps at the count', ringPatchTarget == 10)
+	check('...and selects that patch', pendingProgram == 9)
+
+	-- In config mode the ring scrolls that screen and injects NOTHING.
+	displayMode = 'config'
+	ringPatchTarget, pendingProgram, pendingBank = 1, nil, nil
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	handle_sl_frame(ring(2))
+	check('the ring injects no program change while the config screen shows', pendingProgram == nil)
+	check('...and does not move the patch target either', ringPatchTarget == 1)
+
+	-- A patch change re-syncs the target, however the patch was selected.
+	displayMode, listRows = 'list', concert(10)
+	ringPatchTarget = 99
+	local rows = {
+		{ IsPatch = false, Label = 'Set A', SetIndex = 0 },
+		{ IsPatch = true, Label = 'P1', SetIndex = 0, PatchIndex = 0 },
+		{ IsPatch = true, Label = 'P2', SetIndex = 0, PatchIndex = 1 },
+		{ IsPatch = false, Label = 'Set B', SetIndex = 1 },
+		{ IsPatch = true, Label = 'P3', SetIndex = 1, PatchIndex = 0 },
+	}
+	controller_select_patch(0, 'P3', 'Set B', 'Concert', rows, 1, 0)
+	check('a patch change re-syncs the ring target to the active patch ordinal', ringPatchTarget == 3)
+
+	listRows, ringPatchTarget, activeSetIndex, activePatchIndex, displayMode =
+		savedRows, savedTarget, savedSet, savedPatch, savedMode
+	pendingCC, pendingDelta, pendingCCOrder = savedCC, savedDelta, savedOrder
+	pendingProgram, pendingBank = savedProgram, savedBank
+end
+
 -- MARK: - Summary
 
 realPrint('')
