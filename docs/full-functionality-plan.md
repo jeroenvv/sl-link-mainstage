@@ -42,8 +42,11 @@ channel": mute on the encoder press, solo on the button below it. Each has a whi
 
 Depends on Q3 — if solo turns out to be unreachable, see the fallback below.
 
-> **Corrected 2026-09-20.** Button `0x09` is **SETTINGS**, not Global — confirmed on hardware by
-> pressing it in isolation. It now toggles the config screen. `0x0A` and `0x0E` are delivered too.
+> **Note added 2026-09-20.** `0x09` is right: the spec calls it the Global Button, and it now toggles
+> the config screen. Only the SL88 MK2's panel disagrees, silk-screening that button SETTINGS (and
+> Apply/Home as CONFIRM/ZOOM). `0x0A` and `0x0E` are confirmed delivered too. An earlier version of
+> this note claimed `0x09` was "SETTINGS, not Global" — that was wrong, and came from naming the
+> constant off the panel instead of the spec.
 
 Still unassigned: Global (`0x09`), DAW (`0x0A`), Apply (`0x0E`), Cancel (`0x0F`), Home (`0x10`), and
 the A encoder push button (`0x0B`). Suggested, not yet decided:

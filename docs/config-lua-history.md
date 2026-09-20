@@ -2305,8 +2305,8 @@ pacing reason as the mute and LED writes — it now answers reliably. See
 `LID` `0x00`-`0x07` one at a time with the id named on the SL88's own screen. The resulting table is in
 `docs/implementing-sl-link.md` §5. Run logged in, fw 1.1.2, zero `MIDISend` errors.
 
-**All 12 white LEDs are contiguous from `0x00`**: ten button lamps (Buttons 1-4, APP, CHECK, CANCEL,
-ZOOM, SETTINGS, DAW) at `0x00`-`0x09`, then the A encoder ring at `0x0A` and the B encoder ring at
+**All 12 white LEDs are contiguous from `0x00`**: ten button lamps (Zone 1-4, APP, Apply, Cancel,
+Home, Global, DAW) at `0x00`-`0x09`, then the A encoder ring at `0x0A` and the B encoder ring at
 `0x0B`. `0x0C` and above are dark. This **confirms `WLID_A_ENC = 0x0A`**, which had carried a
 "PROBABLE, NOT CERTAIN" caveat in `config.lua` since it was first guessed from the upstream docs, and
 establishes `0x0B` as B's ring.
@@ -2428,11 +2428,11 @@ earlier slot.
 
 ## Follow-up: can settings be stored and read back? (registered 2026-09-17)
 
-Idea, not yet investigated: wire the SETTINGS button to a settings screen that edits the CC mappings
+Idea, not yet investigated: wire the Global button to a settings screen that edits the CC mappings
 live, instead of them being constants in `CC_MAP` that require an edit-and-redeploy.
 
 The screen itself is the easy half — it is another paint function in the same family as the list and
-zoom screens, and SETTINGS already reaches the host as a button event. The open question is
+zoom screens, and the Global button already reaches the host as a button event. The open question is
 **persistence**, and there are two candidate homes for it, neither confirmed:
 
 - **Host side.** MainStage's Lua sandbox has no `io`/`os` and no `UserDefaults` equivalent, so nothing
@@ -2718,12 +2718,15 @@ measurement — dy=18 is correct, and the 2026-09-14 in-situ reading that pushed
 
 A third full display mode, `'config'`, alongside `'list'`/`'zoom'`/`'popup'`: the script version and
 the whole CC map, so the mapping can be read off the keyboard instead of these docs. Toggled by the
-SETTINGS button, scrolled by the joystick ring.
+Global button, scrolled by the joystick ring.
 
-**The button id was unknown and had to be measured.** The spec's button-id table is not vendored in
-this repo, and `docs/full-functionality-plan.md` guessed `0x09` was "Global". Pressing each candidate
-in isolation under `Scripts/probe-display.swift` settled it: **`0x09` is SETTINGS**, `0x0A` is DAW,
-`0x0E` is APPLY, and all three reach the host. The same run confirmed the Navigation bitmap group's
+**The button id was unknown and had to be measured.** The spec's button-id table was not vendored in
+this repo (it is now - see `docs/implementing-sl-link.md` section 6), so pressing each candidate in
+isolation under `Scripts/probe-display.swift` settled which ids arrive: **`0x09`**, `0x0A` and `0x0E`,
+all three reaching the host. `docs/full-functionality-plan.md` had `0x09` right all along as the spec's
+**Global Button**; only the SL88 MK2's panel disagrees, silk-screening it SETTINGS. The constant was
+first named `BID_SETTINGS` off the panel and renamed to `BID_GLOBAL` the same day - see
+[Button and LED names aligned with the spec](#button-and-led-names-aligned-with-the-spec-2026-09-20). The same run confirmed the Navigation bitmap group's
 icon indices (`0x00`-`0x07` = left, right, left-right, up-down, rotate, push, apply, cancel) — the
 first indices verified in any group other than Knob, and exactly the order the spec states. The round
 arrow (`0x04`) is the config screen's scroll indicator.
@@ -2759,9 +2762,9 @@ hand-written table safe.
   a fader while reading the mapping list. The `IT_ENCODER` branch returns before `queue_relative_cc`,
   and no popup is shown either (it would cover the screen being scrolled). Every other control keeps
   emitting normally.
-- **SETTINGS is not MIDI-mappable.** It is absent from `BUTTON_CC`, so it emits no CC and generates no
-  `controller_info()` item — the same treatment ZOOM already had. Asserted for both.
-- **ZOOM's SHORT press does nothing in config mode.** One button owns one mode. Left alone, the toggle
+- **The Global button is not MIDI-mappable.** It is absent from `BUTTON_CC`, so it emits no CC and
+  generates no `controller_info()` item — the same treatment Home already had. Asserted for both.
+- **Home's SHORT press does nothing in config mode.** One button owns one mode. Left alone, the toggle
   would compute `'zoom'` regardless of what config was covering and discard `configPreviousMode`. LONG
   still forces a full repaint, which works on any screen.
 
@@ -2781,20 +2784,20 @@ hand-written table safe.
 
 ### Harness
 
-38 assertions, mutation-checked: adding SETTINGS to `BUTTON_CC`, duplicating or dropping a
-`CONFIG_ROWS` entry, letting the ring emit its CC in config mode, and letting ZOOM toggle out of config
+38 assertions, mutation-checked: adding the Global button to `BUTTON_CC`, duplicating or dropping a
+`CONFIG_ROWS` entry, letting the ring emit its CC in config mode, and letting Home toggle out of config
 each fail the matching assertion. One mutation also exposed a fragile test of my own — with the ring's
 scroll branch disabled, the CC path opened a popup, and the leaked `popupActive` changed what the later
-SETTINGS round-trip assertion proved. That block now sets `popupActive` explicitly rather than
+Global round-trip assertion proved. That block now sets `popupActive` explicitly rather than
 inheriting it.
 
 ### Hardware round 1: three changes (2026-09-20)
 
-The config screen, its lamp, the SETTINGS toggle and the ring scroll all worked first time - the
-capture shows three clean `settings` round-trips (from zoom and from list), 100 ring turns, and the
-ZOOM-ignored-in-config branch firing. Three things came back from it.
+The config screen, its lamp, the Global toggle and the ring scroll all worked first time - the
+capture shows three clean round-trips (from zoom and from list), 100 ring turns, and the
+Home-ignored-in-config branch firing. Three things came back from it.
 
-- **The ZOOM lamp must not move when config opens.** It tracks list-vs-zoom only, and config is an
+- **The Home lamp must not move when config opens.** It tracks list-vs-zoom only, and config is an
   overlay on one of those, so `flush_mode_led` now resolves `'config'` to `configPreviousMode` before
   deciding the lamp - the same indirection the popup already used for `popupPreviousMode`.
 - **The title line is `SIZE_MEDIUM`.** Everything below it shifted down by the extra glyph height
@@ -2825,3 +2828,29 @@ the situation this one appeared in - a 21-message repaint queued behind a popup 
 `idleTicks` frozen the whole time because it only advances on a non-draining tick - but that is
 removing the trigger, not explaining the mechanism. If a dropout recurs, this is the first place to
 look.
+
+
+## Button and LED names aligned with the spec (2026-09-20)
+
+`BID_SETTINGS`/`WLID_SETTINGS` were named off the SL88 MK2's front panel, which silk-screens three
+buttons differently from the spec. Jeroen's rule: the spec's name wins, and it is applied everywhere.
+
+The spec's tables (`sl-link/docs/hardware-io.md`, pinned commit `4c0824d`, now vendored in
+`docs/implementing-sl-link.md` section 6) name `0x09` the **Global Button**, `0x0E` the **Apply
+Button** and `0x10` the **Home Button**; the panel calls those SETTINGS, CONFIRM and ZOOM. The LED
+sweep's by-eye label "CHECK" for `WLID 0x05` was the **Apply** lamp.
+
+Renamed, no behaviour change and no wire bytes touched: `BID_ZOOM`/`WLID_ZOOM` ->
+`BID_HOME`/`WLID_HOME`, `BID_SETTINGS`/`WLID_SETTINGS` -> `BID_GLOBAL`/`WLID_GLOBAL`,
+`handle_zoom_button` -> `handle_home_button`, `handle_settings_button` -> `handle_global_button`, and
+the two lamp memos `modeLedSent`/`configLedSent` -> `homeLedSent`/`globalLedSent` (each is named after
+the lamp it drives).
+
+**Display modes deliberately keep their own names.** `'list'`/`'zoom'`/`'config'`/`'popup'`,
+`displayMode`, `paint_config_screen` and every `CONFIG_*` constant are screen concepts, not buttons, so
+`handle_home_button` toggling `'zoom'` and `handle_global_button` opening `'config'` is correct rather
+than inconsistent.
+
+**A claim to retire:** an earlier note today said this repo had `0x09` "wrong" as Global. It did not -
+the id was right, and only the name differed from the panel. That error came from naming the constant
+off the hardware instead of the spec, which is the whole reason for the rule.

@@ -85,7 +85,7 @@ SL_INSTANCE_MAX = 0x7E
 
 -- Item types
 IT_SYSTEM = 0x00
-IT_BUTTON = 0x01 -- handled for BID_ZOOM, BID_A_ENC (see handle_zoom_button/handle_a_encoder_button) and every BID in BUTTON_CC; other BIDs are logged only
+IT_BUTTON = 0x01 -- handled for BID_HOME, BID_A_ENC (see handle_home_button/handle_a_encoder_button) and every BID in BUTTON_CC; other BIDs are logged only
 IT_LED = 0x02 -- White LED, Host -> SL only: <WLID> <state 0|1> - see docs/implementing-sl-link.md §6
 IT_ENCODER = 0x03 -- handled for every EID in ENCODER_CC, plus EID_A (drives Master Volume directly)
 IT_DISPLAY = 0x04
@@ -110,9 +110,11 @@ MVOL_FAST_DELTA_THRESHOLD = 3
 MVOL_FAST_WRITES_PER_TICK = 4
 
 -- Button IDs, matching the spec's button ID table (see docs/implementing-sl-link.md).
-BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
+BID_HOME = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
 BID_CANCEL = 0x0F -- spec's Cancel button; NOT YET confirmed on hardware, see docs/implementing-sl-link.md
-BID_SETTINGS = 0x09 -- SETTINGS button, confirmed on hardware 2026-09-20; toggles the config screen.
+BID_GLOBAL = 0x09 -- spec's Global Button, confirmed on hardware 2026-09-20; toggles the config
+	-- screen. The SL88 MK2's panel silk-screens it SETTINGS - spec names win here, see
+	-- docs/implementing-sl-link.md section 6.
 	-- MUST stay out of BUTTON_CC: it is the script's own UI button, not a mappable control (the
 	-- harness asserts this). See docs/config-lua-history.md#the-config-screen-2026-09-20
 BID_JOY_UP = 0x11
@@ -133,11 +135,11 @@ BID_A_ENC = 0x0B -- SLButtonID.aEncoderButton; toggles Master Volume mute (handl
 	-- spec calls this reserved for USB audio, but A traffic reaches the host, see
 	-- docs/implementing-sl-link.md §7
 
--- White LED ids for the A/B encoder rings (IT_LED). Confirmed on hardware 2026-09-17 by sweeping
--- every id; the full table is in docs/implementing-sl-link.md §5. Only A and B have a ring LED -
--- Zone 1-4 and the joystick have none.
-WLID_ZOOM = 0x07 -- ZOOM button lamp; see docs/implementing-sl-link.md section 5
-WLID_SETTINGS = 0x08 -- SETTINGS button lamp; lit only while the config screen is showing
+-- White LED ids (IT_LED), spec-named. Confirmed on hardware 2026-09-17 by sweeping every id; the full
+-- table is in docs/implementing-sl-link.md §6. Only A and B have a ring LED - Zone 1-4 and the
+-- joystick have none.
+WLID_HOME = 0x07 -- Home button lamp (panel: ZOOM); see docs/implementing-sl-link.md section 6
+WLID_GLOBAL = 0x08 -- Global button lamp (panel: SETTINGS); lit only while the config screen shows
 WLID_A_ENC = 0x0A
 WLID_B_ENC = 0x0B
 
@@ -613,8 +615,8 @@ queuedDisplayOps = 0
 
 -- What MainStage has loaded (from controller_select_patch), and the model for both display modes
 -- below. currentConcert already existed before this feature and is reused rather than adding a
--- parallel concertName. 'zoom' stays the default (unchanged on load/restart); the Zoom button
--- (BID_ZOOM, see handle_zoom_button) toggles to 'list' and back. See
+-- parallel concertName. 'zoom' stays the default (unchanged on load/restart); the Home button
+-- (BID_HOME, see handle_home_button) toggles to 'list' and back. See
 -- docs/config-lua-history.md#defect-a-the-ungated-flush-drained-at-round-trip-speed-not-timer-speed
 -- for why 'list' used to be avoided (a display-pacing bug, since fixed - not anything about the
 -- list screen itself).
@@ -1749,36 +1751,36 @@ end
 -- popup, and the popup dismisses after ~2s anyway - the LED is a persistent indicator, so it has to
 -- track the feedback rather than the popup. Not queued from controller_midi_out either, which must
 -- never queue. Lit = unmuted, matching the A ring.
--- Last ZOOM lamp state sent; nil means 'unknown, send it'. Same memo/clear discipline as
+-- Last HOME lamp state sent; nil means 'unknown, send it'. Same memo/clear discipline as
 -- encoderMuteLedSent - see flush_mute_leds.
-modeLedSent = nil
--- Same for the SETTINGS lamp; nil means 'unknown, send it'.
-configLedSent = nil
+homeLedSent = nil
+-- Same for the GLOBAL lamp; nil means 'unknown, send it'.
+globalLedSent = nil
 
--- ZOOM lamp mirrors the screen: lit in the patch list, dark in zoom. Drained on the tick and
+-- HOME lamp mirrors the screen: lit in the patch list, dark in zoom. Drained on the tick and
 -- ACTIVE-only for the same reasons as flush_mute_leds. During a popup it follows the mode the popup
 -- is covering, so a transient popup never darkens it.
 function flush_mode_led()
 	if state ~= STATE_ACTIVE then return end
 	-- What is actually on screen: a popup COVERS a mode rather than replacing it.
 	local shown = popupActive and (popupPreviousMode or displayMode) or displayMode
-	-- The ZOOM lamp tracks list-vs-zoom ONLY. The config screen is a temporary overlay on one of
+	-- The HOME lamp tracks list-vs-zoom ONLY. The config screen is a temporary overlay on one of
 	-- those, so it must leave the lamp exactly as it was - Jeroen's requirement after the first
 	-- hardware run, where entering config darkened it. Follow what config is covering, the same way
 	-- the popup follows popupPreviousMode.
 	local underlying = shown
 	if underlying == 'config' then underlying = configPreviousMode or 'list' end
 	local ledOn = (underlying == 'list')
-	if modeLedSent ~= ledOn then
-		modeLedSent = ledOn
-		queue_message(msg_white_led(WLID_ZOOM, ledOn))
+	if homeLedSent ~= ledOn then
+		homeLedSent = ledOn
+		queue_message(msg_white_led(WLID_HOME, ledOn))
 	end
-	-- SETTINGS lamp: lit only while the config screen shows, so the button's own light is the
+	-- GLOBAL lamp: lit only while the config screen shows, so the button's own light is the
 	-- "you are in config" indicator.
 	local configOn = (shown == 'config')
-	if configLedSent ~= configOn then
-		configLedSent = configOn
-		queue_message(msg_white_led(WLID_SETTINGS, configOn))
+	if globalLedSent ~= configOn then
+		globalLedSent = configOn
+		queue_message(msg_white_led(WLID_GLOBAL, configOn))
 	end
 end
 
@@ -2123,7 +2125,7 @@ end
 
 -- MARK: - Config screen
 --
--- A third full display mode ('config', alongside 'list'/'zoom'/'popup'), toggled by the SETTINGS
+-- A third full display mode ('config', alongside 'list'/'zoom'/'popup'), toggled by the Global
 -- button: the script version and the whole CC map, for reading the mapping off the keyboard instead
 -- of the docs. Scrolled by the joystick ring, which suppresses its own CC while this screen shows
 -- (see handle_sl_frame's IT_ENCODER branch). Layout agreed with Jeroen; see
@@ -2400,8 +2402,8 @@ function paint_screen()
 		' "' .. patchName .. '"')
 end
 
--- Mode switching. Wired to the Zoom button (BID_ZOOM, confirmed on hardware - see
--- handle_zoom_button).
+-- Mode switching. Wired to the Home button (BID_HOME, confirmed on hardware - see
+-- handle_home_button).
 --
 -- The ONE place in the file that sends Clear Screen (rule 3 in the banner bans it everywhere else).
 -- MUST stay queued as its own discrete message with no regionId - never coalesced, never bundled
@@ -2607,7 +2609,7 @@ function enter_active_session()
 	-- Forget what the mute rings were last sent, so the next tick re-establishes them for this
 	-- session rather than trusting a memo from before the SL88 confirmed us - same reasoning as
 	-- invalidate_all() for the display. See docs/config-lua-history.md#startup-led-discarded-before-login-confirmation-2026-09-16.
-	encoderMuteLedSent, modeLedSent, configLedSent = {}, nil, nil
+	encoderMuteLedSent, homeLedSent, globalLedSent = {}, nil, nil
 	return true
 end
 
@@ -2628,7 +2630,7 @@ function handle_login()
 	end
 	-- And the mute rings, for the same reason: enter_active_session's own clear does not run when we
 	-- were already ACTIVE, so a ring set before this confirmation was discarded and never re-sent.
-	encoderMuteLedSent, modeLedSent, configLedSent = {}, nil, nil
+	encoderMuteLedSent, homeLedSent, globalLedSent = {}, nil, nil
 end
 
 function handle_standby()
@@ -2803,10 +2805,10 @@ function handle_sl_frame(e)
 		local bid = func
 		local pressKind = e[9]
 		local ccButton = BUTTON_CC[bid]
-		if bid == BID_ZOOM then
-			handle_zoom_button(pressKind)
-		elseif bid == BID_SETTINGS then
-			handle_settings_button(pressKind)
+		if bid == BID_HOME then
+			handle_home_button(pressKind)
+		elseif bid == BID_GLOBAL then
+			handle_global_button(pressKind)
 		elseif bid == BID_A_ENC then
 			handle_a_encoder_button(pressKind)
 		elseif bid == BID_CANCEL then
@@ -2891,7 +2893,7 @@ end
 -- SHORT toggles mute alone (VOL=MVOL_IGNORE_VOL so the volume is untouched); LONG resets volume to
 -- MVOL_SEED_DEFAULT (plain write, no MUTE byte - see msg_master_volume_write's own comment) and
 -- separately unmutes, satisfying the project's LONG-must-never-be-a-no-op rule (see
--- handle_zoom_button's own comment) since it always lands on a known volume/mute pair.
+-- handle_home_button's own comment) since it always lands on a known volume/mute pair.
 function handle_a_encoder_button(pressKind)
 	if pressKind == PRESS_LONG then
 		masterVolume = MVOL_SEED_DEFAULT
@@ -2925,40 +2927,40 @@ end
 -- - dismiss_popup() already restores popupPreviousMode via set_display_mode. LONG needs no special
 -- case: invalidate_all()+paint_screen() already redraws whatever displayMode currently is, popup
 -- included, via paint_screen's 3-way dispatch.
-function handle_zoom_button(pressKind)
+function handle_home_button(pressKind)
 	if pressKind == PRESS_LONG then
-		slog('<- BUTTON zoom LONG - forcing full repaint of mode=' .. displayMode)
+		slog('<- BUTTON home LONG - forcing full repaint of mode=' .. displayMode)
 		invalidate_all()
 		paint_screen()
 		-- invalidate_all() above guarantees this repaint queues real content - see request_quick_rearm's
 		-- comment.
 		request_quick_rearm()
 	elseif displayMode == 'popup' then
-		slog('<- BUTTON zoom SHORT - dismissing popup (mode=popup)')
+		slog('<- BUTTON home SHORT - dismissing popup (mode=popup)')
 		dismiss_popup()
 	elseif displayMode == 'config' then
-		-- The config screen is entered and left with SETTINGS alone: one button owns one mode. Toggling
+		-- The config screen is entered and left with the Global button alone: one button owns one mode. Toggling
 		-- here would compute 'zoom' regardless of what config is covering and lose configPreviousMode.
-		slog('<- BUTTON zoom SHORT - ignored (mode=config; SETTINGS dismisses it)')
+		slog('<- BUTTON home SHORT - ignored (mode=config; the Global button dismisses it)')
 	else
 		local newMode = (displayMode == 'zoom') and 'list' or 'zoom'
-		slog('<- BUTTON zoom SHORT - toggling display mode -> ' .. newMode)
+		slog('<- BUTTON home SHORT - toggling display mode -> ' .. newMode)
 		set_display_mode(newMode)
 	end
 end
 
--- SETTINGS toggles the config screen, restoring whatever it covered. LONG runs the same action as
--- SHORT rather than being dropped - the project rule for LONG_PRESSION (see handle_zoom_button's
+-- The Global button (panel: SETTINGS) toggles the config screen, restoring whatever it covered. LONG runs the same action as
+-- SHORT rather than being dropped - the project rule for LONG_PRESSION (see handle_home_button's
 -- comment); a second effect on a screen-toggle button would only surprise.
 --
 -- Pressed while a popup is up, it takes over the popup's stored previous mode rather than calling
 -- dismiss_popup() first: that would be a second full Clear-Screen repaint for a screen nobody sees.
 -- configScroll deliberately survives a dismiss, so re-opening returns to the same page.
-function handle_settings_button(pressKind)
+function handle_global_button(pressKind)
 	if displayMode == 'config' then
 		local back = configPreviousMode or 'list'
 		configPreviousMode = nil
-		slog('<- BUTTON settings - leaving config -> ' .. back)
+		slog('<- BUTTON global - leaving config -> ' .. back)
 		set_display_mode(back)
 		return
 	end
@@ -2968,7 +2970,7 @@ function handle_settings_button(pressKind)
 	else
 		configPreviousMode = displayMode
 	end
-	slog('<- BUTTON settings - entering config (over ' .. tostring(configPreviousMode) .. ')')
+	slog('<- BUTTON global - entering config (over ' .. tostring(configPreviousMode) .. ')')
 	set_display_mode('config')
 end
 

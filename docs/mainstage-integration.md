@@ -73,7 +73,7 @@ Tested against the SL88 with a real concert loaded, over three deploy rounds. Co
   after an idle tick waited out the whole 3s keepalive one-shot, because `rearm_timer()` will not
   touch an already-pending timer. `request_quick_rearm()` shortens a LONG-armed outstanding timer
   when display work is queued. **`settriggertimer` is confirmed to re-arm from
-  `controller_select_patch`, `set_display_mode` and `handle_zoom_button`** — every `quick-rearm` log
+  `controller_select_patch`, `set_display_mode` and `handle_home_button`** — every `quick-rearm` log
   line was followed by a tick ~55ms later instead of ~3s. It remains a confirmed no-op only from
   inside `controller_timer_trigger`.
 - **Zoom screen layout** — all lines centred, patch name and NEXT line legible, `n/N` counting the
@@ -188,7 +188,7 @@ What's open, drawn from what's already tracked in this file and in `docs/config-
   ignored. The MIDI proxy was never needed. See "Master Volume needs a live login" below and commit
   `f2d9f3e`. Still unexplained: the login-time READ goes unanswered while gesture READs are answered.
 - **Two hardware paths remain unproven** (see "Refactor verification" above): Zoom LONG press (the
-  force-full-repaint path in `handle_zoom_button`), and the re-identification wait path
+  force-full-repaint path in `handle_home_button`), and the re-identification wait path
   (`STATE_REIDENTIFY_WAIT`, `handle_identification_rejected`), which needs a deliberate DeviceID
   collision to exercise.
 - **Login Recall (`00 06`)** stays blocked on a stored device icon, which is out of scope (see "Open
@@ -399,9 +399,11 @@ in MainStage's MIDI Message Monitor by moving Stick 1 vertically and observing C
 
 Deployed and tested against the SL88 with a real concert loaded. MainStage's MIDI Learn does accept a CC arriving by injection — Selector 1 (CC 67) was learned and responded on the first attempt, confirming the one assumption the whole design rested on. The `[sllink] CC batch: N CC(s), B bytes` log line confirms each injection round on the script side.
 
-Not yet mapped, by choice — left for a later phase: Cancel, Apply, DAW. Home/Zoom and SETTINGS both
-have their own on-keyboard function instead (the list/zoom toggle and the config screen), and neither
-is MIDI-mappable — the harness asserts both stay out of `BUTTON_CC`.
+Not yet mapped, by choice — left for a later phase: Apply and DAW (the panel labels Apply CONFIRM).
+Cancel drives logout. Home and Global have their own on-keyboard function instead — the list/zoom
+toggle and the config screen — and neither is MIDI-mappable, which the harness asserts by checking both
+stay out of `BUTTON_CC`. Spec names throughout; the panel silk-screens Home as ZOOM and Global as
+SETTINGS (see `docs/implementing-sl-link.md` section 6).
 
 ### Sweep and mapping verification (2026-08-24)
 
@@ -491,7 +493,7 @@ Confirmed working:
   `F0 00 20 1A 16 03 6D 7F 03 01 F7` (identified) -> that reply re-armed the one-shot. Identified as
   `(03 6D)` on `outport=LINK`.
 - **Patch changes** — 10 real `controller_select_patch` changes, each repainting.
-- **Zoom button** — 4 SHORT presses, toggling list<->zoom in both directions (2 each way).
+- **Home button** (panel: ZOOM) — 4 SHORT presses, toggling list<->zoom in both directions (2 each way).
 - **Popup** — raised once by an encoder, painted all 27 regions (`popupBg`, 4 border strips,
   `popupLabel`, `popupValue`, and all 20 of 20 ring segments), then auto-dismissed back to `list`,
   correctly restoring the pre-popup mode.
@@ -506,7 +508,7 @@ Confirmed working:
 Not yet exercised, so treat as unproven — neither is a regression, both were already unproven before
 this branch:
 
-- **Zoom LONG press** (the force-full-repaint path in `handle_zoom_button`).
+- **Home LONG press** (the force-full-repaint path in `handle_home_button`).
 
 **The re-identification wait path is no longer unproven (2026-09-20).** It fired unprompted on an
 ordinary relaunch: one instance was rejected twice with reason `00`, retried on the *same* DeviceID

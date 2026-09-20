@@ -234,9 +234,26 @@ spec documents neither the hole nor that consequence.
 a second), `0x02` = LONG (fires immediately at one second). 21 buttons; IDs `0x00`–`0x15` with `0x08`
 and `0x0D` absent from the spec's table.
 
-Three ids not otherwise documented here were identified on hardware 2026-09-20 by pressing each button
-in isolation: **`0x09` = SETTINGS** (not "Global", as this project's own earlier notes guessed),
-`0x0A` = DAW, `0x0E` = APPLY. All three reach the host as ordinary button messages.
+The spec's own BID table, vendored here because not having it is what let this project's naming drift
+(`sl-link/docs/hardware-io.md`, pinned commit `4c0824d`):
+
+| BID | Spec name | BID | Spec name |
+|:---|:---|:---|:---|
+| `0x00`-`0x03` | Zone 1-4 Encoder Button | `0x0E` | Apply Button |
+| `0x04`-`0x07` | Zone 1-4 Select Button | `0x0F` | Cancel Button |
+| `0x09` | Global Button | `0x10` | Home Button |
+| `0x0A` | DAW Button | `0x11`-`0x14` | Joystick Up/Left/Down/Right |
+| `0x0B` | A Encoder Button | `0x15` | Joystick Main Button |
+| `0x0C` | B Encoder Button | | |
+
+**The SL88 MK2's front panel disagrees with the spec on three names.** Six buttons surround the screen,
+each with its own lamp — APP, **Global** and DAW down the left side, **Apply**, Cancel and **Home** down
+the right. The panel silk-screens those three as **SETTINGS**, **CONFIRM** and **ZOOM** respectively.
+Use the spec's names in code and docs; the panel labels are noted here and nowhere else.
+
+`0x09`, `0x0A` and `0x0E` were each confirmed on hardware 2026-09-20 by pressing them in isolation and
+watching which BID arrived; all three reach the host as ordinary button messages. APP is not among them
+— it is the keyboard's own mode switch and has never been seen arriving.
 
 **Encoders** (`0x03`, Host ← SL): `<EID> <TK>`, 7 encoders, `TK` 64-centred (§2). **Speed sensitivity is
 a feature** — the magnitude grows when turned fast (±2, ±3 per spec; ±8 observed). Add the delta
@@ -246,18 +263,18 @@ not add an acceleration curve on top; it fights the hardware.
 **White LEDs** (`0x02`, Host → SL): `<WLID> <state 0|1>`. 12 of them, **on/off only** — including the A
 and B encoder LEDs, so those can never show a level.
 
-The upstream `WLID` table is not vendored here, so it was swept on hardware with
-`Scripts/probe-leds.swift` (2026-09-17, fw 1.1.2). All 12 are contiguous from `0x00`, with `0x0C`
-dark:
+Swept on hardware with `Scripts/probe-leds.swift` (2026-09-17, fw 1.1.2) and since reconciled with the
+spec's own WLID table. All 12 are contiguous from `0x00`, with `0x0C` dark. The sweep had labelled
+`0x05` "CHECK" by eye; the spec calls it the Apply button LED, which is the same lamp:
 
 | WLID | Lamp | WLID | Lamp |
 |:---|:---|:---|:---|
-| `0x00` | Button 1 (Zone 1) | `0x06` | CANCEL |
-| `0x01` | Button 2 (Zone 2) | `0x07` | ZOOM |
-| `0x02` | Button 3 (Zone 3) | `0x08` | SETTINGS |
-| `0x03` | Button 4 (Zone 4) | `0x09` | DAW |
-| `0x04` | APP | `0x0A` | A encoder ring |
-| `0x05` | CHECK | `0x0B` | B encoder ring |
+| `0x00` | Zone 1 button | `0x06` | Cancel button |
+| `0x01` | Zone 2 button | `0x07` | Home button (panel: ZOOM) |
+| `0x02` | Zone 3 button | `0x08` | Global button (panel: SETTINGS) |
+| `0x03` | Zone 4 button | `0x09` | DAW button |
+| `0x04` | APP button | `0x0A` | A encoder ring |
+| `0x05` | Apply button (panel: CONFIRM) | `0x0B` | B encoder ring |
 
 Note the A and B rings are **lamps, not rings** despite the name — each is one white on/off light, so
 neither can show a volume level. Note also that `0x0B` is `BID_A_ENC` in the *button* id namespace;
