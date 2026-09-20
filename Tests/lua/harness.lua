@@ -5154,6 +5154,34 @@ do
 	show_master_volume_popup()
 	check('the A encoder popup is titled AUDIO MASTER', popupControlName == 'AUDIO MASTER')
 
+	-- An EMPTY name from MainStage (observed on hardware for cc 59) is not a name: it would paint a blank
+	-- title band. The entry survives so the ring keeps its colour, but the popup falls back to LEGACY.
+	do
+		local savedFb, savedMode, savedActive = midiOutFeedback, displayMode, popupActive
+		midiOutFeedback, displayMode, popupActive = {}, 'list', false
+		local zoneCc = CC_MAP[ENCODER_CC[EID_ZONE1]]
+		local ev = { [0] = CC_STATUS, [1] = zoneCc, [2] = 91 }
+
+		controller_midi_out(ev, '   ', '0,0', { r = 1.0, g = 0.5, b = 0.0 })
+		local fb = midiOutFeedback[zoneCc]
+		check('an empty reported name is stored as no name', fb ~= nil and fb.name == nil)
+		check('...but the entry survives, so the ring keeps its colour',
+			fb ~= nil and fb.color ~= nil and rgb7(fb.color.r) == 127)
+
+		show_popup(EID_ZONE1)
+		check('a nameless control falls back to the legacy popup title', popupFeedbackActive == false)
+		check('...and that title names the physical encoder', popupControlName == ENCODER_NAME[EID_ZONE1])
+
+		-- A real name still selects feedback mode.
+		popupActive = false
+		controller_midi_out(ev, 'Bass Vol', '0,0', { r = 1.0, g = 0.5, b = 0.0 })
+		show_popup(EID_ZONE1)
+		check('a real name still selects the feedback popup', popupFeedbackActive == true)
+		check('...and shows MainStage name', popupFeedbackName == 'Bass Vol')
+
+		midiOutFeedback, displayMode, popupActive = savedFb, savedMode, savedActive
+	end
+
 	drawn, pendingMessages, popupControlName, popupCcNumber, popupFeedbackActive =
 		savedDrawn, savedPending, savedName, savedCc, savedFeedback
 end
