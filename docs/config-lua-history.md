@@ -2870,6 +2870,16 @@ already sitting unused that together make them meaningful:
 So `flush_encoder_rings()` needs no new feedback plumbing: colour from the turn CC's reported parameter,
 mute from the push CC's, drained on the tick and memoized per ring id exactly like `flush_mute_leds`.
 
+### Where the colour actually comes from (answered on hardware 2026-09-20)
+
+**MainStage's knob mapping attributes have a Custom Color, and its default is yellow.** That is the
+colour reported to `controller_midi_out` - which is why the first two mappings both lit amber
+(`1.00/0.90/0.31`, the same value the September probe captured for a Volume control). It is *not* the
+channel strip's colour, and the script does not compute it.
+
+So distinct ring colours are a **setup step in MainStage**, not something the script can infer: set
+Custom Color per knob mapping. Confirmed working by Jeroen once he did.
+
 **Semantics, agreed with Jeroen:** the ring shows MainStage's own colour for whatever the knob is mapped
 to, and a muted channel goes **fully dark**. He chose that over dimming, accepting the trade-off that
 muted and unmapped then look identical.
