@@ -112,6 +112,9 @@ MVOL_FAST_WRITES_PER_TICK = 4
 -- Button IDs, matching the spec's button ID table (see docs/implementing-sl-link.md).
 BID_ZOOM = 0x10 -- confirmed on hardware; toggles set_display_mode('list'/'zoom')
 BID_CANCEL = 0x0F -- spec's Cancel button; NOT YET confirmed on hardware, see docs/implementing-sl-link.md
+BID_SETTINGS = 0x09 -- SETTINGS button, confirmed on hardware 2026-09-20; toggles the config screen.
+	-- MUST stay out of BUTTON_CC: it is the script's own UI button, not a mappable control (the
+	-- harness asserts this). See docs/config-lua-history.md#the-config-screen-2026-09-20
 BID_JOY_UP = 0x11
 BID_JOY_LEFT = 0x12
 BID_JOY_DOWN = 0x13
@@ -134,6 +137,7 @@ BID_A_ENC = 0x0B -- SLButtonID.aEncoderButton; toggles Master Volume mute (handl
 -- every id; the full table is in docs/implementing-sl-link.md §5. Only A and B have a ring LED -
 -- Zone 1-4 and the joystick have none.
 WLID_ZOOM = 0x07 -- ZOOM button lamp; see docs/implementing-sl-link.md section 5
+WLID_SETTINGS = 0x08 -- SETTINGS button lamp; lit only while the config screen is showing
 WLID_A_ENC = 0x0A
 WLID_B_ENC = 0x0B
 
@@ -296,6 +300,14 @@ BMP_GROUP_KNOB = 0x00
 BMP_KNOB_LEVELS = 13 -- icons 0x00-0x0C, a filling ring gauge: 0x00 empty, 0x0C full
 BMP_ICON_W = 61
 BMP_ICON_H = 54
+
+-- Navigation group, 20x20 px. Icon order confirmed on hardware 2026-09-20 - exactly as the spec
+-- states it: 0x00 left, 0x01 right, 0x02 left-right, 0x03 up-down, 0x04 rotate (round arrow),
+-- 0x05 push, 0x06 apply, 0x07 cancel.
+BMP_GROUP_NAV = 0x03
+BMP_ICON_ROTATE = 0x04
+BMP_NAV_ICON_W = 20
+BMP_NAV_ICON_H = 20
 
 -- Text align / size
 ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT = 0x00, 0x01, 0x02
@@ -1740,6 +1752,8 @@ end
 -- Last ZOOM lamp state sent; nil means 'unknown, send it'. Same memo/clear discipline as
 -- encoderMuteLedSent - see flush_mute_leds.
 modeLedSent = nil
+-- Same for the SETTINGS lamp; nil means 'unknown, send it'.
+configLedSent = nil
 
 -- ZOOM lamp mirrors the screen: lit in the patch list, dark in zoom. Drained on the tick and
 -- ACTIVE-only for the same reasons as flush_mute_leds. During a popup it follows the mode the popup
@@ -1751,6 +1765,13 @@ function flush_mode_led()
 	if modeLedSent ~= ledOn then
 		modeLedSent = ledOn
 		queue_message(msg_white_led(WLID_ZOOM, ledOn))
+	end
+	-- SETTINGS lamp, same discipline: lit only while the config screen shows, so the button's own
+	-- light is the "you are in config" indicator. ZOOM goes dark there for free (mode ~= 'list').
+	local configOn = (mode == 'config')
+	if configLedSent ~= configOn then
+		configLedSent = configOn
+		queue_message(msg_white_led(WLID_SETTINGS, configOn))
 	end
 end
 
@@ -2083,6 +2104,130 @@ function paint_zoom_screen()
 	draw_text('zpos', n .. '/' .. total, 8, 210, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
 end
 
+-- MARK: - Config screen
+--
+-- A third full display mode ('config', alongside 'list'/'zoom'/'popup'), toggled by the SETTINGS
+-- button: the script version and the whole CC map, for reading the mapping off the keyboard instead
+-- of the docs. Scrolled by the joystick ring, which suppresses its own CC while this screen shows
+-- (see handle_sl_frame's IT_ENCODER branch). Layout agreed with Jeroen; see
+-- docs/config-lua-history.md#the-config-screen-2026-09-20.
+CONFIG_TITLE_Y = 4
+CONFIG_HEADER_Y = 26
+CONFIG_RULE_Y = 46
+CONFIG_ROW_Y0 = 52
+CONFIG_ROW_PITCH = 24
+CONFIG_ROW_COUNT = 7
+CONFIG_FOOTER_Y = 216
+
+-- Two columns: the control's name left, its SHORT/LONG CC pair as ONE right-aligned string. One
+-- draw for the pair rather than two columns of text - every CC is two digits, so they line up
+-- without a fixed-width font, and it halves the messages a page costs.
+CONFIG_NAME_X = 8
+CONFIG_NAME_W = 190
+CONFIG_CC_X = 200
+CONFIG_CC_W = 104
+
+CONFIG_ICON_X = 8 -- the rotate icon marks the joystick ring as this screen's scroller
+CONFIG_COUNT_X = 150
+CONFIG_COUNT_W = 162
+
+-- One row per control: { SHORT key, LONG key }, both CC_MAP keys, LONG nil for a turn-only control.
+-- Written out explicitly, one per line, so the rows can be compared by eye against CC_MAP above.
+-- The displayed NAME is not repeated here - it comes from CC_LABEL[short], so there is no third copy
+-- of the names to drift. The harness asserts this covers every CC_MAP key exactly once.
+CONFIG_ROWS = {
+	{ 'JOY_UP_SHORT',    'JOY_UP_LONG' },
+	{ 'JOY_DOWN_SHORT',  'JOY_DOWN_LONG' },
+	{ 'JOY_LEFT_SHORT',  'JOY_LEFT_LONG' },
+	{ 'JOY_RIGHT_SHORT', 'JOY_RIGHT_LONG' },
+	{ 'JOY_PRESS_SHORT', 'JOY_PRESS_LONG' },
+	{ 'JOY_ROTATE' },
+	{ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' },
+	{ 'ENC2_PRESS_SHORT', 'ENC2_PRESS_LONG' },
+	{ 'ENC3_PRESS_SHORT', 'ENC3_PRESS_LONG' },
+	{ 'ENC4_PRESS_SHORT', 'ENC4_PRESS_LONG' },
+	{ 'ENC1_TURN' },
+	{ 'ENC2_TURN' },
+	{ 'ENC3_TURN' },
+	{ 'ENC4_TURN' },
+	{ 'ENCB_TURN' },
+	{ 'ENCB_PRESS_SHORT', 'ENCB_PRESS_LONG' },
+	{ 'SEL1_SHORT', 'SEL1_LONG' },
+	{ 'SEL2_SHORT', 'SEL2_LONG' },
+	{ 'SEL3_SHORT', 'SEL3_LONG' },
+	{ 'SEL4_SHORT', 'SEL4_LONG' },
+}
+
+-- Top visible CONFIG_ROWS index (0-based), driven by the joystick ring.
+configScroll = 0
+
+-- displayMode to restore when the config screen is dismissed - same idiom as popupPreviousMode.
+configPreviousMode = nil
+
+function config_max_scroll()
+	local max = #CONFIG_ROWS - CONFIG_ROW_COUNT
+	if max < 0 then max = 0 end
+	return max
+end
+
+-- Its own clamp, not clamp_scroll(): that one is about cursorIndex and SCROLL_MARGIN, neither of
+-- which exists here - this list has no cursor, just a window.
+function scroll_config(delta)
+	local before = configScroll
+	local v = configScroll + delta
+	if v < 0 then v = 0 end
+	local max = config_max_scroll()
+	if v > max then v = max end
+	configScroll = v
+	return configScroll ~= before
+end
+
+-- '40  41' for a pair, '50   -' for a turn-only control - the dash holds the SHORT column's digits
+-- in place rather than letting a lone number drift into the LONG column.
+function config_cc_text(row)
+	local short = CC_MAP[row[1]]
+	local long = row[2] ~= nil and CC_MAP[row[2]] or nil
+	if long == nil then return tostring(short) .. '   -' end
+	return tostring(short) .. '  ' .. tostring(long)
+end
+
+function paint_config_screen()
+	local hc = ROW_COLORS[ROW_HEADER]
+	local rc = ROW_COLORS[ROW_PATCH]
+
+	draw_text('cfgTitle', 'CONFIG', CONFIG_NAME_X, CONFIG_TITLE_Y, CONFIG_NAME_W, ALIGN_LEFT,
+		SIZE_SMALL, hc[1], hc[2], hc[3], hc[4], hc[5], hc[6])
+	draw_text('cfgVer', 'v' .. SCRIPT_VERSION, CONFIG_CC_X, CONFIG_TITLE_Y, CONFIG_CC_W, ALIGN_RIGHT,
+		SIZE_SMALL, rc[1], rc[2], rc[3], rc[4], rc[5], rc[6])
+
+	-- Header and rule do not scroll with the rows.
+	draw_text('cfgHdrName', 'CONTROL', CONFIG_NAME_X, CONFIG_HEADER_Y, CONFIG_NAME_W, ALIGN_LEFT,
+		SIZE_SMALL, hc[1], hc[2], hc[3], hc[4], hc[5], hc[6])
+	draw_text('cfgHdrCC', 'SHORT  LONG', CONFIG_CC_X, CONFIG_HEADER_Y, CONFIG_CC_W, ALIGN_RIGHT,
+		SIZE_SMALL, hc[1], hc[2], hc[3], hc[4], hc[5], hc[6])
+	draw_rect('cfgRule', CONFIG_NAME_X, CONFIG_RULE_Y, SCREEN_WIDTH - 2 * CONFIG_NAME_X, 1,
+		hc[1], hc[2], hc[3])
+
+	for i = 0, CONFIG_ROW_COUNT - 1 do
+		local row = CONFIG_ROWS[configScroll + i + 1]
+		local y = CONFIG_ROW_Y0 + CONFIG_ROW_PITCH * i
+		local name = row ~= nil and (CC_LABEL[row[1]] or row[1]) or ''
+		local ccs = row ~= nil and config_cc_text(row) or ''
+		draw_text('cfg' .. i, name, CONFIG_NAME_X, y, CONFIG_NAME_W, ALIGN_LEFT, SIZE_SMALL,
+			rc[1], rc[2], rc[3], rc[4], rc[5], rc[6])
+		draw_text('cfgv' .. i, ccs, CONFIG_CC_X, y, CONFIG_CC_W, ALIGN_RIGHT, SIZE_SMALL,
+			rc[1], rc[2], rc[3], rc[4], rc[5], rc[6])
+	end
+
+	draw_bitmap('cfgIcon', CONFIG_ICON_X, CONFIG_FOOTER_Y, BMP_GROUP_NAV, BMP_ICON_ROTATE,
+		hc[1], hc[2], hc[3], 0, 0, 0)
+	local first = configScroll + 1
+	local last = math.min(configScroll + CONFIG_ROW_COUNT, #CONFIG_ROWS)
+	draw_text('cfgFoot', first .. '-' .. last .. '/' .. #CONFIG_ROWS, CONFIG_COUNT_X,
+		CONFIG_FOOTER_Y, CONFIG_COUNT_W, ALIGN_RIGHT, SIZE_SMALL,
+		rc[1], rc[2], rc[3], rc[4], rc[5], rc[6])
+end
+
 -- Ordinary content-driven redraw: draws the current model, memoized per region, and queues NOTHING
 -- beyond whatever actually changed (2 messages for a patch change within a set, 9 for a set change,
 -- 0 if nothing differs - see docs/mainstage-integration.md's redraw cost figures) PLUS the trailing
@@ -2102,6 +2247,10 @@ function update_screen()
 		paint_popup_screen()
 	elseif displayMode == 'zoom' then
 		paint_zoom_screen()
+	elseif displayMode == 'config' then
+		-- Content-independent, so memoization makes this a no-op unless the scroll moved - a patch
+		-- change from MainStage must not repaint the list underneath the config screen.
+		paint_config_screen()
 	else
 		paint_list_screen()
 	end
@@ -2176,6 +2325,13 @@ function queue_sacrificial_redraw()
 	if underlyingMode == 'zoom' then
 		queue_message(msg_write_text(currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL,
 			120, 120, 120, 0, 0, 0))
+	elseif underlyingMode == 'config' then
+		-- The config screen's own title line, redrawn identically. The list's ctx line below would
+		-- paint the wrong screen's text over this one - the popup bug in
+		-- docs/config-lua-history.md#sacrificial-redraw-painted-the-list-line-under-a-popup-2026-09-14.
+		local hc = ROW_COLORS[ROW_HEADER]
+		queue_message(msg_write_text('CONFIG', CONFIG_NAME_X, CONFIG_TITLE_Y, CONFIG_NAME_W,
+			ALIGN_LEFT, SIZE_SMALL, hc[1], hc[2], hc[3], hc[4], hc[5], hc[6]))
 	else
 		queue_message(msg_write_text(ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
 			120, 120, 120, 0, 0, 0))
@@ -2206,6 +2362,8 @@ function paint_screen()
 		paint_popup_screen()
 	elseif displayMode == 'zoom' then
 		paint_zoom_screen()
+	elseif displayMode == 'config' then
+		paint_config_screen()
 	else
 		paint_list_screen()
 	end
@@ -2234,7 +2392,7 @@ end
 -- - see docs/config-lua-history.md#fix-5-audit-the-first-switch-anomaly before assuming this
 -- function branches correctly on 'is this the first switch' (it doesn't - nothing here does).
 function set_display_mode(mode)
-	if mode ~= 'list' and mode ~= 'zoom' and mode ~= 'popup' then return end
+	if mode ~= 'list' and mode ~= 'zoom' and mode ~= 'popup' and mode ~= 'config' then return end
 	displayMode = mode
 	drop_queued_display()
 	invalidate_all()
@@ -2254,6 +2412,8 @@ function set_display_mode(mode)
 		paint_popup_screen()
 	elseif mode == 'zoom' then
 		paint_zoom_screen() -- redundant with the full-screen erase above, but each name draw erases its own band anyway
+	elseif mode == 'config' then
+		paint_config_screen()
 	else
 		paint_list_screen()
 	end
@@ -2426,7 +2586,7 @@ function enter_active_session()
 	-- Forget what the mute rings were last sent, so the next tick re-establishes them for this
 	-- session rather than trusting a memo from before the SL88 confirmed us - same reasoning as
 	-- invalidate_all() for the display. See docs/config-lua-history.md#startup-led-discarded-before-login-confirmation-2026-09-16.
-	encoderMuteLedSent, modeLedSent = {}, nil
+	encoderMuteLedSent, modeLedSent, configLedSent = {}, nil, nil
 	return true
 end
 
@@ -2447,7 +2607,7 @@ function handle_login()
 	end
 	-- And the mute rings, for the same reason: enter_active_session's own clear does not run when we
 	-- were already ACTIVE, so a ring set before this confirmation was discarded and never re-sent.
-	encoderMuteLedSent, modeLedSent = {}, nil
+	encoderMuteLedSent, modeLedSent, configLedSent = {}, nil, nil
 end
 
 function handle_standby()
@@ -2624,6 +2784,8 @@ function handle_sl_frame(e)
 		local ccButton = BUTTON_CC[bid]
 		if bid == BID_ZOOM then
 			handle_zoom_button(pressKind)
+		elseif bid == BID_SETTINGS then
+			handle_settings_button(pressKind)
 		elseif bid == BID_A_ENC then
 			handle_a_encoder_button(pressKind)
 		elseif bid == BID_CANCEL then
@@ -2666,6 +2828,20 @@ function handle_sl_frame(e)
 			slog('-> MASTER VOLUME WRITE: ' .. dump_bytes(mvolWriteMsg))
 			queue_message(mvolWriteMsg, 'mvol')
 			show_master_volume_popup()
+		elseif eid == EID_JOYSTICK and displayMode == 'config' then
+			-- The ring is the config screen's scroller, and emits NO CC while that screen shows -
+			-- otherwise every scroll tick also moves whatever MainStage learned to JOY_ROTATE. Raw
+			-- delta, no acceleration curve on top: the hardware is already speed-sensitive (see
+			-- docs/implementing-sl-link.md section 6). No popup either - the popup would cover the very
+			-- screen being scrolled.
+			-- update_screen(), not paint_config_screen() directly: it dispatches to the same painter but
+			-- also adds the trailing sacrificial redraw, without which the last row of a scroll is
+			-- silently lost (see queue_sacrificial_redraw's comment).
+			if scroll_config(delta) then
+				update_screen()
+				request_quick_rearm()
+			end
+			slog('<- ENCODER joystick delta=' .. tostring(delta) .. ' - config scroll=' .. configScroll)
 		else
 			local control = ENCODER_CC[eid]
 			if control ~= nil then
@@ -2739,11 +2915,40 @@ function handle_zoom_button(pressKind)
 	elseif displayMode == 'popup' then
 		slog('<- BUTTON zoom SHORT - dismissing popup (mode=popup)')
 		dismiss_popup()
+	elseif displayMode == 'config' then
+		-- The config screen is entered and left with SETTINGS alone: one button owns one mode. Toggling
+		-- here would compute 'zoom' regardless of what config is covering and lose configPreviousMode.
+		slog('<- BUTTON zoom SHORT - ignored (mode=config; SETTINGS dismisses it)')
 	else
 		local newMode = (displayMode == 'zoom') and 'list' or 'zoom'
 		slog('<- BUTTON zoom SHORT - toggling display mode -> ' .. newMode)
 		set_display_mode(newMode)
 	end
+end
+
+-- SETTINGS toggles the config screen, restoring whatever it covered. LONG runs the same action as
+-- SHORT rather than being dropped - the project rule for LONG_PRESSION (see handle_zoom_button's
+-- comment); a second effect on a screen-toggle button would only surprise.
+--
+-- Pressed while a popup is up, it takes over the popup's stored previous mode rather than calling
+-- dismiss_popup() first: that would be a second full Clear-Screen repaint for a screen nobody sees.
+-- configScroll deliberately survives a dismiss, so re-opening returns to the same page.
+function handle_settings_button(pressKind)
+	if displayMode == 'config' then
+		local back = configPreviousMode or 'list'
+		configPreviousMode = nil
+		slog('<- BUTTON settings - leaving config -> ' .. back)
+		set_display_mode(back)
+		return
+	end
+	if popupActive then
+		configPreviousMode = popupPreviousMode or 'list'
+		popupActive = false
+	else
+		configPreviousMode = displayMode
+	end
+	slog('<- BUTTON settings - entering config (over ' .. tostring(configPreviousMode) .. ')')
+	set_display_mode('config')
 end
 
 -- MARK: - MainStage callbacks
