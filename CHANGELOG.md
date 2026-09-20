@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-09-20
+
+- feat: colour the zone encoder rings from MainStage's own feedback
+- feat: dim the ring with a volume's level, and coalesce ring updates
+- feat: popup name above the ring in both modes, bigger, AUDIO MASTER for A
+- feat: every ring tracks its value, not just names containing "volume"
+- fix: include colour in midi_out's unchanged-tuple check
+- fix: treat an empty reported name as no name
+- docs: record the RGB rings, the colour-units trap and confirmed patch stepping
+- docs: ring colour comes from the knob mapping's Custom Color
+- docs: record the two mapping attributes that drive the SL88's display
+
 ## [2.5.1] - 2026-09-20
 
 - refactor: name buttons and LEDs after the spec, not the panel

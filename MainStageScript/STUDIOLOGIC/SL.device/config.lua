@@ -382,7 +382,7 @@ APP_NAME = 'MainStage'
 -- match, since /tmp/lua.log's controller_initialize line is the only way to tell which build
 -- MainStage actually has loaded, and the installed copy has repeatedly drifted from the working
 -- tree during development.
-SCRIPT_VERSION = '2.5.1'
+SCRIPT_VERSION = '2.6.0'
 
 -- MARK: - Session state
 
