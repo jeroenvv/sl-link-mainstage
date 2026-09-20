@@ -4885,11 +4885,44 @@ do
 	handle_login()
 	check('login clears the SETTINGS lamp memo so it re-asserts', configLedSent == nil)
 
+	-- The ZOOM lamp must NOT move when the config screen opens over a mode - it tracks list-vs-zoom
+	-- only, and config is an overlay on one of those (Jeroen, after the first hardware run).
+	local function zoomLedMsg()
+		for _, m in ipairs(pendingMessages) do
+			if item_type_of(m) == IT_LED and m[9] == WLID_ZOOM then return m end
+		end
+		return nil
+	end
+	state, popupActive = STATE_ACTIVE, false
+	pendingMessages, modeLedSent, configLedSent, displayMode = {}, nil, nil, 'list'
+	flush_mode_led()
+	check('the ZOOM lamp is lit in list mode', (zoomLedMsg() or {})[10] == 1)
+	pendingMessages, displayMode, configPreviousMode = {}, 'config', 'list'
+	flush_mode_led()
+	check('opening config over the list leaves the ZOOM lamp alone', zoomLedMsg() == nil)
+	pendingMessages, modeLedSent, displayMode, configPreviousMode = {}, nil, 'config', 'zoom'
+	flush_mode_led()
+	check('config over zoom keeps the ZOOM lamp dark', (zoomLedMsg() or {})[10] == 0)
+
+	-- No popup over the config screen: it would hide the page being read, and restoring it costs a
+	-- full Clear-Screen repaint. The CC still goes out - only the panel is skipped.
+	displayMode, popupActive = 'config', false
+	pendingCC, pendingDelta, pendingCCOrder, pendingMessages = {}, {}, {}, {}
+	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_ZONE1,
+		0x40 + 1, 0xF7))
+	check('an encoder turn queues no popup while the config screen shows', popupActive == false)
+	check('an encoder turn still emits its CC while the config screen shows',
+		pendingDelta['ENC1_TURN'] == 1)
+	show_master_volume_popup()
+	check('the Master Volume popup is suppressed while the config screen shows', popupActive == false)
+
 	-- Geometry: rows cannot overlap each other, the header above them, or the footer below - the
 	-- per-region memoization rule, checked against the MEASURED glyph height.
 	check('config rows clear the header rule', CONFIG_ROW_Y0 > CONFIG_RULE_Y)
 	check('config row pitch clears a SIZE_SMALL box', CONFIG_ROW_PITCH >= TEXT_H_SMALL)
-	check('config title clears the header row', CONFIG_TITLE_Y + TEXT_H_SMALL <= CONFIG_HEADER_Y)
+	-- The title is SIZE_MEDIUM (Jeroen's requirement), so it is the MEDIUM box that must clear the
+	-- header - checking it against TEXT_H_SMALL would pass while the two actually overlapped.
+	check('config title clears the header row', CONFIG_TITLE_Y + TEXT_H_MEDIUM <= CONFIG_HEADER_Y)
 	check('config header clears the rule', CONFIG_HEADER_Y + TEXT_H_SMALL <= CONFIG_RULE_Y)
 	check('the last config row clears the footer',
 		CONFIG_ROW_Y0 + CONFIG_ROW_PITCH * (CONFIG_ROW_COUNT - 1) + TEXT_H_SMALL <= CONFIG_FOOTER_Y)
