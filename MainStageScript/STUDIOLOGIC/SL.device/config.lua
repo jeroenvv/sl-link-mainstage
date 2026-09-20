@@ -1760,15 +1760,22 @@ configLedSent = nil
 -- is covering, so a transient popup never darkens it.
 function flush_mode_led()
 	if state ~= STATE_ACTIVE then return end
-	local mode = popupActive and popupPreviousMode or displayMode
-	local ledOn = (mode == 'list')
+	-- What is actually on screen: a popup COVERS a mode rather than replacing it.
+	local shown = popupActive and (popupPreviousMode or displayMode) or displayMode
+	-- The ZOOM lamp tracks list-vs-zoom ONLY. The config screen is a temporary overlay on one of
+	-- those, so it must leave the lamp exactly as it was - Jeroen's requirement after the first
+	-- hardware run, where entering config darkened it. Follow what config is covering, the same way
+	-- the popup follows popupPreviousMode.
+	local underlying = shown
+	if underlying == 'config' then underlying = configPreviousMode or 'list' end
+	local ledOn = (underlying == 'list')
 	if modeLedSent ~= ledOn then
 		modeLedSent = ledOn
 		queue_message(msg_white_led(WLID_ZOOM, ledOn))
 	end
-	-- SETTINGS lamp, same discipline: lit only while the config screen shows, so the button's own
-	-- light is the "you are in config" indicator. ZOOM goes dark there for free (mode ~= 'list').
-	local configOn = (mode == 'config')
+	-- SETTINGS lamp: lit only while the config screen shows, so the button's own light is the
+	-- "you are in config" indicator.
+	local configOn = (shown == 'config')
 	if configLedSent ~= configOn then
 		configLedSent = configOn
 		queue_message(msg_white_led(WLID_SETTINGS, configOn))
@@ -1817,6 +1824,11 @@ end
 -- memoization never clears a position a region vacated - see
 -- docs/config-lua-history.md#controller_midi_out-reports-real-parameter-values-with-a-screen-control-2026-09-17.
 function show_popup(eid)
+	-- No popup over the config screen: it would hide the page being read, and restoring it costs a
+	-- full Clear-Screen repaint of every config region. The CC (or the Master Volume write) still goes
+	-- out - only the panel is skipped. See
+	-- docs/config-lua-history.md#no-popup-over-the-config-screen-2026-09-20.
+	if displayMode == 'config' then return end
 	local control = ENCODER_CC[eid]
 	if control == nil then return end
 
@@ -1851,6 +1863,11 @@ end
 -- EID_A's popup: same structure as show_popup, but for Master Volume (no CC number, 0-100 scale,
 -- never has feedback - Master Volume is not a CC_MAP entry) rather than an ENCODER_CC entry.
 function show_master_volume_popup()
+	-- No popup over the config screen: it would hide the page being read, and restoring it costs a
+	-- full Clear-Screen repaint of every config region. The CC (or the Master Volume write) still goes
+	-- out - only the panel is skipped. See
+	-- docs/config-lua-history.md#no-popup-over-the-config-screen-2026-09-20.
+	if displayMode == 'config' then return end
 	popupEid = nil
 	popupControlName = 'Main Volume'
 	popupCcNumber = nil
@@ -2111,11 +2128,15 @@ end
 -- of the docs. Scrolled by the joystick ring, which suppresses its own CC while this screen shows
 -- (see handle_sl_frame's IT_ENCODER branch). Layout agreed with Jeroen; see
 -- docs/config-lua-history.md#the-config-screen-2026-09-20.
-CONFIG_TITLE_Y = 4
-CONFIG_HEADER_Y = 26
-CONFIG_RULE_Y = 46
-CONFIG_ROW_Y0 = 52
-CONFIG_ROW_PITCH = 24
+-- The title line (name + version) is SIZE_MEDIUM, the rest SIZE_SMALL: it is the screen's heading,
+-- readable at a glance. Everything below it shifted down by the extra glyph height (TEXT_H_MEDIUM 23
+-- vs TEXT_H_SMALL 18) and the row pitch tightened to 22 to keep 7 rows above the footer - the
+-- harness asserts every band still clears the next.
+CONFIG_TITLE_Y = 2
+CONFIG_HEADER_Y = 30
+CONFIG_RULE_Y = 52
+CONFIG_ROW_Y0 = 58
+CONFIG_ROW_PITCH = 22
 CONFIG_ROW_COUNT = 7
 CONFIG_FOOTER_Y = 216
 
@@ -2196,9 +2217,9 @@ function paint_config_screen()
 	local rc = ROW_COLORS[ROW_PATCH]
 
 	draw_text('cfgTitle', 'CONFIG', CONFIG_NAME_X, CONFIG_TITLE_Y, CONFIG_NAME_W, ALIGN_LEFT,
-		SIZE_SMALL, hc[1], hc[2], hc[3], hc[4], hc[5], hc[6])
+		SIZE_MEDIUM, hc[1], hc[2], hc[3], hc[4], hc[5], hc[6])
 	draw_text('cfgVer', 'v' .. SCRIPT_VERSION, CONFIG_CC_X, CONFIG_TITLE_Y, CONFIG_CC_W, ALIGN_RIGHT,
-		SIZE_SMALL, rc[1], rc[2], rc[3], rc[4], rc[5], rc[6])
+		SIZE_MEDIUM, rc[1], rc[2], rc[3], rc[4], rc[5], rc[6])
 
 	-- Header and rule do not scroll with the rows.
 	draw_text('cfgHdrName', 'CONTROL', CONFIG_NAME_X, CONFIG_HEADER_Y, CONFIG_NAME_W, ALIGN_LEFT,
@@ -2331,7 +2352,7 @@ function queue_sacrificial_redraw()
 		-- docs/config-lua-history.md#sacrificial-redraw-painted-the-list-line-under-a-popup-2026-09-14.
 		local hc = ROW_COLORS[ROW_HEADER]
 		queue_message(msg_write_text('CONFIG', CONFIG_NAME_X, CONFIG_TITLE_Y, CONFIG_NAME_W,
-			ALIGN_LEFT, SIZE_SMALL, hc[1], hc[2], hc[3], hc[4], hc[5], hc[6]))
+			ALIGN_LEFT, SIZE_MEDIUM, hc[1], hc[2], hc[3], hc[4], hc[5], hc[6]))
 	else
 		queue_message(msg_write_text(ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
 			120, 120, 120, 0, 0, 0))

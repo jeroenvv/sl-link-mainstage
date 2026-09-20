@@ -2787,3 +2787,41 @@ each fail the matching assertion. One mutation also exposed a fragile test of my
 scroll branch disabled, the CC path opened a popup, and the leaked `popupActive` changed what the later
 SETTINGS round-trip assertion proved. That block now sets `popupActive` explicitly rather than
 inheriting it.
+
+### Hardware round 1: three changes (2026-09-20)
+
+The config screen, its lamp, the SETTINGS toggle and the ring scroll all worked first time - the
+capture shows three clean `settings` round-trips (from zoom and from list), 100 ring turns, and the
+ZOOM-ignored-in-config branch firing. Three things came back from it.
+
+- **The ZOOM lamp must not move when config opens.** It tracks list-vs-zoom only, and config is an
+  overlay on one of those, so `flush_mode_led` now resolves `'config'` to `configPreviousMode` before
+  deciding the lamp - the same indirection the popup already used for `popupPreviousMode`.
+- **The title line is `SIZE_MEDIUM`.** Everything below it shifted down by the extra glyph height
+  (23 vs 18) and the row pitch tightened from 24 to 22 to keep 7 rows above the footer. The
+  sacrificial duplicate had to follow the size too, or it would repaint the title at the wrong height.
+- **No popup over the config screen.** An encoder turn used to open the value popup on top of it,
+  which hides the page being read and costs a full Clear-Screen repaint of all 21 config regions to
+  restore. Both entry points (`show_popup`, `show_master_volume_popup`) now return early in config
+  mode. The CC and the Master Volume write still go out - only the panel is skipped, so nothing about
+  what MainStage receives changes.
+
+### A session died with the popup up over config - cause not established
+
+The run ended with the session dead: last timer tick #546, then three more inbound frames and nothing
+at all. MainStage itself was still running (~23% CPU, no crash report), so this is the documented
+"no tick means no keepalive and the SL88 drops the app" failure rather than a Lua error - there is no
+error line in the capture.
+
+What the capture does show: `timerPending` is cleared at the top of every tick and re-armed only from
+`controller_midi_in`, and only **3** frames arrived after the last tick - far below
+`TIMER_WATCHDOG_FRAMES` (20), so the watchdog could not fire before the keyboard dropped us and the
+frames stopped. Once that happens the script has no clock and no inbound events, and cannot recover.
+
+**What is not established** is why the outstanding one-shot never fired. It is not attributable to a
+specific line, and two earlier unexplained dropouts with a healthy-looking session clock are already
+on record (`docs/mainstage-integration.md`'s open items). Suppressing the popup over config removes
+the situation this one appeared in - a 21-message repaint queued behind a popup drain, with
+`idleTicks` frozen the whole time because it only advances on a non-draining tick - but that is
+removing the trigger, not explaining the mechanism. If a dropout recurs, this is the first place to
+look.
