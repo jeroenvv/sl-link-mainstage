@@ -291,7 +291,12 @@ no safe "no-op" id and no error — a typo'd id silently lights the wrong LED. A
 
 **RGB LEDs** (`0x05`, Host → SL): `<LID 0-3> <R> <G> <B> <BR 0-127>`. Only the four zone encoders. Each
 is **a single lamp, not a segmented ring** — it can express state through colour and brightness, never
-a value.
+a value. Implemented in `config.lua` since 2026-09-20 (`msg_rgb_led`/`flush_encoder_rings`).
+
+**If your colour comes from the host, check its units.** MainStage hands a device script the mapped
+parameter's colour as a table of r/g/b **floats 0.0-1.0**, so the conversion to the 7-bit wire is
+`floor(c * 127)` — *not* the halving an 0-255 source needs (the `rgb7` helper in §2's examples). Halving
+a float yields 0 for every channel, i.e. a dark lamp and no error anywhere.
 
 **Master Volume** (`0x07`, ↔): `<R/W> <VOL> <MUTE>`. This is the SLMK2's **USB audio board** volume, not
 your application's. `VOL` is **0–100 as a percentage**; any non-zero `MUTE` mutes. The R/W byte, not the

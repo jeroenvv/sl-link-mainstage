@@ -291,9 +291,11 @@ assign each one in MainStage's Layout mode to its patch/set action. This is what
 script does, and it needs a one-time mapping per concert.
 
 Jeroen scoped the feature to relative stepping — Up/Down one patch back/forward, Left/Right one set
-back/forward — so absolute addressing is no longer required. Note only "next patch" has been observed
-so far; "previous patch" and the set steps are unproven and depend entirely on what the assignment
-layer offers.
+back/forward — so absolute addressing is no longer required.
+
+**Confirmed working 2026-09-20** (Jeroen): the joystick CCs are mapped in his concert and stepping
+works. This supersedes the earlier note here that only "next patch" had been observed and that the
+reverse and set steps were unproven.
 
 ## Historical record
 

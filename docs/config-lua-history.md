@@ -2854,3 +2854,40 @@ than inconsistent.
 **A claim to retire:** an earlier note today said this repo had `0x09` "wrong" as Global. It did not -
 the id was right, and only the name differed from the panel. That error came from naming the constant
 off the hardware instead of the spec, which is the whole reason for the rule.
+
+## RGB encoder rings (2026-09-20)
+
+The four zone encoders have RGB ring lamps this script had never touched, and two pieces of data were
+already sitting unused that together make them meaningful:
+
+- `controller_midi_out` stored `color` per CC and **nothing read it**. Format, from the 2026-09-17 probe
+  capture: a table of r/g/b **floats 0.0-1.0** (`color=1.00/0.90/0.31`).
+- `encoder_mute_state(eid)` already worked for **all four** zone encoders - it reads the encoder's PUSH
+  CC and reports whether MainStage calls that parameter a Mute and whether it is on. Only the lamp was
+  missing: `ENCODER_MUTE_WLID` holds just `EID_B`, because only the B encoder has a white lamp. Zones
+  1-4 had the state and no way to show it.
+
+So `flush_encoder_rings()` needs no new feedback plumbing: colour from the turn CC's reported parameter,
+mute from the push CC's, drained on the tick and memoized per ring id exactly like `flush_mute_leds`.
+
+**Semantics, agreed with Jeroen:** the ring shows MainStage's own colour for whatever the knob is mapped
+to, and a muted channel goes **fully dark**. He chose that over dimming, accepting the trade-off that
+muted and unmapped then look identical.
+
+**Going dark when MainStage reports nothing is not optional.** Skipping instead leaves a colour from a
+previous concert lit - the same trap `flush_mute_leds` already documents for the mute rings, and the
+reason both memos are cleared at login confirmation as well as in `enter_active_session`.
+
+### The one real trap: units
+
+MainStage's colour is floats 0.0-1.0; the wire is 7-bit per channel. The conversion is `floor(c * 127)`,
+**not** the halving that an 0-255 source needs (the `rgb7` helper in the spec's own examples). Halving a
+float gives 0 for every channel - a dark lamp, no error, nothing in any log. The harness pins 1.0 -> 127,
+0.0 -> 0 and a midpoint, and pins the clamp: a value above 127 would have its MSB set, which is illegal
+in a MIDI data byte and drops the whole message.
+
+### Harness
+
+15 assertions including a byte-exact golden vector for `msg_rgb_led`. Mutation-checked: halving instead
+of scaling, dropping the clamp, dropping the muted branch, leaving a stale colour when feedback is
+absent, and no longer clearing the memo at login each fail the matching assertion.
