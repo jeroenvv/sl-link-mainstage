@@ -4955,6 +4955,102 @@ do
 	state, popupActive, globalLedSent = savedState, savedPopup, savedLed
 end
 
+-- MARK: - 85. RGB encoder rings: wire shape, colour scaling, and what DARK means
+--
+-- The four zone encoder rings show the colour MainStage reports for whatever each knob is mapped to.
+-- Two data sources that already existed: midiOutFeedback[cc].color (r/g/b FLOATS 0.0-1.0, confirmed on
+-- hardware) and encoder_mute_state(eid), which reads the encoder's PUSH CC. DARK means muted OR nothing
+-- mapped - the agreed trade-off. See docs/config-lua-history.md#rgb-encoder-rings-2026-09-20.
+do
+	local savedState, savedPending, savedFeedback, savedRings =
+		state, pendingMessages, midiOutFeedback, encoderRingSent
+
+	-- Golden vector: F0 00 20 1A 16 <host> <inst> 05 <LID> <R> <G> <B> <BR> F7, field order per the
+	-- spec's RGB LED message. Byte-exact, so a reordered or dropped field fails here rather than on
+	-- hardware.
+	check('msg_rgb_led wire shape',
+		hex(msg_rgb_led(0x02, 0x7F, 0x40, 0x00, 0x7F)) ==
+			'F0 00 20 1A 16 03 ' .. id2() .. ' 05 02 7F 40 00 7F F7')
+
+	-- MainStage's floats scale to 7-bit; they are NOT halved like the spec's 0-255 examples.
+	check('rgb7 scales 1.0 to full', rgb7(1.0) == 127)
+	check('rgb7 scales 0.0 to zero', rgb7(0.0) == 0)
+	check('rgb7 scales a midpoint', rgb7(0.5) == 64)
+	-- Out of range must clamp: a byte over 0x7F has its MSB set, which is illegal in MIDI data and
+	-- drops the whole message.
+	check('rgb7 clamps above 1.0', rgb7(1.9) == 127)
+	check('rgb7 clamps below 0.0', rgb7(-0.5) == 0)
+	check('rgb7 treats a missing channel as zero', rgb7(nil) == 0)
+
+	local function ringFor(lid)
+		for _, m in ipairs(pendingMessages) do
+			if item_type_of(m) == IT_RGB_LED and m[9] == lid then return m end
+		end
+		return nil
+	end
+	local zone1Cc = CC_MAP[ENCODER_CC[EID_ZONE1]]
+	local zone1Push = CC_MAP[BUTTON_CC[ENCODER_MUTE_BUTTON[EID_ZONE1]].short]
+	local lid = ENCODER_RGB_LID[EID_ZONE1]
+
+	-- A mapped, unmuted knob lights its ring in MainStage's colour.
+	state, pendingMessages, encoderRingSent, midiOutFeedback = STATE_ACTIVE, {}, {}, {}
+	midiOutFeedback[zone1Cc] = { name = 'Volume', color = { r = 1.0, g = 0.5, b = 0.0 } }
+	flush_encoder_rings()
+	local m = ringFor(lid)
+	check('a mapped encoder lights its ring in MainStage colour',
+		m ~= nil and m[10] == 127 and m[11] == 64 and m[12] == 0 and m[13] == RGB_BRIGHT)
+
+	-- Unchanged state queues nothing.
+	pendingMessages = {}
+	flush_encoder_rings()
+	check('an unchanged ring is not re-queued', ringFor(lid) == nil)
+
+	-- Muted goes fully dark, colour included.
+	pendingMessages = {}
+	midiOutFeedback[zone1Push] = { name = 'Mute', value = 127 }
+	flush_encoder_rings()
+	m = ringFor(lid)
+	check('a muted channel takes its ring dark',
+		m ~= nil and m[10] == 0 and m[11] == 0 and m[12] == 0 and m[13] == 0)
+
+	-- Unmuting restores the colour.
+	pendingMessages = {}
+	midiOutFeedback[zone1Push] = { name = 'Mute', value = 0 }
+	flush_encoder_rings()
+	m = ringFor(lid)
+	check('unmuting restores the ring colour', m ~= nil and m[10] == 127 and m[13] == RGB_BRIGHT)
+
+	-- No feedback at all must go DARK, not be left showing a previous concert's colour.
+	pendingMessages, midiOutFeedback = {}, {}
+	flush_encoder_rings()
+	m = ringFor(lid)
+	check('an encoder with no MainStage feedback goes dark',
+		m ~= nil and m[10] == 0 and m[13] == 0)
+
+	-- All four rings are addressed, each with its own LID.
+	state, pendingMessages, encoderRingSent, midiOutFeedback = STATE_ACTIVE, {}, {}, {}
+	flush_encoder_rings()
+	local seen = {}
+	for _, msg in ipairs(pendingMessages) do
+		if item_type_of(msg) == IT_RGB_LED then seen[msg[9]] = true end
+	end
+	check('all four zone rings are addressed, one LID each',
+		seen[0x00] and seen[0x01] and seen[0x02] and seen[0x03])
+
+	-- ACTIVE-only, for the same reason as the mute rings.
+	state, pendingMessages, encoderRingSent = STATE_IDENTIFYING, {}, {}
+	flush_encoder_rings()
+	check('rings are not written outside an active session', #pendingMessages == 0)
+
+	-- And a ring set before login confirmation is discarded, so login must forget what was sent.
+	state, encoderRingSent = STATE_ACTIVE, { [0x00] = { 1, 2, 3, 4 } }
+	handle_login()
+	check('login clears the ring memo so the rings re-assert', next(encoderRingSent) == nil)
+
+	state, pendingMessages, midiOutFeedback, encoderRingSent =
+		savedState, savedPending, savedFeedback, savedRings
+end
+
 -- MARK: - Summary
 
 realPrint('')
