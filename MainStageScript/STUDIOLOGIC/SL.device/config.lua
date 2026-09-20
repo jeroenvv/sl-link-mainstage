@@ -1847,17 +1847,16 @@ function flush_mute_leds()
 	end
 end
 
--- Brightness for a lit ring. A knob mapped to a VOLUME tracks its level, so the ring dims as the fader
--- comes down and goes dark at the bottom - Jeroen's requirement. Anything else sits at full brightness:
--- a value means nothing on a Pan or a switch, and dimming those would read as 'half off'. Matched on the
--- reported parameter name, the same idiom encoder_mute_state() already uses for 'mute'.
+-- Brightness for a lit ring: it tracks the control's value, so a fader dims the ring as it comes down and
+-- bottoms out dark - Jeroen's requirement. Applied to EVERY ring rather than only to names containing
+-- 'volume': the rings are driven by encoder TURN mappings, which are always continuous controls, and
+-- matching on the name silently stopped dimming as soon as a mapping was relabelled (MainStage's Replace
+-- Parameter Label decides that text - see docs/mainstage-integration.md). The consequence to accept is
+-- that a Pan at hard left is 0, so its ring goes dark there too.
 function ring_brightness(fb)
-	if fb.name ~= nil and fb.name:lower():find('volume', 1, true) then
-		local v = fb.value or RGB_BRIGHT
-		if v < 0 then v = 0 elseif v > RGB_BRIGHT then v = RGB_BRIGHT end
-		return v
-	end
-	return RGB_BRIGHT
+	local v = fb.value or RGB_BRIGHT
+	if v < 0 then v = 0 elseif v > RGB_BRIGHT then v = RGB_BRIGHT end
+	return v
 end
 
 -- The four zone encoder rings, coloured by MainStage itself: whatever parameter a knob is mapped to,
