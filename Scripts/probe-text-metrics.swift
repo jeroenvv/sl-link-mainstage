@@ -1,18 +1,32 @@
 import CoreMIDI
 import Foundation
 
-// Text-metrics probe. Measures, on real hardware, what the spec contradicts itself about:
-// the pixel height of Write Text's box at each SIZE, and where the Knob bitmap's hole
-// actually sits inside its 61x54 bounds.
+// Interactive text/bitmap metrics caliper for the SL88 MK2.
 //
-// The spec (sl-link/docs/display-messages.md, pinned commit 4c0824d) says BOTH:
-//   table: 0x00 Small (21px) / 0x01 Medium (22px) / 0x02 Big (33px)
-//   prose: "small (21px), medium (27px), big (33px)"
-// Small and big agree, so they are the control: if the calipers below do not read 21 and 33
-// for those, the method is wrong and the medium reading is worthless.
+// Round 1 of this probe asked for flush-edge judgements against fixed 21/27/33px caliper bars
+// and established that all three of the spec's figures are too large (small < 21, medium ~21,
+// big ~27), but 1px resolution and the ring hole were "hard to see". So the keyboard measures
+// itself here instead: every quantity is driven by an encoder until the screen shows an
+// unambiguous binary signal, and the probe prints the number.
 //
-// Read the screen and report, per row, which caliper column's BOTTOM edge is flush with the
-// text box's bottom edge. Session plumbing is lifted from probe-display.swift.
+// MODE A - TEXT BOX HEIGHT (the seam test)
+//   Three copies of the same string are stacked exactly H apart, in alternating background
+//   colours. Write Text's background box fills its whole maxWidth, so each copy paints a solid
+//   rectangle whose height is what we want:
+//     H too big   -> black seams between the stripes
+//     H too small -> earlier stripes are clipped to H; the LAST stripe looks thicker
+//     H exact     -> continuous block, all stripes equal, no seam
+//   Turn encoder 1 until that holds. Zone 1/2/3 buttons pick SIZE_SMALL/MEDIUM/BIG.
+//
+// MODE B - KNOB HOLE (the real popup box)
+//   Draws the Knob bitmap and, on top of it, the actual Write Text box config.lua paints inside
+//   the ring ('188', SIZE_MEDIUM, opaque background). Turn encoder 1 for its maxWidth and
+//   encoder 4 for its y offset until the white box sits entirely inside the hole and touches
+//   nothing. Those two numbers are POPUP_VALUE_W and the value box's offset from the icon top.
+//
+//   ZOOM button toggles A/B. Joystick press prints a snapshot line.
+//
+// Session plumbing is lifted from probe-display.swift.
 
 let APP_NAME = "SL MainStage"
 let ID1: UInt8 = 0x03
@@ -38,13 +52,11 @@ struct C { let r: UInt8; let g: UInt8; let b: UInt8
 let BLACK   = C(0, 0, 0)
 let WHITE   = C(127, 127, 127)
 let DIMTEXT = C(70, 70, 80)
-let GREEN   = C(0, 120, 0)     // caliper: 21px, the documented SIZE_SMALL height
-let RED     = C(120, 0, 0)     // caliper: 27px, the spec's PROSE figure for SIZE_MEDIUM
-let YELLOW  = C(120, 120, 0)   // caliper: 33px, the documented SIZE_BIG height
-let BOXBG   = C(25, 45, 90)    // text box background - the rectangle being measured
-let GREY    = C(60, 60, 60)
+let STRIPE_A = C(20, 50, 110)   // alternating stripe backgrounds - a black seam between them
+let STRIPE_B = C(0, 90, 60)     // is the signal that H is too large
 let KNOBFG  = C(127, 70, 0)
 
+// ---- endpoints ---------------------------------------------------------------
 guard let (source, destination): (MIDIEndpointRef, MIDIEndpointRef) = {
     var s: MIDIEndpointRef = 0, d: MIDIEndpointRef = 0
     for i in 0..<MIDIGetNumberOfSources() {
@@ -86,75 +98,74 @@ func text(_ s: String, _ x: Int, _ y: Int, w: Int = 0, align: UInt8 = 0, size: U
           fg: C = WHITE, bg: C = BLACK, label: String? = nil) {
     let ascii = s.unicodeScalars.map { UInt8($0.value >= 0x20 && $0.value <= 0x80 ? $0.value : 0x20) }
     send([0x04, 0x00] + msbLsb(x) + msbLsb(y) + msbLsb(w) + [align, size] + fg.bytes + bg.bytes + ascii + [0x00],
-         label ?? "text \"\(s)\" x=\(x) y=\(y) w=\(w) size=\(size)")
+         label)
 }
 func bitmap(group: UInt8, icon: UInt8, x: Int, y: Int, fg: C, bg: C) {
-    send([0x04, 0x03] + msbLsb(x) + msbLsb(y) + [group, icon] + fg.bytes + bg.bytes, "bitmap g\(group)/i\(icon) x=\(x) y=\(y)")
+    send([0x04, 0x03] + msbLsb(x) + msbLsb(y) + [group, icon] + fg.bytes + bg.bytes, nil)
 }
 
 // ---- geometry ----------------------------------------------------------------
-// Agreed layout. Nothing may exceed y=239: a clipped row is indistinguishable from a short
-// glyph box, which would silently corrupt the measurement.
-let TITLE_Y   = 2
-let ROW_Y     = [26, 66, 106]          // SIZE_SMALL, SIZE_MEDIUM, SIZE_BIG
-let ROW_LABEL = ["Hg S", "Hg M", "Hg B"]
-let CAL_X     = [40, 62, 84]           // green / red / yellow columns
-let CAL_H     = [21, 27, 33]
-let CAL_C     = [GREEN, RED, YELLOW]
-let CAL_W     = 18
-let BOX_X     = 110
-let BOX_W     = 190
-let KNOB_Y    = 150                    // + BMP_ICON_H (54) = 204
-let KNOB_L_X  = 40                     // left icon, carries the 38-wide value box
-let KNOB_R_X  = 180                    // right icon, carries the 45-wide value box
-let ICON_W    = 61
-let ICON_H    = 54
-let LADDER_X  = 120
-let VALUE_BOX_Y = KNOB_Y + 16           // neutral y - this row answers WIDTH only
-let FOOTER_Y  = 210                    // + 21 = 231
+let WORK_Y = 30, WORK_H = 152          // scratch band both modes repaint; 30..182
+let STRIPE_X = 60, STRIPE_W = 200
+let STRIPE_Y = 40
+let ICON_W = 61, ICON_H = 54
+let KNOB_X = 130, KNOB_Y = 60          // 130..191, 60..114
+let READ1_Y = 188, READ2_Y = 212       // two readout lines, SIZE_SMALL, opaque full width
+
+// ---- state -------------------------------------------------------------------
+var mode = 0                            // 0 = text height, 1 = knob hole
+var sizeSel = 1                         // 0 small, 1 medium, 2 big
+var stripeH = [19, 21, 27]              // per-size candidate, seeded from round 1's readings
+var boxW = 38                           // POPUP_VALUE_W candidate
+var boxDY = 16                          // value box offset from the icon's top
+var boxDX = -1                          // -1 = keep centred on the icon
+let SIZE_NAME = ["SMALL", "MEDIUM", "BIG"]
+
+func centredDX() -> Int { (ICON_W - boxW) / 2 }
+
+func readout(_ line1: String, _ line2: String) {
+    // Full-width opaque boxes, so each new readout erases the previous one.
+    text(line1, 0, READ1_Y, w: 320, align: 1, size: 0, fg: WHITE, bg: BLACK, label: nil)
+    text(line2, 0, READ2_Y, w: 320, align: 1, size: 0, fg: DIMTEXT, bg: BLACK, label: nil)
+}
+
+func paintTextMode() {
+    rect(0, WORK_Y, 320, WORK_H, BLACK, nil)
+    let h = stripeH[sizeSel]
+    // Drawn top to bottom on purpose: if h is smaller than the real box height, each stripe
+    // clips the one above it and the LAST stripe is left visibly thicker.
+    for i in 0..<3 {
+        text("Hg 123", STRIPE_X, STRIPE_Y + i * h, w: STRIPE_W, align: 1, size: UInt8(sizeSel),
+             fg: WHITE, bg: i % 2 == 0 ? STRIPE_A : STRIPE_B, label: nil)
+    }
+    readout("A  \(SIZE_NAME[sizeSel])  H=\(h)",
+            "E1 turns H - no seam, equal stripes. Z1/2/3 size, ZOOM mode")
+    log("MODE A  size=\(SIZE_NAME[sizeSel]) H=\(h)  (stripes at y=\(STRIPE_Y), \(STRIPE_Y + h), \(STRIPE_Y + 2 * h))")
+}
+
+func paintKnobMode() {
+    rect(0, WORK_Y, 320, WORK_H, BLACK, nil)
+    bitmap(group: 0x00, icon: 0x0C, x: KNOB_X, y: KNOB_Y, fg: KNOBFG, bg: BLACK)
+    let dx = boxDX < 0 ? centredDX() : boxDX
+    // The real thing config.lua paints inside the ring: Write Text, opaque background, SIZE_MEDIUM.
+    text("188", KNOB_X + dx, KNOB_Y + boxDY, w: boxW, align: 1, size: 1, fg: BLACK, bg: WHITE, label: nil)
+    readout("B  w=\(boxW)  dy=\(boxDY)  dx=\(dx)\(boxDX < 0 ? " (auto)" : "")",
+            "E1 w, E4 dy, E3 dx - box inside the ring, touching nothing")
+    log("MODE B  w=\(boxW) dy=\(boxDY) dx=\(dx)\(boxDX < 0 ? " (auto-centred)" : "")  box at x=\(KNOB_X + dx) y=\(KNOB_Y + boxDY)")
+}
 
 func paintAll() {
-    log("── painting text-metrics screen ──")
+    log("── painting ──")
     clearScreen(BLACK)
-    text("TEXT METRICS PROBE", 0, TITLE_Y, w: 320, align: 1, size: 0, fg: DIMTEXT, bg: BLACK)
+    text("TEXT METRICS CALIPER", 0, 4, w: 320, align: 1, size: 0, fg: DIMTEXT, bg: BLACK, label: nil)
+    repaint()
+}
 
-    // Three rows: caliper columns whose TOPS align with the text box's top, so the answer is
-    // "which column's bottom edge is flush with the box's bottom edge".
-    for (row, y) in ROW_Y.enumerated() {
-        for i in 0..<3 {
-            rect(CAL_X[i], y, CAL_W, CAL_H[i], CAL_C[i], "caliper row\(row) \(CAL_H[i])px")
-        }
-        // Non-zero maxWidth on purpose: Write Text's opaque background box then fills the whole
-        // width, giving a clean rectangle of known width and UNKNOWN height - the measurement.
-        // 'Hg' carries an ascender and a descender, so ink sitting high inside the box shows up
-        // as asymmetric padding instead of being guessed at.
-        text(ROW_LABEL[row], BOX_X, y, w: BOX_W, align: 1, size: UInt8(row), fg: WHITE, bg: BOXBG)
-    }
+func repaint() { mode == 0 ? paintTextMode() : paintKnobMode() }
 
-    // Knob row. Two copies of the same icon; the ladder between them reads off where the ring's
-    // hole starts and ends, the two boxes answer whether 38 or 45 fits inside it.
-    bitmap(group: 0x00, icon: 0x0C, x: KNOB_L_X, y: KNOB_Y, fg: KNOBFG, bg: BLACK)
-    bitmap(group: 0x00, icon: 0x0C, x: KNOB_R_X, y: KNOB_Y, fg: KNOBFG, bg: BLACK)
-    // Ladder: 1px rules every 6px down the icon's height. Long+white every 12px (0,12,24,36,48),
-    // short+grey on the odd 6px steps, so the rules can be counted rather than estimated.
-    for step in 0...9 {
-        let dy = step * 6
-        let major = dy % 12 == 0
-        rect(LADDER_X, KNOB_Y + dy, major ? 14 : 8, 1, major ? WHITE : GREY, "ladder +\(dy)")
-    }
-    // Both boxes at the same y - white background so the box's edges are unmistakable against
-    // the ring. Drawn AFTER the icons so the box is on top, which is what the real popup does.
-    text("188", KNOB_L_X + (ICON_W - 38) / 2, VALUE_BOX_Y, w: 38, align: 1, size: 1, fg: BLACK, bg: WHITE,
-         label: "value box w=38")
-    text("188", KNOB_R_X + (ICON_W - 45) / 2, VALUE_BOX_Y, w: 45, align: 1, size: 1, fg: BLACK, bg: WHITE,
-         label: "value box w=45")
-
-    text("G21 R27 Y33  ticks 6px  boxes 38/45", 0, FOOTER_Y, w: 320, align: 1, size: 0, fg: DIMTEXT, bg: BLACK)
-    log("── painted (\(sent) messages sent) ──")
-    log("READ: per row, which caliper column's BOTTOM edge is flush with the text box's bottom edge?")
-    log("      rows drawn at y=\(ROW_Y) for SIZE_SMALL/MEDIUM/BIG; calipers \(CAL_H) px at x=\(CAL_X)")
-    log("      knob icons at y=\(KNOB_Y) (x=\(KNOB_L_X), \(KNOB_R_X)); ladder x=\(LADDER_X), rules every 6px from y=\(KNOB_Y)")
-    log("      value boxes w=38 (left) and w=45 (right) at y=\(VALUE_BOX_Y) - do either box's sides poke through the ring?")
+func snapshot() {
+    log("SNAPSHOT  small=\(stripeH[0])px  medium=\(stripeH[1])px  big=\(stripeH[2])px  |  "
+        + "POPUP_VALUE_W=\(boxW)  value box dy=\(boxDY) dx=\(boxDX < 0 ? centredDX() : boxDX)")
 }
 
 // ---- inbound with reassembly -------------------------------------------------
@@ -172,11 +183,38 @@ func handleFrame(_ b: [UInt8]) {
         } else { log("RX  IDENTIFICATION APPROVED (no payload)") }
     case (0x7F, 0x02): log("RX  IDENTIFICATION REJECTED reason=\(payload.first ?? 255)")
     case (0x00, 0x01), (0x00, 0x06):
-        log("RX  \(fn == 1 ? "LOGIN CONFIRMATION" : "LOGIN RECALL") payload=[\(hex(payload))] → painting")
+        log("RX  \(fn == 1 ? "LOGIN CONFIRMATION" : "LOGIN RECALL") → painting")
         paintAll()
     case (0x00, 0x02): log("RX  LOGOUT REQUEST → confirming"); send([0x00, 0x03], "logout confirmation")
     case (0x00, 0x04): log("RX  STANDBY")
     case (0x00, 0x05): log("RX  RESTART → repainting"); paintAll()
+
+    case (0x03, _):    // encoder: payload is 0x40-relative, multi-step when turned fast
+        let delta = Int(payload.first ?? 0x40) - 0x40
+        guard delta != 0 else { return }
+        switch (mode, Int(fn)) {
+        case (0, 0x00): stripeH[sizeSel] = max(6, min(48, stripeH[sizeSel] + delta)); repaint()
+        case (1, 0x00): boxW = max(6, min(ICON_W, boxW + delta)); repaint()
+        case (1, 0x03): boxDY = max(0, min(ICON_H - 4, boxDY + delta)); repaint()
+        case (1, 0x02): boxDX = max(0, min(ICON_W - 4, (boxDX < 0 ? centredDX() : boxDX) + delta)); repaint()
+        default: log("RX  ENCODER \(fn) delta \(delta) (unbound in mode \(mode == 0 ? "A" : "B"))")
+        }
+
+    case (0x01, _):    // button
+        let evt = payload.first ?? 0
+        guard evt == 1 || evt == 2 else { return }   // SHORT or LONG only
+        switch Int(fn) {
+        case 0x10: mode = 1 - mode; log("MODE → \(mode == 0 ? "A (text height)" : "B (knob hole)")"); repaint()
+        case 0x04, 0x05, 0x06:
+            guard mode == 0 else { return }
+            sizeSel = Int(fn) - 0x04; repaint()
+        case 0x15: snapshot()
+        case 0x02:
+            guard mode == 1 else { return }
+            boxDX = -1; log("dx → auto-centred"); repaint()
+        default: log("RX  BUTTON 0x\(String(format: "%02X", fn)) \(evt == 1 ? "SHORT" : "LONG") (unbound)")
+        }
+
     default:
         log("RX  item=0x\(String(format: "%02X", item)) fn=0x\(String(format: "%02X", fn)) payload=[\(hex(payload))]")
     }
@@ -206,11 +244,14 @@ send([0x7F, 0x00] + Array(APP_NAME.utf8) + [0x00], "identification request")
 let keepalive = Timer(timeInterval: 3.0, repeats: true) { _ in send([0x00, 0x00]) }
 RunLoop.main.add(keepalive, forMode: .common)
 
-let duration = CommandLine.arguments.count > 1 ? Double(CommandLine.arguments[1]) ?? 300 : 300
-log("Listening \(Int(duration))s — press APP, select \"\(APP_NAME)\", then read the screen")
+let duration = CommandLine.arguments.count > 1 ? Double(CommandLine.arguments[1]) ?? 600 : 600
+log("Listening \(Int(duration))s — press APP, select \"\(APP_NAME)\"")
+log("MODE A: encoder 1 turns H; Zone 1/2/3 pick size. ZOOM switches mode. Joystick press = snapshot.")
+log("MODE B: encoder 1 = box width, encoder 4 = y offset, encoder 3 = x offset, Z3 encoder press = re-centre.")
 RunLoop.main.run(until: Date().addingTimeInterval(duration))
 
 keepalive.invalidate()
 send([0x00, 0x02], "logout request")
 RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+snapshot()
 log("done — \(sent) messages sent")
