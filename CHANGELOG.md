@@ -6,6 +6,15 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-09-20
+
+- fix: size the popup value box to the measured knob hole
+- docs: record that host callbacks live in MainStageCore, not LogicMainStage
+- docs: record the measured Write Text box heights and knob hole
+- docs: record the hardware confirmation and the re-identify retry run
+- test: add a text-metrics probe for glyph heights and the knob hole
+- test: make the text-metrics probe an interactive caliper
+
 ## [2.4.0] - 2026-09-17
 
 - feat: show MainStage's real parameter name and value in the popup
