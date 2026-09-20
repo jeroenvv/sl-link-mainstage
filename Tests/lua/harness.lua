@@ -2795,18 +2795,23 @@ do
 		savedArmedInterval, savedResends, savedFallback, savedRetries, savedLogoutTicks
 end
 
--- MARK: - 59. Popup value box lies entirely within the knob's rectangle
+-- MARK: - 59. Popup value box lies entirely within the knob's MEASURED hole
 --
--- The value is drawn INSIDE the ring now (see docs/config-lua-history.md#value-moved-inside-the-
--- ring-2026-09-14), so its Write Text box must never extend past the icon's bounds - Write Text's
--- background box fills the whole maxWidth, and painting past the icon's edges puts an opaque bar
--- through the ring itself.
+-- The value is drawn INSIDE the ring (see docs/config-lua-history.md#value-moved-inside-the-
+-- ring-2026-09-14), so its Write Text box must fit the hole measured on hardware - Write Text's
+-- background box fills the whole maxWidth, and a box wider than the hole paints an opaque bar
+-- through the ring itself. A hand-guessed 38 did exactly that until the hole was measured at 36:
+-- docs/config-lua-history.md#write-text-box-heights-measured-2026-09-20.
 check('popup value box left edge is inside the knob rect', POPUP_VALUE_X >= POPUP_KNOB_X)
 check('popup value box right edge is inside the knob rect',
 	POPUP_VALUE_X + POPUP_VALUE_W <= POPUP_KNOB_X + BMP_ICON_W)
-check('popup value box top edge is inside the knob rect', POPUP_VALUE_Y >= POPUP_KNOB_Y)
+check('popup value box is no wider than the measured hole', POPUP_VALUE_W <= KNOB_HOLE_W)
+check('popup value box top edge is at or below the measured hole top',
+	POPUP_VALUE_Y >= POPUP_KNOB_Y + KNOB_HOLE_DY)
 check('popup value box bottom edge is inside the knob rect',
-	POPUP_VALUE_Y + POPUP_VALUE_GLYPH_H <= POPUP_KNOB_Y + BMP_ICON_H)
+	POPUP_VALUE_Y + TEXT_H_MEDIUM <= POPUP_KNOB_Y + BMP_ICON_H)
+check('the mute hint row reserves at least a SIZE_SMALL glyph box',
+	POPUP_MUTE_HINT_H >= TEXT_H_SMALL)
 
 -- MARK: - 60. Drawing the knob invalidates a memoized popupValue when the icon changes
 --
@@ -4712,6 +4717,56 @@ do
 
 	state, pendingMessages, displayMode, popupActive, popupPreviousMode, modeLedSent =
 		savedState, savedPending, savedMode, savedPopup, savedPrev, savedSent
+end
+
+-- MARK: - 83. Zoom-screen rows do not overlap at the MEASURED glyph heights
+--
+-- Per-region memoization requires non-overlapping regions (config.lua's SIX RULES, rule 4): if two
+-- region ids can paint the same pixels, redrawing one leaves a stale layer from the other. The zoom
+-- screen's five y coordinates were hand-calibrated by eye against glyph heights nobody had measured;
+-- now that TEXT_H_* are real (docs/config-lua-history.md#write-text-box-heights-measured-2026-09-20)
+-- the rule can actually be checked. y and size are decoded from the message's own bytes, like
+-- align/maxWidth in test 21: y msb/lsb at 12/13, size at 17.
+do
+	local savedMode, savedDrawn, savedPending = displayMode, drawn, pendingMessages
+	local savedPatch, savedSet, savedConcert = patchName, setName, currentConcert
+
+	displayMode = 'zoom'
+	patchName, setName, currentConcert =
+		'A Reasonably Long Patch Name', 'A Reasonably Long Set Name', 'Test Concert'
+	drawn = {}
+	pendingMessages = {}
+
+	paint_zoom_screen()
+
+	local heightForSize = { [SIZE_SMALL] = TEXT_H_SMALL, [SIZE_MEDIUM] = TEXT_H_MEDIUM, [SIZE_BIG] = TEXT_H_BIG }
+	local rows = {}
+	for i = 1, #pendingMessages do
+		local m = pendingMessages[i]
+		rows[#rows + 1] = {
+			id = m.regionId,
+			y = m[12] * 128 + m[13],
+			h = heightForSize[m[17]],
+		}
+	end
+	table.sort(rows, function(a, b) return a.y < b.y end)
+
+	local overlap, offScreen = nil, nil
+	for i = 1, #rows do
+		if rows[i].h == nil then overlap = rows[i].id .. ' (unknown size byte)' end
+		if rows[i].y + (rows[i].h or 0) > SCREEN_HEIGHT then offScreen = rows[i].id end
+		if i > 1 and rows[i - 1].y + (rows[i - 1].h or 0) > rows[i].y then
+			overlap = rows[i - 1].id .. ' overlaps ' .. rows[i].id
+		end
+	end
+
+	check('zoom screen rows: 5 decoded', #rows == 5)
+	check('zoom screen rows do not overlap at the measured glyph heights (' .. tostring(overlap) .. ')',
+		overlap == nil)
+	check('zoom screen rows all fit above SCREEN_HEIGHT (' .. tostring(offScreen) .. ')', offScreen == nil)
+
+	displayMode, drawn, pendingMessages = savedMode, savedDrawn, savedPending
+	patchName, setName, currentConcert = savedPatch, savedSet, savedConcert
 end
 
 -- MARK: - Summary
