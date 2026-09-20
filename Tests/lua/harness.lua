@@ -2888,7 +2888,7 @@ end
 -- BUG (docs/config-lua-history.md#sacrificial-redraw-painted-the-list-line-under-a-popup-2026-09-
 -- 14): queue_sacrificial_redraw() used to branch on displayMode directly, so while a popup was
 -- showing (displayMode == 'popup') it always took the else branch and queued the LIST screen's ctx
--- bar - even when the popup was covering the ZOOM screen. Confirmed on hardware: the patch list's
+-- bar - even when the popup was covering the zoom screen. Confirmed on hardware: the patch list's
 -- top line appeared over the zoom screen whenever a popup was up. The fix branches on
 -- popupPreviousMode (what the popup covers) whenever displayMode == 'popup'.
 do
@@ -2902,14 +2902,14 @@ do
 	currentConcert = 'Test Concert'
 	displayMode = 'popup'
 
-	-- (a) Popup covering the ZOOM screen: the duplicate must be the zoom concert line, byte-for-byte.
+	-- (a) Popup covering the zoom screen: the duplicate must be the zoom concert line, byte-for-byte.
 	popupPreviousMode = 'zoom'
 	pendingMessages = {}
 	queue_sacrificial_redraw()
 	check('popup-over-zoom queues exactly one duplicate', #pendingMessages == 1)
 	if #pendingMessages == 1 then
 		checkHex(
-			'popup-over-zoom sacrificial redraw matches the ZOOM duplicate, not the list one',
+			'popup-over-zoom sacrificial redraw matches the zoom duplicate, not the list one',
 			pendingMessages[1],
 			hex(msg_write_text(currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0))
 		)
@@ -2936,7 +2936,7 @@ do
 	check('popup with unset popupPreviousMode queues exactly one duplicate', #pendingMessages == 1)
 	if #pendingMessages == 1 then
 		checkHex(
-			'popup with unset popupPreviousMode falls back to the ZOOM duplicate',
+			'popup with unset popupPreviousMode falls back to the zoom duplicate',
 			pendingMessages[1],
 			hex(msg_write_text(currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0))
 		)
@@ -3484,7 +3484,7 @@ do
 
 	-- (c) LONG: resets volume via a PLAIN write (no MUTE byte) and separately unmutes via
 	-- MUTE_LED_REPEATS repeated mute writes - satisfies the project's LONG-must-never-be-a-no-op rule
-	-- (see config.lua's handle_zoom_button comment) unconditionally.
+	-- (see config.lua's handle_home_button comment) unconditionally.
 	pendingMessages = {}
 	masterVolume = 20
 	masterMuted = true
@@ -4668,54 +4668,54 @@ do
 		savedValue, savedFeedback, savedLedSent
 end
 
--- MARK: - 82. The ZOOM lamp mirrors the display mode
+-- MARK: - 82. The HOME lamp mirrors the display mode
 do
 	local savedState, savedPending, savedMode, savedPopup, savedPrev, savedSent =
-		state, pendingMessages, displayMode, popupActive, popupPreviousMode, modeLedSent
+		state, pendingMessages, displayMode, popupActive, popupPreviousMode, homeLedSent
 
-	local function zoomLed()
+	local function homeLed()
 		for _, m in ipairs(pendingMessages) do
-			if item_type_of(m) == IT_LED and m[9] == WLID_ZOOM then return m end
+			if item_type_of(m) == IT_LED and m[9] == WLID_HOME then return m end
 		end
 		return nil
 	end
 
 	state, popupActive = STATE_ACTIVE, false
 
-	pendingMessages, modeLedSent, displayMode = {}, nil, 'list'
+	pendingMessages, homeLedSent, displayMode = {}, nil, 'list'
 	flush_mode_led()
-	local led = zoomLed()
-	check('list mode lights the ZOOM lamp', led ~= nil and led[10] == 1)
+	local led = homeLed()
+	check('list mode lights the HOME lamp', led ~= nil and led[10] == 1)
 
 	pendingMessages, displayMode = {}, 'zoom'
 	flush_mode_led()
-	led = zoomLed()
-	check('zoom mode darkens the ZOOM lamp', led ~= nil and led[10] == 0)
+	led = homeLed()
+	check('zoom mode darkens the HOME lamp', led ~= nil and led[10] == 0)
 
 	pendingMessages = {}
 	flush_mode_led() -- unchanged
-	check('an unchanged mode does not re-queue the ZOOM lamp', zoomLed() == nil)
+	check('an unchanged mode does not re-queue the HOME lamp', homeLed() == nil)
 
 	-- A popup covers a mode rather than replacing it, so the lamp must follow what is underneath.
-	pendingMessages, modeLedSent = {}, nil
+	pendingMessages, homeLedSent = {}, nil
 	popupActive, popupPreviousMode, displayMode = true, 'list', 'popup'
 	flush_mode_led()
-	led = zoomLed()
-	check('a popup over the list keeps the ZOOM lamp lit', led ~= nil and led[10] == 1)
+	led = homeLed()
+	check('a popup over the list keeps the HOME lamp lit', led ~= nil and led[10] == 1)
 
 	-- ACTIVE-only, for the same reason as the mute rings: an LED queued during identification
 	-- competes with the retry for the per-tick permit.
-	pendingMessages, modeLedSent = {}, nil
+	pendingMessages, homeLedSent = {}, nil
 	popupActive, displayMode, state = false, 'list', STATE_IDENTIFYING
 	flush_mode_led()
-	check('the ZOOM lamp is not written outside an active session', zoomLed() == nil)
+	check('the HOME lamp is not written outside an active session', homeLed() == nil)
 
 	-- And a ring set before login is discarded, so login must forget what was sent.
-	state, modeLedSent = STATE_ACTIVE, true
+	state, homeLedSent = STATE_ACTIVE, true
 	handle_login()
-	check('login clears the ZOOM lamp memo so it re-asserts', modeLedSent == nil)
+	check('login clears the HOME lamp memo so it re-asserts', homeLedSent == nil)
 
-	state, pendingMessages, displayMode, popupActive, popupPreviousMode, modeLedSent =
+	state, pendingMessages, displayMode, popupActive, popupPreviousMode, homeLedSent =
 		savedState, savedPending, savedMode, savedPopup, savedPrev, savedSent
 end
 
@@ -4769,16 +4769,16 @@ do
 	patchName, setName, currentConcert = savedPatch, savedSet, savedConcert
 end
 
--- MARK: - 84. Config screen: row table coverage, scroll, the unmappable SETTINGS button, geometry
+-- MARK: - 84. Config screen: row table coverage, scroll, the unmappable GLOBAL button, geometry
 --
--- The config screen is the script's own UI, not a mappable control surface: SETTINGS toggles it and
+-- The config screen is the script's own UI, not a mappable control surface: GLOBAL toggles it and
 -- the joystick ring scrolls it, and neither may reach MainStage as MIDI while it shows. See
 -- docs/config-lua-history.md#the-config-screen-2026-09-20.
 do
 	local savedMode, savedScroll, savedPrev, savedPending, savedDrawn =
 		displayMode, configScroll, configPreviousMode, pendingMessages, drawn
 	local savedCC, savedDelta, savedOrder = pendingCC, pendingDelta, pendingCCOrder
-	local savedState, savedPopup, savedLed = state, popupActive, configLedSent
+	local savedState, savedPopup, savedLed = state, popupActive, globalLedSent
 
 	-- CONFIG_ROWS is written out by hand, so the guard that makes that safe is coverage: every CC_MAP
 	-- key exactly once, and nothing that is not a CC_MAP key.
@@ -4799,8 +4799,8 @@ do
 	check('CONFIG_ROWS covers every CC_MAP key (' .. tostring(missing) .. ')', missing == nil)
 
 	-- 'Unmappable for MIDI' is exactly this: no BUTTON_CC entry, so no CC and no controller_info item.
-	check('SETTINGS is absent from BUTTON_CC', BUTTON_CC[BID_SETTINGS] == nil)
-	check('ZOOM is absent from BUTTON_CC', BUTTON_CC[BID_ZOOM] == nil)
+	check('GLOBAL is absent from BUTTON_CC', BUTTON_CC[BID_GLOBAL] == nil)
+	check('HOME is absent from BUTTON_CC', BUTTON_CC[BID_HOME] == nil)
 
 	-- Scroll clamps at both ends; the last page is a full window, never a short one.
 	displayMode = 'config'
@@ -4830,79 +4830,79 @@ do
 	check('the ring still emits its CC in list mode', pendingDelta['JOY_ROTATE'] == 2)
 	check('the ring does not scroll the config screen from list mode', configScroll == 0)
 
-	-- SETTINGS round-trips back to whichever mode it covered.
+	-- GLOBAL round-trips back to whichever mode it covered.
 	local function settings(pressKind)
-		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, BID_SETTINGS,
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, BID_GLOBAL,
 			pressKind, 0xF7)
 	end
-	-- popupActive is set explicitly, not inherited: handle_settings_button reads popupPreviousMode
+	-- popupActive is set explicitly, not inherited: handle_global_button reads popupPreviousMode
 	-- instead of displayMode while a popup is up, so a leak from an earlier block would quietly change
 	-- what this asserts rather than failing.
 	for _, from in ipairs({ 'list', 'zoom' }) do
 		displayMode, configPreviousMode, popupActive = from, nil, false
 		pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
 		handle_sl_frame(settings(PRESS_SHORT))
-		check('SETTINGS from ' .. from .. ' enters config', displayMode == 'config')
-		check('SETTINGS from ' .. from .. ' queues no CC', #pendingCCOrder == 0)
+		check('GLOBAL from ' .. from .. ' enters config', displayMode == 'config')
+		check('GLOBAL from ' .. from .. ' queues no CC', #pendingCCOrder == 0)
 		handle_sl_frame(settings(PRESS_SHORT))
-		check('SETTINGS returns to ' .. from, displayMode == from)
+		check('GLOBAL returns to ' .. from, displayMode == from)
 	end
 
-	-- LONG is not dropped: same action as SHORT (see handle_settings_button's comment).
+	-- LONG is not dropped: same action as SHORT (see handle_global_button's comment).
 	displayMode = 'list'
 	handle_sl_frame(settings(PRESS_LONG))
-	check('a LONG SETTINGS press also enters config', displayMode == 'config')
+	check('a LONG GLOBAL press also enters config', displayMode == 'config')
 
-	-- ZOOM must not toggle out of config - it would lose configPreviousMode and land on 'zoom'.
+	-- HOME must not toggle out of config - it would lose configPreviousMode and land on 'zoom'.
 	displayMode, configPreviousMode = 'config', 'list'
-	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, BID_ZOOM,
+	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, BID_HOME,
 		PRESS_SHORT, 0xF7))
-	check('a ZOOM SHORT press is ignored while the config screen shows', displayMode == 'config')
+	check('a HOME SHORT press is ignored while the config screen shows', displayMode == 'config')
 
-	-- The SETTINGS lamp is the 'you are in config' indicator, same memo discipline as the ZOOM lamp.
-	local function settingsLed()
+	-- The GLOBAL lamp is the 'you are in config' indicator, same memo discipline as the HOME lamp.
+	local function globalLed()
 		for _, m in ipairs(pendingMessages) do
-			if item_type_of(m) == IT_LED and m[9] == WLID_SETTINGS then return m end
+			if item_type_of(m) == IT_LED and m[9] == WLID_GLOBAL then return m end
 		end
 		return nil
 	end
 	state, popupActive, displayMode = STATE_ACTIVE, false, 'config'
-	pendingMessages, configLedSent = {}, nil
+	pendingMessages, globalLedSent = {}, nil
 	flush_mode_led()
-	local led = settingsLed()
-	check('config mode lights the SETTINGS lamp', led ~= nil and led[10] == 1)
+	local led = globalLed()
+	check('config mode lights the GLOBAL lamp', led ~= nil and led[10] == 1)
 	pendingMessages, displayMode = {}, 'list'
 	flush_mode_led()
-	led = settingsLed()
-	check('leaving config darkens the SETTINGS lamp', led ~= nil and led[10] == 0)
+	led = globalLed()
+	check('leaving config darkens the GLOBAL lamp', led ~= nil and led[10] == 0)
 	pendingMessages = {}
 	flush_mode_led()
-	check('an unchanged mode does not re-queue the SETTINGS lamp', settingsLed() == nil)
-	pendingMessages, configLedSent, state, displayMode = {}, nil, STATE_IDENTIFYING, 'config'
+	check('an unchanged mode does not re-queue the GLOBAL lamp', globalLed() == nil)
+	pendingMessages, globalLedSent, state, displayMode = {}, nil, STATE_IDENTIFYING, 'config'
 	flush_mode_led()
-	check('the SETTINGS lamp is not written outside an active session', settingsLed() == nil)
-	state, configLedSent = STATE_ACTIVE, true
+	check('the GLOBAL lamp is not written outside an active session', globalLed() == nil)
+	state, globalLedSent = STATE_ACTIVE, true
 	handle_login()
-	check('login clears the SETTINGS lamp memo so it re-asserts', configLedSent == nil)
+	check('login clears the GLOBAL lamp memo so it re-asserts', globalLedSent == nil)
 
-	-- The ZOOM lamp must NOT move when the config screen opens over a mode - it tracks list-vs-zoom
+	-- The HOME lamp must NOT move when the config screen opens over a mode - it tracks list-vs-zoom
 	-- only, and config is an overlay on one of those (Jeroen, after the first hardware run).
-	local function zoomLedMsg()
+	local function homeLedMsg()
 		for _, m in ipairs(pendingMessages) do
-			if item_type_of(m) == IT_LED and m[9] == WLID_ZOOM then return m end
+			if item_type_of(m) == IT_LED and m[9] == WLID_HOME then return m end
 		end
 		return nil
 	end
 	state, popupActive = STATE_ACTIVE, false
-	pendingMessages, modeLedSent, configLedSent, displayMode = {}, nil, nil, 'list'
+	pendingMessages, homeLedSent, globalLedSent, displayMode = {}, nil, nil, 'list'
 	flush_mode_led()
-	check('the ZOOM lamp is lit in list mode', (zoomLedMsg() or {})[10] == 1)
+	check('the HOME lamp is lit in list mode', (homeLedMsg() or {})[10] == 1)
 	pendingMessages, displayMode, configPreviousMode = {}, 'config', 'list'
 	flush_mode_led()
-	check('opening config over the list leaves the ZOOM lamp alone', zoomLedMsg() == nil)
-	pendingMessages, modeLedSent, displayMode, configPreviousMode = {}, nil, 'config', 'zoom'
+	check('opening config over the list leaves the HOME lamp alone', homeLedMsg() == nil)
+	pendingMessages, homeLedSent, displayMode, configPreviousMode = {}, nil, 'config', 'zoom'
 	flush_mode_led()
-	check('config over zoom keeps the ZOOM lamp dark', (zoomLedMsg() or {})[10] == 0)
+	check('config over zoom keeps the HOME lamp dark', (homeLedMsg() or {})[10] == 0)
 
 	-- No popup over the config screen: it would hide the page being read, and restoring it costs a
 	-- full Clear-Screen repaint. The CC still goes out - only the panel is skipped.
@@ -4952,7 +4952,7 @@ do
 	displayMode, configScroll, configPreviousMode, pendingMessages, drawn =
 		savedMode, savedScroll, savedPrev, savedPending, savedDrawn
 	pendingCC, pendingDelta, pendingCCOrder = savedCC, savedDelta, savedOrder
-	state, popupActive, configLedSent = savedState, savedPopup, savedLed
+	state, popupActive, globalLedSent = savedState, savedPopup, savedLed
 end
 
 -- MARK: - Summary
