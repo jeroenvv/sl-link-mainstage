@@ -5107,6 +5107,57 @@ do
 		savedState, savedPending, savedFeedback, savedRings
 end
 
+-- MARK: - 86. Popup name: shared position, bigger font, and the board's own term for the A encoder
+--
+-- Jeroen's requirements from the 2026-09-20 hardware run: the control's name goes ABOVE the ring in
+-- BOTH popup modes (the legacy label used to sit below its ring, so the two disagreed), in the larger
+-- font, and the A encoder's popup is titled AUDIO MASTER to match what the SL88's own board calls it.
+-- SIZE_BIG is not an option here: Max Width truncation is broken at big size and the popup centres with
+-- a real maxWidth, so a long name could render as a single letter.
+do
+	local savedDrawn, savedPending, savedName, savedCc, savedFeedback =
+		drawn, pendingMessages, popupControlName, popupCcNumber, popupFeedbackActive
+
+	-- y and size are decoded from the message's own bytes: y msb/lsb at 12/13, size at 17.
+	local function drawnAt(regionId)
+		for _, m in ipairs(pendingMessages) do
+			if m.regionId == regionId then return m[12] * 128 + m[13], m[17] end
+		end
+		return nil, nil
+	end
+
+	drawn, pendingMessages = {}, {}
+	draw_popup_title('Volume')
+	local y, size = drawnAt('popupTitle')
+	check('the feedback popup draws its name at the shared title y', y == POPUP_TITLE_Y)
+	check('the feedback popup draws its name at SIZE_MEDIUM', size == SIZE_MEDIUM)
+
+	drawn, pendingMessages = {}, {}
+	draw_popup_label('AUDIO MASTER', nil)
+	y, size = drawnAt('popupLabel')
+	check('the legacy popup draws its name at the SAME title y', y == POPUP_TITLE_Y)
+	check('the legacy popup name is SIZE_MEDIUM', size == SIZE_MEDIUM)
+
+	-- Bands must not collide: name, then ring, then the legacy hint, all inside the panel.
+	check('the popup name clears the ring', POPUP_TITLE_Y + TEXT_H_MEDIUM <= POPUP_KNOB_Y)
+	check('the popup name sits inside the panel', POPUP_TITLE_Y >= POPUP_Y)
+	check('the legacy mute hint sits below the ring',
+		POPUP_HINT_Y >= POPUP_KNOB_Y + BMP_ICON_H)
+	check('the legacy mute hint fits inside the panel',
+		POPUP_HINT_Y + POPUP_MUTE_HINT_H <= POPUP_Y + POPUP_H)
+	check('the feedback value clears the ring', POPUP_FB_VALUE_Y >= POPUP_KNOB_Y + BMP_ICON_H)
+	check('the feedback hint clears the feedback value',
+		POPUP_FB_HINT_Y >= POPUP_FB_VALUE_Y + TEXT_H_MEDIUM)
+
+	-- The A encoder's popup carries the board's own name.
+	popupFeedbackActive = false
+	show_master_volume_popup()
+	check('the A encoder popup is titled AUDIO MASTER', popupControlName == 'AUDIO MASTER')
+
+	drawn, pendingMessages, popupControlName, popupCcNumber, popupFeedbackActive =
+		savedDrawn, savedPending, savedName, savedCc, savedFeedback
+end
+
 -- MARK: - Summary
 
 realPrint('')
