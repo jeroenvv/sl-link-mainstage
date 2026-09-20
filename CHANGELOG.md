@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-09-20
+
+- refactor: name buttons and LEDs after the spec, not the panel
+
 ## [2.5.0] - 2026-09-20
 
 - feat: add a config screen on the SETTINGS button
