@@ -2927,3 +2927,60 @@ the Master Volume write already does with `'mvol'`. The harness pins this: three
 21 assertions including a byte-exact golden vector for `msg_rgb_led`. Mutation-checked: halving instead
 of scaling, dropping the clamp, dropping the muted branch, leaving a stale colour when feedback is
 absent, and no longer clearing the memo at login each fail the matching assertion.
+
+## The ring selects patches: Bank Select + Program Change (2026-09-20)
+
+Jeroen asked whether the joystick ring could scroll patches directly. It can, and the mechanism that
+works is **injecting a Bank Select pair followed by a Program Change** - not a mapped CC. Every binding
+tried is tabulated in
+`docs/mainstage-integration.md#the-ring-selects-patches-with-bank-select-and-program-change`; what belongs
+here is why the script ended up where it did, and the two traps that cost the most.
+
+**The route is the assignment layer, not the `patchselector` parser.** Q1a closed the parser (it runs only
+when `controller_midi_in` returns falsy, so injected bytes never reach it) and the parser uses no Program
+Change anyway. MainStage's *generic* program-change handling is a different thing entirely, and it does
+act on injected bytes - which is what makes this work.
+
+**Wire shape**, per ring step, on `CC_CHANNEL`: `CC 0` (Bank MSB), `CC 32` (Bank LSB), then the PC. Bank
+is 0-based on the wire and displays as bank 1 upward; program is `(p-1) % 128` for MainStage's 1-128
+range. Bank must come first. Verified across the bank boundary: 174 steps produced 173 patch changes with
+13 in bank 1, on a 133-patch concert.
+
+### Three implementations, two of them wrong
+
+1. **Absolute CC as a raw patch index.** Wrong: MainStage spreads an incoming CC's 0-127 across the
+   assigned parameter's range, so an index drifts as it climbs (index 100 of 133 lands near patch 105).
+2. **Absolute CC, proportionally scaled** (`round((p-1) * 127 / (N-1))`). Correct arithmetic, but 133
+   patches cannot be addressed by 128 values: MainStage maps back at ~1.04 patches per step, so about one
+   click in twenty-six advanced two. Jeroen spotted the skipping.
+3. **Bank Select + Program Change.** Exact, and banks remove the ceiling. The CC (75) from the first two
+   attempts was removed rather than left as a dead mapping - it had never been released.
+
+### The two traps
+
+- **A collapsed value range on the MainStage assignment.** Every value the ring sent was squashed to 0 or
+  127, so the patch jumped to first or last and stuck. This made *four* bindings look dead, two of which
+  actually worked. Jeroen found it; nothing in the script could have.
+- **MIDI Learn capturing the wrong CC.** The ring emitted two CCs in one batch and Learn took CC 50,
+  which made the new CC untestable. Queueing it last did not help. Testing needed temporary single-CC
+  builds (`RING_EMIT_MODE`, never committed). This trap disappeared with Program Change, which is
+  configured in Concert Settings rather than learned.
+
+### What the script knows and keeps in step
+
+`ringPatchTarget` is the patch ordinal, counting patches only - `listRows` interleaves set headers, which
+`concert_patch_count()`/`active_patch_ordinal()` skip. It is re-synced from the active patch on every
+`controller_select_patch`, so the ring never scrolls from a stale position after a jump lands, a direction
+button, or a change made in MainStage. In config mode the ring scrolls that screen and injects nothing.
+
+**Concert setup is part of the feature**, not incidental: Program Changes Device and Channel must admit
+this device and channel 16, the Program Change Range must be 1-128, and the patches need numbers (the
+Patch List's reset command assigns them in order). Without the Device setting, nothing happens at all -
+which is exactly what the first PC test showed before bank select was added and the settings were checked.
+
+### Harness
+
+18 assertions over a stubbed concert containing set headers, including the byte-exact injected sequence
+(Bank MSB, Bank LSB, PC) and the bank boundary at patch 129. Mutation-checked: dropping the bank select,
+sending it after the PC, not wrapping the program into the next bank, and letting the config-mode guard
+fall through - each fails the matching assertion.

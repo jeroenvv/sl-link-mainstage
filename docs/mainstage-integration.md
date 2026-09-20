@@ -344,6 +344,50 @@ Copied from `CC_MAP` in `config.lua`:
 expected to be routed to channel 16, it wasn't worth the ambiguity of using it for something else if
 it ever is.
 
+### The ring selects patches with Bank Select and Program Change
+
+**This is the working route, confirmed on hardware 2026-09-20 with MainStage 4.3.1.** The ring injects a
+Bank Select pair followed by a Program Change, and MainStage selects that patch **exactly** - no scaling,
+no skipped patches - with banks lifting the 128-patch ceiling. Verified across the bank boundary on a
+133-patch concert: 174 ring steps produced 173 patch changes, 13 of them in bank 1.
+
+On the wire, per ring step, all on `CC_CHANNEL` (16): `CC 0` (Bank MSB), `CC 32` (Bank LSB), then the
+Program Change. For patch *p*: bank = `floor((p-1) / 128)` **0-based on the wire**, which MainStage
+displays as bank 1, 2, ...; program = `(p-1) % 128`, matching MainStage's 1-128 Program Change Range.
+Bank must precede the PC - MainStage latches the bank and acts on the program change.
+
+**Concert setup is required** (MainStage 4.3.1, verified against the app's own help strings):
+
+| Setting | Where | Why |
+|:---|:---|:---|
+| **Program Changes Device** | Concert Settings → Attributes | The gate. PC only selects patches when it comes from the configured source; set it to this device (or All), or nothing happens at all |
+| **Program Changes Channel** | Concert Settings → Attributes | Must admit channel 16, which is what the script emits on |
+| **Program Change Range** | Concert Settings → Attributes | 0-127 vs 1-128. The script assumes **1-128** |
+| Reset program change numbers | Patch List action menu | Assigns bank and PC numbers in Patch List order, skipping skipped patches. ⚠️ Deletes existing numbering |
+| Reload Patches from saved state on PC | Concert Settings → Attributes | Worth turning **off**: otherwise re-selecting the current patch reloads it from saved state |
+
+Turning on the Patch List's bank/PC number display makes all of this verifiable at a glance.
+
+**Do not map the ring's relative CC 50 to patch selection as well** - it still goes out alongside, so the
+two would fight. It remains available for ordinary relative parameters.
+
+### Routes that do NOT work, so nobody retries them
+
+Each of these was tried on hardware on 2026-09-20:
+
+| Attempt | Outcome |
+|:---|:---|
+| Ring → patch list widget | Cannot bind at all |
+| Ring → Next Patch action | Binds, but **both directions step forward** - any non-zero value is a trigger |
+| Ring → Jump to Patch action | Fires on the first value, then ignores further changes |
+| Ring → *current patch number* parameter, as `Relative2C` | **Not decoded**: `+1` (`0x01`) and `-1` (`0x7F`) both land at the same end |
+| Ring → *current patch number* parameter, absolute CC | Works, but MainStage rescales 0-127 onto the patch range, so with 133 patches about one click in twenty-six advances two |
+| `patchselector` parser (CC 0 + CC 32 on channel 1) | Unreachable from a script's injected return - closed by Q1a, and it uses no PC anyway |
+
+**A trap that made three of those look worse than they are:** the assignment's **value range can collapse
+to 0/127**, and then every value sent is squashed to an extreme so the patch jumps to first or last and
+sticks. Check the range before concluding a binding is dead.
+
 ### Two MainStage mapping attributes drive what the SL88 shows
 
 Everything the screen and the rings know about a mapping comes from `controller_midi_out`'s
