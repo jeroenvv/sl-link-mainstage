@@ -25,9 +25,9 @@ MainStage's stdout — turn it back off afterward, since it measurably slows Mai
 ## Setting up patch switching from the joystick ring
 
 The joystick's rotary ring selects patches by sending Bank Select + Program Change, so the concert's
-patches need program change numbers: in the Patch List's action menu, run the command that **resets
-program change numbers**. It numbers them in list order and rolls into the next bank past 128 patches.
-⚠️ It deletes any numbering you already have.
+patches need **sequential** bank and program change numbers. MainStage assigns them with the Patch List
+command **Reset Program Change Numbers**: numbers in list order, rolling into the next bank past 128.
+⚠️ It deletes any numbering you already have. No keyboard shortcut ships for it.
 
 That is the only step verified as necessary (MainStage 4.3.1, 133-patch concert). If the ring changes
 nothing, check **Concert Settings → Attributes**: *Program Changes Device* must admit this device and
