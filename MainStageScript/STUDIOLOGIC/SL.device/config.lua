@@ -89,6 +89,8 @@ IT_BUTTON = 0x01 -- handled for BID_HOME, BID_A_ENC (see handle_home_button/hand
 IT_LED = 0x02 -- White LED, Host -> SL only: <WLID> <state 0|1> - see docs/implementing-sl-link.md §6
 IT_ENCODER = 0x03 -- handled for every EID in ENCODER_CC, plus EID_A (drives Master Volume directly)
 IT_DISPLAY = 0x04
+IT_RGB_LED = 0x05 -- RGB LED, Host -> SL only: <LID 0-3> <R> <G> <B> <BR>; the four zone encoder rings
+	-- only, one lamp each (colour and brightness, never a value) - see docs/implementing-sl-link.md §6
 IT_MASTER_VOLUME = 0x07
 IT_IDENTIFICATION = 0x7F
 
@@ -1140,6 +1142,31 @@ function msg_master_volume_mute_write(vol, muted)
 end
 
 -- White LED write (IT_LED): on/off only, no colour or brightness - see docs/implementing-sl-link.md §6.
+-- MainStage reports a parameter's colour as r/g/b FLOATS 0.0-1.0 (confirmed on hardware, see
+-- docs/config-lua-history.md#controller_midi_out-reports-real-parameter-values-with-a-screen-control-2026-09-17),
+-- while the wire is 7-bit per channel. Scale, do not halve: the halving rgb7() in the spec's examples
+-- converts 0-255 ints, which is not what arrives here. Clamped because an out-of-range byte would have
+-- its MSB set, which is illegal in a MIDI data byte and drops the whole message.
+function rgb7(c)
+	local v = math.floor((c or 0) * 127 + 0.5)
+	if v < 0 then v = 0 elseif v > 127 then v = 127 end
+	return v
+end
+
+-- RGB ring LED, one of the four zone encoders. r/g/b/brightness are already 7-bit here - callers
+-- convert MainStage floats with rgb7() above.
+function msg_rgb_led(lid, r, g, b, brightness)
+	local m = sl_header()
+	table.insert(m, IT_RGB_LED)
+	table.insert(m, lid)
+	table.insert(m, r)
+	table.insert(m, g)
+	table.insert(m, b)
+	table.insert(m, brightness)
+	table.insert(m, SL_END)
+	return m
+end
+
 function msg_white_led(wlid, on)
 	local m = sl_header()
 	table.insert(m, IT_LED)
@@ -1696,10 +1723,28 @@ ENCODER_MUTE_BUTTON = {
 -- Zone 1-4 and the joystick show the mute hint text only, no LED.
 ENCODER_MUTE_WLID = { [EID_B] = WLID_B_ENC }
 
+-- RGB ring LED id per zone encoder (IT_RGB_LED). Only these four have an RGB ring; A and B have a
+-- white lamp instead (above), and the joystick has neither. Written out one per line so the pairing
+-- can be checked by eye against the spec's LID table.
+ENCODER_RGB_LID = {
+	[EID_ZONE1] = 0x00,
+	[EID_ZONE2] = 0x01,
+	[EID_ZONE3] = 0x02,
+	[EID_ZONE4] = 0x03,
+}
+
+-- Full brightness for a lit ring. The lamp cannot show a level, only colour and brightness (see
+-- IT_RGB_LED), so brightness carries nothing but lit-vs-dark here.
+RGB_BRIGHT = 0x7F
+
 -- Last White LED state actually sent per WLID, so paint_popup_feedback (called on every popup
 -- repaint) only queues msg_white_led on a real change, not on every tick - same idea as drawn[]
 -- memoization but for LED state rather than display content.
 encoderMuteLedSent = {}
+
+-- Last { r, g, b, brightness } actually sent per RGB ring id, same purpose as encoderMuteLedSent -
+-- see flush_encoder_rings().
+encoderRingSent = {}
 
 -- Returns (showHint, muted) for eid's paired push button: showHint is true only when that button
 -- itself has MainStage feedback (see controller_midi_out) AND its reported name contains 'Mute'
@@ -1797,6 +1842,32 @@ function flush_mute_leds()
 		if encoderMuteLedSent[wlid] ~= ledOn then
 			encoderMuteLedSent[wlid] = ledOn
 			queue_message(msg_white_led(wlid, ledOn))
+		end
+	end
+end
+
+-- The four zone encoder rings, coloured by MainStage itself: whatever parameter a knob is mapped to,
+-- its own colour lights that knob's ring. Same discipline as flush_mute_leds - ACTIVE only, drained on
+-- the tick, memoized so an unchanged ring queues nothing.
+--
+-- DARK means either 'muted' or 'nothing mapped' - agreed with Jeroen, who chose a muted channel going
+-- fully dark over keeping the two distinguishable. Going dark when MainStage reports nothing is not
+-- optional: skipping instead leaves a colour from a previous concert lit, the same trap flush_mute_leds
+-- documents above. See docs/config-lua-history.md#rgb-encoder-rings-2026-09-20.
+function flush_encoder_rings()
+	if state ~= STATE_ACTIVE then return end
+	for eid, lid in pairs(ENCODER_RGB_LID) do
+		local cc = CC_MAP[ENCODER_CC[eid]]
+		local fb = cc and midiOutFeedback[cc]
+		local _, muted = encoder_mute_state(eid)
+		local r, g, b, bright = 0, 0, 0, 0
+		if fb ~= nil and fb.color ~= nil and not muted then
+			r, g, b, bright = rgb7(fb.color.r), rgb7(fb.color.g), rgb7(fb.color.b), RGB_BRIGHT
+		end
+		local sent = encoderRingSent[lid]
+		if sent == nil or sent[1] ~= r or sent[2] ~= g or sent[3] ~= b or sent[4] ~= bright then
+			encoderRingSent[lid] = { r, g, b, bright }
+			queue_message(msg_rgb_led(lid, r, g, b, bright))
 		end
 	end
 end
@@ -2609,7 +2680,7 @@ function enter_active_session()
 	-- Forget what the mute rings were last sent, so the next tick re-establishes them for this
 	-- session rather than trusting a memo from before the SL88 confirmed us - same reasoning as
 	-- invalidate_all() for the display. See docs/config-lua-history.md#startup-led-discarded-before-login-confirmation-2026-09-16.
-	encoderMuteLedSent, homeLedSent, globalLedSent = {}, nil, nil
+	encoderMuteLedSent, encoderRingSent, homeLedSent, globalLedSent = {}, {}, nil, nil
 	return true
 end
 
@@ -2630,7 +2701,7 @@ function handle_login()
 	end
 	-- And the mute rings, for the same reason: enter_active_session's own clear does not run when we
 	-- were already ACTIVE, so a ring set before this confirmation was discarded and never re-sent.
-	encoderMuteLedSent, homeLedSent, globalLedSent = {}, nil, nil
+	encoderMuteLedSent, encoderRingSent, homeLedSent, globalLedSent = {}, {}, nil, nil
 end
 
 function handle_standby()
@@ -3116,6 +3187,8 @@ function controller_timer_trigger()
 	flush_popup_value_if_due()
 	-- Mute ring LEDs track their parameter's feedback, not the popup - see flush_mute_leds().
 	flush_mute_leds()
+	-- The zone encoder rings, coloured by MainStage - see flush_encoder_rings().
+	flush_encoder_rings()
 	flush_mode_led()
 	-- `tick=`/`pending=`/`draining=` here let a captured hardware log be read as 'N drain ticks
 	-- elapsed while M messages went out' - pair against the `tick=` field flush_pending's own FLUSH
