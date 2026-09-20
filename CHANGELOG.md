@@ -6,6 +6,11 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-09-20
+
+- feat: select patches from the joystick ring via Bank Select + Program Change
+- docs: record the patch-selection route, the six bindings tried and two traps
+
 ## [2.6.0] - 2026-09-20
 
 - feat: colour the zone encoder rings from MainStage's own feedback
