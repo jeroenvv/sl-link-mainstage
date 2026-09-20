@@ -2984,3 +2984,27 @@ which is exactly what the first PC test showed before bank select was added and 
 (Bank MSB, Bank LSB, PC) and the bank boundary at patch 129. Mutation-checked: dropping the bank select,
 sending it after the PC, not wrapping the program into the next bank, and letting the config-mode guard
 fall through - each fails the matching assertion.
+
+## The ring sends only patch selection (2026-09-21)
+
+Jeroen: "ring should not send cc but pc". Once Bank Select + Program Change worked, the ring's relative CC
+(`JOY_ROTATE`, CC 50) had no job left - the patch list is the feedback for a patch change, so neither a CC
+nor a popup adds anything, and keeping it on the same gesture was what made MIDI Learn keep capturing the
+wrong control during the investigation.
+
+**Removed from every table rather than muted at the emit site**: `CC_MAP`, `CC_LABEL`, `CC_TURN`,
+`ENCODER_CC`, `ENCODER_NAME`, `CONFIG_ROWS` and the `controller_info()` items. A CC that exists but never
+emits is worse than no CC - it still appears in MainStage's Layout mode and on the config screen, inviting
+a mapping that can never fire.
+
+**CC 50 stays unused, like 64.** Renumbering the map to close the gap would shift every CC after it and
+break every mapping learned by hand - the one thing the versioning policy calls major on purpose.
+
+The ring now has its own branch in `handle_sl_frame`'s `IT_ENCODER` case, so it no longer falls through to
+the generic CC path (which would have logged `(unhandled)` on every tick once its mapping was gone). The
+`show_popup` guard stays as belt and braces, with its comment corrected to say so.
+
+**This is a breaking change** - the first in this project - so it is a major bump. The harness asserts the
+absence rather than trusting it: no `CC_MAP`/`CC_LABEL`/`CC_TURN` entry, no `ENCODER_CC` wiring, and CC 50
+not reassigned to anything else. Mutation-checked by re-adding the ring to `ENCODER_CC`, by pointing
+another control at CC 50, and by removing the ring's branch so it falls back to the CC path.

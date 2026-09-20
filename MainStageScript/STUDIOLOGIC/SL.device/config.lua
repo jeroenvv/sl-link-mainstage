@@ -175,7 +175,6 @@ CC_MAP = {
 	JOY_LEFT_SHORT = 44,  JOY_LEFT_LONG = 45,
 	JOY_RIGHT_SHORT = 46, JOY_RIGHT_LONG = 47,
 	JOY_PRESS_SHORT = 48, JOY_PRESS_LONG = 49,
-	JOY_ROTATE = 50,
 
 	ENC1_PRESS_SHORT = 51, ENC1_PRESS_LONG = 52,
 	ENC2_PRESS_SHORT = 53, ENC2_PRESS_LONG = 54,
@@ -185,6 +184,9 @@ CC_MAP = {
 	ENC1_TURN = 59, ENC2_TURN = 60, ENC3_TURN = 61, ENC4_TURN = 62,
 
 	ENCB_TURN = 63,
+	-- 50 was the ring's relative CC, removed when the ring became patch-selection-only (Bank Select +
+	-- Program Change, which is not a CC at all). Left unused rather than reassigned: renumbering the map
+	-- would break every learned mapping below it.
 	-- 64 deliberately skipped (sustain CC; harmless on a channel nothing listens to, but not worth the
 	-- ambiguity if it's ever routed anywhere).
 	ENCB_PRESS_SHORT = 65, ENCB_PRESS_LONG = 66,
@@ -203,7 +205,6 @@ CC_LABEL = {
 	JOY_LEFT_SHORT = 'Joy Left',   JOY_LEFT_LONG = 'Joy Left (long)',
 	JOY_RIGHT_SHORT = 'Joy Right', JOY_RIGHT_LONG = 'Joy Right (long)',
 	JOY_PRESS_SHORT = 'Joy Press', JOY_PRESS_LONG = 'Joy Press (long)',
-	JOY_ROTATE = 'Joy Rotate',
 
 	ENC1_PRESS_SHORT = 'Zone 1 Push', ENC1_PRESS_LONG = 'Zone 1 Push (long)',
 	ENC2_PRESS_SHORT = 'Zone 2 Push', ENC2_PRESS_LONG = 'Zone 2 Push (long)',
@@ -225,7 +226,6 @@ CC_LABEL = {
 -- The continuous (Knob) gestures; every other CC_MAP key is a momentary Button.
 CC_TURN = {
 	ENC1_TURN = true, ENC2_TURN = true, ENC3_TURN = true, ENC4_TURN = true, ENCB_TURN = true,
-	JOY_ROTATE = true,
 }
 
 -- BID -> { short, long } CC_MAP keys, for every button wired to a CC.
@@ -253,7 +253,6 @@ ENCODER_CC = {
 	[EID_ZONE2] = 'ENC2_TURN',
 	[EID_ZONE3] = 'ENC3_TURN',
 	[EID_ZONE4] = 'ENC4_TURN',
-	[EID_JOYSTICK] = 'JOY_ROTATE',
 	[EID_B] = 'ENCB_TURN',
 }
 
@@ -264,7 +263,6 @@ ENCODER_NAME = {
 	[EID_ZONE2] = 'ENC 2',
 	[EID_ZONE3] = 'ENC 3',
 	[EID_ZONE4] = 'ENC 4',
-	[EID_JOYSTICK] = 'JOY',
 	[EID_B] = 'ENC B',
 }
 
@@ -1934,9 +1932,8 @@ function show_popup(eid)
 	-- out - only the panel is skipped. See
 	-- docs/config-lua-history.md#no-popup-over-the-config-screen-2026-09-20.
 	if displayMode == 'config' then return end
-	-- No popup for the joystick ring either: it selects patches (see the IT_ENCODER branch), and the
-	-- patch list IS the feedback - a popup would cover the very screen showing what was selected, and
-	-- every step would then repaint the list underneath it. Its CC still goes out.
+	-- Belt and braces for the ring: its own branch in handle_sl_frame never reaches here, but the patch
+	-- list is its feedback and a popup would cover the very screen showing the selection.
 	if eid == EID_JOYSTICK then return end
 	local control = ENCODER_CC[eid]
 	if control == nil then return end
@@ -2338,7 +2335,6 @@ CONFIG_ROWS = {
 	{ 'JOY_LEFT_SHORT',  'JOY_LEFT_LONG' },
 	{ 'JOY_RIGHT_SHORT', 'JOY_RIGHT_LONG' },
 	{ 'JOY_PRESS_SHORT', 'JOY_PRESS_LONG' },
-	{ 'JOY_ROTATE' },
 	{ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' },
 	{ 'ENC2_PRESS_SHORT', 'ENC2_PRESS_LONG' },
 	{ 'ENC3_PRESS_SHORT', 'ENC3_PRESS_LONG' },
@@ -3039,16 +3035,16 @@ function handle_sl_frame(e)
 				request_quick_rearm()
 			end
 			slog('<- ENCODER joystick delta=' .. tostring(delta) .. ' - config scroll=' .. configScroll)
+		elseif eid == EID_JOYSTICK then
+			-- The ring selects patches and emits NOTHING else: Bank Select + Program Change only. It used
+			-- to also send a relative CC (JOY_ROTATE, CC 50), removed once patch selection worked - the
+			-- patch list is the feedback, so there is nothing for a CC or a popup to add here. CC 50 is
+			-- now unused, like 64. See docs/config-lua-history.md#the-ring-sends-only-patch-selection.
+			move_ring_patch_target(delta)
+			local bank, pc = ring_patch_program()
+			queue_program(pc, bank)
+			slog('-> BANK ' .. bank .. ' + PROGRAM CHANGE ' .. pc .. ' (patch ' .. ringPatchTarget .. ')')
 		else
-			if eid == EID_JOYSTICK then
-				-- The ring selects patches directly: move the target, then inject Bank Select + Program
-				-- Change for it. JOY_ROTATE below still goes out, so an existing relative mapping keeps
-				-- working - just do not map it to patch selection as well, or the two fight.
-				move_ring_patch_target(delta)
-				local bank, pc = ring_patch_program()
-				queue_program(pc, bank)
-				slog('-> BANK ' .. bank .. ' + PROGRAM CHANGE ' .. pc .. ' (patch ' .. ringPatchTarget .. ')')
-			end
 			local control = ENCODER_CC[eid]
 			if control ~= nil then
 				local newValue = encoderValue[eid] + delta
@@ -3842,7 +3838,6 @@ function controller_info()
 		{name='Joy Right (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 47, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Joy Press',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 48, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Joy Press (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 49, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Joy Rotate',        objectType='Knob',    midiType='Relative2C', midi={0xB0 + CC_CHANNEL, 50, MIDI_LSB}, inport='LINK', outport='LINK'},
 
 		-- zone encoder pushes
 		{name='Zone 1 Push',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 51, MIDI_LSB}, inport='LINK', outport='LINK'},
