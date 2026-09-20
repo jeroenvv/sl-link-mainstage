@@ -143,12 +143,15 @@ Screen is **320 × 240**, origin top-left, `(319, 239)` bottom-right.
 | Draw Rectangle `0x02` | `X(2) Y(2) W(2) H(2) R G B` |
 | Plot Bitmap `0x03` | `X(2) Y(2) GroupIdx IconIdx FG(3) BG(3)` |
 
-ALIGN: `0x00` left, `0x01` centre, `0x02` right. SIZE: `0x00` small (21 px), `0x01` medium,
-`0x02` big (33 px).
+ALIGN: `0x00` left, `0x01` centre, `0x02` right. SIZE: `0x00` small, `0x01` medium, `0x02` big — all
+three confirmed working on hardware, `ALIGN_RIGHT` included.
 
-**Medium (`0x01`) works**, confirmed on hardware 2026-08-20 — it renders visibly larger than small.
-The spec gives no pixel height for it; treat ~27 px as an estimate. `ALIGN_RIGHT` (`0x02`) is also
-confirmed working.
+**Ignore the spec's pixel heights; they are wrong, and it disagrees with itself.** Its prose gives
+small/medium/big as 21/27/33 px and its own table gives 21/**22**/33 px. Measured on an SL88 MK2
+(firmware 1.1.2) with `Scripts/probe-text-metrics.swift`, the height of Write Text's opaque
+background box — the thing a layout has to fit — is **18 / 23 / 27 px**. Every published figure is
+too large, and medium is neither of the two on offer. Method and evidence:
+[`config-lua-history.md#write-text-box-heights-measured-2026-09-20`](config-lua-history.md#write-text-box-heights-measured-2026-09-20).
 
 **Max Width does the truncating.** It is a *pixel* width; the SLMK2 truncates the string to fit and
 appends `...` itself. Do not pre-truncate strings by character count — you will cut correct text
@@ -219,6 +222,11 @@ index `0x00` is empty, `0x0C` is full, filling monotonically in between — exac
 needed for a 0-127 value. Device-side gradient colouring works: requested orange (`255,140,0`) on
 black rendered correctly and legibly. Every icon message was 22 bytes on the wire, matching
 `SLLinkEncoder.displayPlotBitmap`'s golden vector. Icons are 61x54 px as Appendix A states.
+
+**Writing text inside the Knob ring** (measured 2026-09-20): the largest Write Text box that fits the
+ring's hole without touching it is **36 px wide, starting 18 px down** the icon. The box is opaque
+across its whole `maxWidth`, so anything wider paints a bar straight through the ring's sides — the
+spec documents neither the hole nor that consequence.
 
 ## 6. Buttons, encoders, LEDs, volume
 
@@ -300,6 +308,7 @@ length or a "reserved" claim.**
 | Identification Approved is a bare 10 bytes; Login Confirmation carries `MAJ MIN REV SL` | **The opposite.** Approved arrives 14 bytes *with* the firmware/model payload; Login Confirmation arrives bare |
 | Host never receives A Encoder (`EID 0x05`) / A Encoder Button (`BID 0x0B`) — reserved for USB audio | They **do** arrive, as ordinary messages. No volume traffic accompanies them because the keyboard does not act on them at all: applying A to the audio board's volume is the host's job (§6) |
 | (silent on whether LONG_PRESSION reaches the host) | LONG **is** delivered for ordinary buttons |
+| Text sizes are 21 px / 22 px (table) or 27 px (prose) / 33 px | **All three are too large**, and the two figures for medium are both wrong. Write Text's background box measures **18 / 23 / 27 px** — see §5 |
 | DeviceID is one 14-bit random value | The spec is right and the `examples/` plugins are stale — confirmed upstream. Bytes 5 and 6 *together* are the DeviceID, regenerated per session; "HostID"/"InstanceID" is retired nomenclature the examples still use. The hardware cannot tell the difference — it is purely an anti-collision mechanism — so `(HOST_ID, instance)` is accepted, but do not treat the examples as the reference for identification |
 
 **Generalise from this: trailing bytes are optional more often than documented.** The spec itself marks

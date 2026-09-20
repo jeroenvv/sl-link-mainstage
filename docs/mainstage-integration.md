@@ -142,8 +142,10 @@ injected substitution.
   (`docs/config-lua-history.md#flush_soon_ms-retuned-to-25-backed-out-2026-08-29`) — is another
   unexplained dropout with a healthy-looking session clock; whether the two share a cause is
   speculation, not established.
-- **The live spec says SIZE_MEDIUM is 22px**, where this project's own notes estimate ~27px. Worth
-  reconciling.
+- **Whether the popup value still reads high in the ring** once it sits at the measured hole offset
+  rather than the old hand-tuned nudge — a 2026-09-14 in-situ look and the 2026-09-20 caliper
+  disagree about the same y. See
+  [`config-lua-history.md#a-conflict-with-the-2026-09-14-note`](config-lua-history.md#a-conflict-with-the-2026-09-14-note).
 
 ## `FLUSH_SOON_MS` sweep: settled at 35 (2026-08-29)
 
