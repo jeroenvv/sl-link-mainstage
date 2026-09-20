@@ -372,8 +372,11 @@ Turning on the Patch List's bank/PC number display makes all of this verifiable 
 very screen showing it - plus every step would repaint the list underneath. Suppressed in `show_popup`
 alongside the config-screen guard; the ring's CC still goes out. Zone encoders pop up as before.
 
-**Do not map the ring's relative CC 50 to patch selection as well** - it still goes out alongside, so the
-two would fight. It remains available for ordinary relative parameters.
+**The ring emits nothing but the patch selection.** Its old relative CC (`JOY_ROTATE`, CC 50) was removed
+once patch selection worked: the patch list is the feedback, so a CC and a popup had nothing to add, and
+leaving it on the same gesture meant MIDI Learn kept capturing it. **CC 50 is now unused** - left as a gap
+rather than reassigned, since renumbering the map would break every learned mapping after it. This is the
+one change in the project so far that breaks a released mapping, hence the major version.
 
 ### Routes that do NOT work, so nobody retries them
 

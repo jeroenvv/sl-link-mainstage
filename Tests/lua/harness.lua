@@ -930,18 +930,18 @@ do
 	end
 	check('all CC_TURN gestures declare midiType Relative2C', allTurnsAreRelative2C)
 
-	-- JOY_ROTATE joined CC_TURN (fix 2026-09-05): its item must match the other five turn gestures,
-	-- not the Momentary Button it was wrongly declared as when it still emitted relative deltas.
-	check('JOY_ROTATE is a member of CC_TURN', CC_TURN['JOY_ROTATE'] == true)
-	local joyRotateItem = byName[CC_LABEL['JOY_ROTATE']]
-	check(
-		'JOY_ROTATE declares objectType Knob',
-		joyRotateItem ~= nil and joyRotateItem.objectType == 'Knob'
-	)
-	check(
-		'JOY_ROTATE declares midiType Relative2C',
-		joyRotateItem ~= nil and joyRotateItem.midiType == 'Relative2C'
-	)
+	-- The ring has NO CC at all any more: it selects patches with Bank Select + Program Change, which is
+	-- not a CC, so JOY_ROTATE was removed from every table rather than left emitting nothing. CC 50 stays
+	-- unused rather than reassigned - renumbering would break every learned mapping after it.
+	check('the ring has no CC mapping', CC_MAP['JOY_ROTATE'] == nil)
+	check('...and no label', CC_LABEL['JOY_ROTATE'] == nil)
+	check('...and is not a CC_TURN gesture', CC_TURN['JOY_ROTATE'] == nil)
+	check('...and no encoder is wired to it', ENCODER_CC[EID_JOYSTICK] == nil)
+	local ccFiftyUsed = false
+	for _, n in pairs(CC_MAP) do
+		if n == 50 then ccFiftyUsed = true end
+	end
+	check('CC 50 is left unused, not reassigned', ccFiftyUsed == false)
 
 	local joyUpItem = byName[CC_LABEL['JOY_UP_SHORT']]
 	check(
@@ -4827,7 +4827,8 @@ do
 	displayMode, configScroll = 'list', 0
 	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
 	handle_sl_frame(ring(2))
-	check('the ring still emits its CC in list mode', pendingDelta['JOY_ROTATE'] == 2)
+	check('the ring emits no CC in list mode either - it selects patches instead',
+		next(pendingDelta) == nil and next(pendingCC) == nil)
 	check('the ring does not scroll the config screen from list mode', configScroll == 0)
 
 	-- GLOBAL round-trips back to whichever mode it covered.
@@ -4947,7 +4948,7 @@ do
 
 	-- A turn-only control keeps its number in the SHORT column rather than drifting right.
 	check('a paired row shows both CCs', config_cc_text({ 'JOY_UP_SHORT', 'JOY_UP_LONG' }) == '40  41')
-	check('a turn-only row pads the LONG column', config_cc_text({ 'JOY_ROTATE' }) == '50   -')
+	check('a turn-only row pads the LONG column', config_cc_text({ 'ENC1_TURN' }) == '59   -')
 
 	displayMode, configScroll, configPreviousMode, pendingMessages, drawn =
 		savedMode, savedScroll, savedPrev, savedPending, savedDrawn
@@ -5239,10 +5240,13 @@ do
 	check('the pending program is consumed by the flush', pendingProgram == nil)
 	check('the pending bank is consumed by the flush', pendingBank == nil)
 
-	-- The relative CC still goes out alongside, so an existing mapping keeps working.
+	-- NOTHING but the patch selection goes out: the ring's old relative CC was removed once patch
+	-- selection worked, so a turn injects bank + program and no CC at all.
 	ringPatchTarget, pendingCC, pendingDelta, pendingCCOrder = 1, {}, {}, {}
 	handle_sl_frame(ring(1))
-	check('the ring still emits its relative delta too', pendingDelta['JOY_ROTATE'] == 1)
+	check('the ring emits no CC alongside the patch selection',
+		next(pendingDelta) == nil and next(pendingCC) == nil)
+	check('...only the program change', pendingProgram == 1)
 
 	-- Past 128 patches the bank advances instead of the program wrapping silently: patch 129 is bank 1,
 	-- program 0. This is what lifts the 128-patch ceiling, and it was verified across the boundary.
