@@ -2891,9 +2891,14 @@ has needed guarding.
 **Semantics, agreed with Jeroen:** the ring shows MainStage's own colour for whatever the knob is mapped
 to, and a muted channel goes **fully dark**. A knob mapped to a **volume** also tracks its level in the
 ring's *brightness* - the ring dims as the fader comes down and bottoms out dark (added on his request
-during the hardware run). Anything else sits at full brightness: a value means nothing on a Pan or a
-switch, and dimming those would read as "half off". Matched on the reported parameter name, the same
-idiom `encoder_mute_state()` already uses for 'mute'. He chose that over dimming, accepting the trade-off that
+during the hardware run).
+
+That started out matching the reported name for 'volume', the same idiom `encoder_mute_state()` uses for
+'mute'. It was widened to **every** ring the same day, because the name is whatever MainStage's Replace
+Parameter Label says: a mapping relabelled from "Bari volume" to "Bari" would have silently stopped
+dimming. The rings are driven by encoder TURN mappings, which are always continuous controls, so tracking
+the value is right for all of them - at the cost of a Pan going dark at hard left, where its value really
+is 0. He chose that over dimming, accepting the trade-off that
 muted and unmapped then look identical.
 
 **Going dark when MainStage reports nothing is not optional.** Skipping instead leaves a colour from a

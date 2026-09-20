@@ -5081,10 +5081,13 @@ do
 		local msg = ringFor(lid)
 		return msg ~= nil and msg[13] or nil
 	end
-	check('a volume at full lights the ring at full brightness', brightnessFor('Volume', 127) == 127)
-	check('a volume at half lights the ring at half brightness', brightnessFor('Volume', 64) == 64)
-	check('a volume at zero leaves the ring dark', brightnessFor('Volume', 0) == 0)
-	check('a non-volume parameter ignores its value and stays full', brightnessFor('Pan', 10) == RGB_BRIGHT)
+	check('a value at full lights the ring at full brightness', brightnessFor('Volume', 127) == 127)
+	check('a value at half lights the ring at half brightness', brightnessFor('Volume', 64) == 64)
+	check('a value at zero leaves the ring dark', brightnessFor('Volume', 0) == 0)
+	-- Every ring tracks its value, whatever the mapping is called: the rule used to match names
+	-- containing 'volume', which silently stopped dimming when a mapping was relabelled.
+	check('a relabelled mapping still tracks its level', brightnessFor('Bari', 40) == 40)
+	check('a mapping with no name at all still tracks its level', brightnessFor('Pan', 10) == 10)
 
 	-- COALESCING: a fader sweep reports many values. Each ring carries its own regionId, so successive
 	-- updates supersede in place instead of appending one LED message per value change ahead of display
