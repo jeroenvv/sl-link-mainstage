@@ -5071,6 +5071,38 @@ do
 	flush_encoder_rings()
 	check('an identical colour report does not re-queue the ring', ringFor(lid) == nil)
 
+	-- A knob mapped to a VOLUME tracks its level in the ring's brightness; the fader coming down dims the
+	-- ring and bottoms out dark. Anything else stays at full brightness.
+	local white = { r = 1.0, g = 1.0, b = 1.0 }
+	local function brightnessFor(name, value)
+		state, pendingMessages, midiOutFeedback, encoderRingSent = STATE_ACTIVE, {}, {}, {}
+		feedback(zone1Cc, name, value, white)
+		flush_encoder_rings()
+		local msg = ringFor(lid)
+		return msg ~= nil and msg[13] or nil
+	end
+	check('a volume at full lights the ring at full brightness', brightnessFor('Volume', 127) == 127)
+	check('a volume at half lights the ring at half brightness', brightnessFor('Volume', 64) == 64)
+	check('a volume at zero leaves the ring dark', brightnessFor('Volume', 0) == 0)
+	check('a non-volume parameter ignores its value and stays full', brightnessFor('Pan', 10) == RGB_BRIGHT)
+
+	-- COALESCING: a fader sweep reports many values. Each ring carries its own regionId, so successive
+	-- updates supersede in place instead of appending one LED message per value change ahead of display
+	-- traffic and the keepalive.
+	state, pendingMessages, midiOutFeedback, encoderRingSent = STATE_ACTIVE, {}, {}, {}
+	feedback(zone1Cc, 'Volume', 30, white)
+	flush_encoder_rings()
+	feedback(zone1Cc, 'Volume', 60, white)
+	flush_encoder_rings()
+	feedback(zone1Cc, 'Volume', 90, white)
+	flush_encoder_rings()
+	local ringMsgs = 0
+	for _, msg in ipairs(pendingMessages) do
+		if item_type_of(msg) == IT_RGB_LED and msg[9] == lid then ringMsgs = ringMsgs + 1 end
+	end
+	check('a fader sweep leaves ONE queued update per ring, not one per value', ringMsgs == 1)
+	check('...and the queued update carries the LATEST brightness', (ringFor(lid) or {})[13] == 90)
+
 	state, pendingMessages, midiOutFeedback, encoderRingSent =
 		savedState, savedPending, savedFeedback, savedRings
 end

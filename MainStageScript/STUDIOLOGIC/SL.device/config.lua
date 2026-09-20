@@ -1846,6 +1846,19 @@ function flush_mute_leds()
 	end
 end
 
+-- Brightness for a lit ring. A knob mapped to a VOLUME tracks its level, so the ring dims as the fader
+-- comes down and goes dark at the bottom - Jeroen's requirement. Anything else sits at full brightness:
+-- a value means nothing on a Pan or a switch, and dimming those would read as 'half off'. Matched on the
+-- reported parameter name, the same idiom encoder_mute_state() already uses for 'mute'.
+function ring_brightness(fb)
+	if fb.name ~= nil and fb.name:lower():find('volume', 1, true) then
+		local v = fb.value or RGB_BRIGHT
+		if v < 0 then v = 0 elseif v > RGB_BRIGHT then v = RGB_BRIGHT end
+		return v
+	end
+	return RGB_BRIGHT
+end
+
 -- The four zone encoder rings, coloured by MainStage itself: whatever parameter a knob is mapped to,
 -- its own colour lights that knob's ring. Same discipline as flush_mute_leds - ACTIVE only, drained on
 -- the tick, memoized so an unchanged ring queues nothing.
@@ -1862,12 +1875,16 @@ function flush_encoder_rings()
 		local _, muted = encoder_mute_state(eid)
 		local r, g, b, bright = 0, 0, 0, 0
 		if fb ~= nil and fb.color ~= nil and not muted then
-			r, g, b, bright = rgb7(fb.color.r), rgb7(fb.color.g), rgb7(fb.color.b), RGB_BRIGHT
+			r, g, b, bright = rgb7(fb.color.r), rgb7(fb.color.g), rgb7(fb.color.b), ring_brightness(fb)
 		end
 		local sent = encoderRingSent[lid]
 		if sent == nil or sent[1] ~= r or sent[2] ~= g or sent[3] ~= b or sent[4] ~= bright then
 			encoderRingSent[lid] = { r, g, b, bright }
-			queue_message(msg_rgb_led(lid, r, g, b, bright))
+			-- Own regionId per ring, so a fast fader move coalesces to ONE queued update instead of
+			-- appending one message per value change - the same reason the Master Volume write carries
+			-- 'mvol' (see queue_message's PER-REGION COALESCING comment). Without it a sweep queues dozens
+			-- of LED messages ahead of display traffic and the keepalive.
+			queue_message(msg_rgb_led(lid, r, g, b, bright), 'ring' .. lid)
 		end
 	end
 end

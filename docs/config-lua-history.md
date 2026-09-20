@@ -2881,7 +2881,11 @@ So distinct ring colours are a **setup step in MainStage**, not something the sc
 Custom Color per knob mapping. Confirmed working by Jeroen once he did.
 
 **Semantics, agreed with Jeroen:** the ring shows MainStage's own colour for whatever the knob is mapped
-to, and a muted channel goes **fully dark**. He chose that over dimming, accepting the trade-off that
+to, and a muted channel goes **fully dark**. A knob mapped to a **volume** also tracks its level in the
+ring's *brightness* - the ring dims as the fader comes down and bottoms out dark (added on his request
+during the hardware run). Anything else sits at full brightness: a value means nothing on a Pan or a
+switch, and dimming those would read as "half off". Matched on the reported parameter name, the same
+idiom `encoder_mute_state()` already uses for 'mute'. He chose that over dimming, accepting the trade-off that
 muted and unmapped then look identical.
 
 **Going dark when MainStage reports nothing is not optional.** Skipping instead leaves a colour from a
@@ -2896,8 +2900,17 @@ float gives 0 for every channel - a dark lamp, no error, nothing in any log. The
 0.0 -> 0 and a midpoint, and pins the clamp: a value above 127 would have its MSB set, which is illegal
 in a MIDI data byte and drops the whole message.
 
+### Brightness tracking forced the rings to coalesce
+
+A volume sweep reports a new value continuously, and each one is a ring change. LED messages carry no
+regionId by default, so they **append** - a single fader move would queue dozens of RGB messages ahead of
+display traffic and the keepalive, which is the shape rule 6 exists to protect. Each ring therefore
+queues under its own regionId (`'ring0'`..`'ring3'`) so successive updates supersede in place, exactly as
+the Master Volume write already does with `'mvol'`. The harness pins this: three reported values leave
+**one** queued update carrying the latest brightness.
+
 ### Harness
 
-15 assertions including a byte-exact golden vector for `msg_rgb_led`. Mutation-checked: halving instead
+21 assertions including a byte-exact golden vector for `msg_rgb_led`. Mutation-checked: halving instead
 of scaling, dropping the clamp, dropping the muted branch, leaving a stale colour when feedback is
 absent, and no longer clearing the memo at login each fail the matching assertion.
