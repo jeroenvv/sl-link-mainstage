@@ -3527,6 +3527,13 @@ midiOutFeedback = {}
 -- we emit, if any (name/valueString/color, absolute value in midiEvent[2]) - see the spec section
 -- above for the hardware capture. Returns nil on EVERY path: our own outbound SL Link SysEx passes
 -- through this same callback, and returning a table here would alter or swallow it.
+-- Two MainStage colours are equal when both are absent or all three channels match. Compared at the
+-- 7-bit resolution actually sent to the lamp, so float jitter below one step cannot churn the rings.
+function colors_equal(a, b)
+	if a == nil or b == nil then return a == nil and b == nil end
+	return rgb7(a.r) == rgb7(b.r) and rgb7(a.g) == rgb7(b.g) and rgb7(a.b) == rgb7(b.b)
+end
+
 function controller_midi_out(midiEvent, name, valueString, color)
 	if midiEvent == nil or midiEvent[0] ~= CC_STATUS then return nil end
 
@@ -3545,11 +3552,20 @@ function controller_midi_out(midiEvent, name, valueString, color)
 	local value = midiEvent[2]
 	local cleanValueString = sanitize_value_string(valueString)
 	local prev = midiOutFeedback[cc]
-	if prev and prev.name == name and prev.valueString == cleanValueString and prev.value == value then
+	-- Colour is part of the tuple: it drives the encoder rings (flush_encoder_rings), and a patch change
+	-- can report the SAME name and value in a different colour. Leaving colour out of this comparison
+	-- left the ring showing the previous patch's colour, with nothing in any log.
+	local sameColor = (prev ~= nil) and colors_equal(prev.color, color)
+	if prev and prev.name == name and prev.valueString == cleanValueString and prev.value == value
+		and sameColor then
 		return nil -- unchanged tuple - a single static control reports this identically thousands of times
 	end
 	local wasMuted = prev and prev.value ~= 0
 	midiOutFeedback[cc] = { name = name, valueString = cleanValueString, value = value, color = color }
+	-- Logged on CHANGE only (the early return above filters the flood), so a capture shows what MainStage
+	-- actually reports per control - including whether it varies the colour at all.
+	slog('midi_out cc=' .. cc .. ' name=' .. tostring(name) .. ' value=' .. tostring(value) ..
+		' color=' .. (color and (rgb7(color.r) .. '/' .. rgb7(color.g) .. '/' .. rgb7(color.b)) or 'nil'))
 
 	-- A mute flipping is a one-off the user is waiting to SEE, and the LED only goes out on a tick -
 	-- at KEEPALIVE_MS that is a ~3s lag. Pull the next tick forward. Safe from this flood-prone
