@@ -4769,6 +4769,159 @@ do
 	patchName, setName, currentConcert = savedPatch, savedSet, savedConcert
 end
 
+-- MARK: - 84. Config screen: row table coverage, scroll, the unmappable SETTINGS button, geometry
+--
+-- The config screen is the script's own UI, not a mappable control surface: SETTINGS toggles it and
+-- the joystick ring scrolls it, and neither may reach MainStage as MIDI while it shows. See
+-- docs/config-lua-history.md#the-config-screen-2026-09-20.
+do
+	local savedMode, savedScroll, savedPrev, savedPending, savedDrawn =
+		displayMode, configScroll, configPreviousMode, pendingMessages, drawn
+	local savedCC, savedDelta, savedOrder = pendingCC, pendingDelta, pendingCCOrder
+	local savedState, savedPopup, savedLed = state, popupActive, configLedSent
+
+	-- CONFIG_ROWS is written out by hand, so the guard that makes that safe is coverage: every CC_MAP
+	-- key exactly once, and nothing that is not a CC_MAP key.
+	local seen, duplicate, unknown = {}, nil, nil
+	for _, row in ipairs(CONFIG_ROWS) do
+		for _, key in ipairs(row) do
+			if CC_MAP[key] == nil then unknown = key end
+			if seen[key] then duplicate = key end
+			seen[key] = true
+		end
+	end
+	local missing = nil
+	for key in pairs(CC_MAP) do
+		if not seen[key] then missing = key end
+	end
+	check('CONFIG_ROWS names only CC_MAP keys (' .. tostring(unknown) .. ')', unknown == nil)
+	check('CONFIG_ROWS names no key twice (' .. tostring(duplicate) .. ')', duplicate == nil)
+	check('CONFIG_ROWS covers every CC_MAP key (' .. tostring(missing) .. ')', missing == nil)
+
+	-- 'Unmappable for MIDI' is exactly this: no BUTTON_CC entry, so no CC and no controller_info item.
+	check('SETTINGS is absent from BUTTON_CC', BUTTON_CC[BID_SETTINGS] == nil)
+	check('ZOOM is absent from BUTTON_CC', BUTTON_CC[BID_ZOOM] == nil)
+
+	-- Scroll clamps at both ends; the last page is a full window, never a short one.
+	displayMode = 'config'
+	configScroll = 0
+	check('scrolling back from the top does not move', scroll_config(-1) == false and configScroll == 0)
+	scroll_config(1000)
+	check('scrolling past the end stops at the last full page',
+		configScroll == #CONFIG_ROWS - CONFIG_ROW_COUNT)
+	check('scrolling on past the end does not move', scroll_config(3) == false)
+
+	-- The ring scrolls and emits NOTHING while config shows.
+	local function ring(delta)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_JOYSTICK,
+			0x40 + delta, 0xF7)
+	end
+	configScroll = 0
+	pendingCC, pendingDelta, pendingCCOrder, pendingMessages = {}, {}, {}, {}
+	handle_sl_frame(ring(2))
+	check('the ring scrolls the config screen', configScroll == 2)
+	check('the ring queues no CC while the config screen shows', #pendingCCOrder == 0)
+	check('a config scroll repaints (the rows moved)', #pendingMessages > 0)
+
+	-- ...and behaves exactly as before in every other mode.
+	displayMode, configScroll = 'list', 0
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	handle_sl_frame(ring(2))
+	check('the ring still emits its CC in list mode', pendingDelta['JOY_ROTATE'] == 2)
+	check('the ring does not scroll the config screen from list mode', configScroll == 0)
+
+	-- SETTINGS round-trips back to whichever mode it covered.
+	local function settings(pressKind)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, BID_SETTINGS,
+			pressKind, 0xF7)
+	end
+	-- popupActive is set explicitly, not inherited: handle_settings_button reads popupPreviousMode
+	-- instead of displayMode while a popup is up, so a leak from an earlier block would quietly change
+	-- what this asserts rather than failing.
+	for _, from in ipairs({ 'list', 'zoom' }) do
+		displayMode, configPreviousMode, popupActive = from, nil, false
+		pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+		handle_sl_frame(settings(PRESS_SHORT))
+		check('SETTINGS from ' .. from .. ' enters config', displayMode == 'config')
+		check('SETTINGS from ' .. from .. ' queues no CC', #pendingCCOrder == 0)
+		handle_sl_frame(settings(PRESS_SHORT))
+		check('SETTINGS returns to ' .. from, displayMode == from)
+	end
+
+	-- LONG is not dropped: same action as SHORT (see handle_settings_button's comment).
+	displayMode = 'list'
+	handle_sl_frame(settings(PRESS_LONG))
+	check('a LONG SETTINGS press also enters config', displayMode == 'config')
+
+	-- ZOOM must not toggle out of config - it would lose configPreviousMode and land on 'zoom'.
+	displayMode, configPreviousMode = 'config', 'list'
+	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, BID_ZOOM,
+		PRESS_SHORT, 0xF7))
+	check('a ZOOM SHORT press is ignored while the config screen shows', displayMode == 'config')
+
+	-- The SETTINGS lamp is the 'you are in config' indicator, same memo discipline as the ZOOM lamp.
+	local function settingsLed()
+		for _, m in ipairs(pendingMessages) do
+			if item_type_of(m) == IT_LED and m[9] == WLID_SETTINGS then return m end
+		end
+		return nil
+	end
+	state, popupActive, displayMode = STATE_ACTIVE, false, 'config'
+	pendingMessages, configLedSent = {}, nil
+	flush_mode_led()
+	local led = settingsLed()
+	check('config mode lights the SETTINGS lamp', led ~= nil and led[10] == 1)
+	pendingMessages, displayMode = {}, 'list'
+	flush_mode_led()
+	led = settingsLed()
+	check('leaving config darkens the SETTINGS lamp', led ~= nil and led[10] == 0)
+	pendingMessages = {}
+	flush_mode_led()
+	check('an unchanged mode does not re-queue the SETTINGS lamp', settingsLed() == nil)
+	pendingMessages, configLedSent, state, displayMode = {}, nil, STATE_IDENTIFYING, 'config'
+	flush_mode_led()
+	check('the SETTINGS lamp is not written outside an active session', settingsLed() == nil)
+	state, configLedSent = STATE_ACTIVE, true
+	handle_login()
+	check('login clears the SETTINGS lamp memo so it re-asserts', configLedSent == nil)
+
+	-- Geometry: rows cannot overlap each other, the header above them, or the footer below - the
+	-- per-region memoization rule, checked against the MEASURED glyph height.
+	check('config rows clear the header rule', CONFIG_ROW_Y0 > CONFIG_RULE_Y)
+	check('config row pitch clears a SIZE_SMALL box', CONFIG_ROW_PITCH >= TEXT_H_SMALL)
+	check('config title clears the header row', CONFIG_TITLE_Y + TEXT_H_SMALL <= CONFIG_HEADER_Y)
+	check('config header clears the rule', CONFIG_HEADER_Y + TEXT_H_SMALL <= CONFIG_RULE_Y)
+	check('the last config row clears the footer',
+		CONFIG_ROW_Y0 + CONFIG_ROW_PITCH * (CONFIG_ROW_COUNT - 1) + TEXT_H_SMALL <= CONFIG_FOOTER_Y)
+	check('the config footer fits on screen',
+		CONFIG_FOOTER_Y + math.max(TEXT_H_SMALL, BMP_NAV_ICON_H) <= SCREEN_HEIGHT)
+	check('the config name and CC columns do not overlap',
+		CONFIG_NAME_X + CONFIG_NAME_W <= CONFIG_CC_X)
+	check('the config footer icon and counter do not overlap',
+		CONFIG_ICON_X + BMP_NAV_ICON_W <= CONFIG_COUNT_X)
+
+	-- Every message the screen queues must fit the flush ceiling, or the whole array is dropped.
+	drawn, pendingMessages, displayMode, configScroll = {}, {}, 'config', 0
+	paint_config_screen()
+	local oversize = nil
+	for i = 1, #pendingMessages do
+		if #pendingMessages[i] > FLUSH_BUDGET then oversize = i end
+	end
+	check('every message paint_config_screen queues fits within FLUSH_BUDGET', oversize == nil)
+	-- title + version + 2 header cells + rule + icon + counter = 7, plus two draws per row.
+	check('paint_config_screen draws the title, header, rule, rows, icon and counter',
+		#pendingMessages == 7 + 2 * CONFIG_ROW_COUNT)
+
+	-- A turn-only control keeps its number in the SHORT column rather than drifting right.
+	check('a paired row shows both CCs', config_cc_text({ 'JOY_UP_SHORT', 'JOY_UP_LONG' }) == '40  41')
+	check('a turn-only row pads the LONG column', config_cc_text({ 'JOY_ROTATE' }) == '50   -')
+
+	displayMode, configScroll, configPreviousMode, pendingMessages, drawn =
+		savedMode, savedScroll, savedPrev, savedPending, savedDrawn
+	pendingCC, pendingDelta, pendingCCOrder = savedCC, savedDelta, savedOrder
+	state, popupActive, configLedSent = savedState, savedPopup, savedLed
+end
+
 -- MARK: - Summary
 
 realPrint('')
