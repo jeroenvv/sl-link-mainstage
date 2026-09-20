@@ -299,12 +299,13 @@ BMP_ICON_H = 54
 
 -- Text align / size
 ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT = 0x00, 0x01, 0x02
--- SIZE_MEDIUM (0x01) is UNDOCUMENTED - the spec, sl-link/docs/display-messages.md (upstream spec),
--- only gives pixel heights for small (21px) and big (33px). Assumed ~27px by interpolation, but
--- that is unverified: the zoom screen geometry below that positions text around SIZE_MEDIUM rests
--- on this estimate, not a measurement. Recalibrate the y coordinates around 'zset' in
--- paint_zoom_screen() on hardware if the real glyph height differs.
 SIZE_SMALL, SIZE_MEDIUM, SIZE_BIG = 0x00, 0x01, 0x02
+
+-- Height of Write Text's opaque background box at each size, MEASURED on hardware 2026-09-20 with
+-- Scripts/probe-text-metrics.swift. Every figure the spec gives (21/22/27/33) is too large; it
+-- contradicts itself on medium besides. Re-measure with that probe if the font ever changes - see
+-- docs/config-lua-history.md#write-text-box-heights-measured-2026-09-20.
+TEXT_H_SMALL, TEXT_H_MEDIUM, TEXT_H_BIG = 18, 23, 27
 
 -- The keyboard drops a host that goes quiet for ~5s; the app uses 3s.
 KEEPALIVE_MS = 3000
@@ -1418,8 +1419,8 @@ ROW_COLORS = {
 -- rearm_timer's popupActive branch.
 POPUP_TICK_MS = 1000
 
--- The Master Volume popup's extra "PUSH TO MUTE/UNMUTE" row: 21px is SIZE_SMALL's one *measured*
--- glyph height (see SIZE_SMALL's declaration), plus a real gap above it.
+-- The Master Volume popup's extra "PUSH TO MUTE/UNMUTE" row: space reserved in the panel, not a
+-- glyph height - it must stay >= TEXT_H_SMALL (the harness asserts this) or the row is clipped.
 POPUP_MUTE_HINT_H = 21
 POPUP_MUTE_HINT_GAP = 8
 
@@ -1436,14 +1437,13 @@ POPUP_CENTER_X = POPUP_X + POPUP_W / 2 -- the panel is itself screen-centred, so
 
 -- Two non-overlapping vertical bands (knob, then label - top to bottom); the value is not a third
 -- band, it is drawn INSIDE the knob's band (see the NON-OVERLAP RULE escape hatch on
--- draw_popup_knob() below). Offsets sized against SIZE_MEDIUM's ~27px glyph height (see SIZE_MEDIUM's
--- declaration comment above) and the Knob bitmap's fixed BMP_ICON_W x BMP_ICON_H size.
+-- draw_popup_knob() below). Offsets sized against TEXT_H_MEDIUM and the Knob bitmap's fixed
+-- BMP_ICON_W x BMP_ICON_H size.
 POPUP_KNOB_X = math.floor(POPUP_CENTER_X - BMP_ICON_W / 2) -- horizontally centred (screen-centred, see above); floored - BMP_ICON_W is odd, so the raw centring math lands on a half-pixel
 POPUP_KNOB_Y = POPUP_Y + 22 -- clears the border's inner top edge (+4) with headroom
 POPUP_LABEL_Y = POPUP_KNOB_Y + BMP_ICON_H + 12 -- below the ring, 12px gap under it
--- Third band, Master Volume popup only: below the label (same ~27px SIZE_MEDIUM estimate as above)
--- plus POPUP_MUTE_HINT_GAP.
-POPUP_HINT_Y = POPUP_LABEL_Y + 27 + POPUP_MUTE_HINT_GAP
+-- Third band, Master Volume popup only: below the label (TEXT_H_MEDIUM) plus POPUP_MUTE_HINT_GAP.
+POPUP_HINT_Y = POPUP_LABEL_Y + TEXT_H_MEDIUM + POPUP_MUTE_HINT_GAP
 
 -- FEEDBACK-mode geometry (a screen control exists - see the layout table this file's comment above
 -- points at). Exact y's from that table; panel spans POPUP_Y..POPUP_Y+POPUP_H (35-204). Legacy-mode
@@ -1453,21 +1453,19 @@ POPUP_FB_KNOB_Y = 70
 POPUP_FB_VALUE_Y = 132
 POPUP_FB_HINT_Y = 165
 
--- Knob icon's inner hole width - UNMEASURED, an eyeball fit against hardware pending a real
--- measurement (see docs/config-lua-history.md#value-moved-inside-the-ring-2026-09-14). Must stay
--- narrower than the hole: Write Text's background box fills its whole maxWidth, so a box wider
--- than the hole paints an opaque bar through the ring's sides. Tightened from 45 (which left a
--- visibly wide black bar) to 38 on hardware feedback; 3-digit values were confirmed to still fit
--- at 45, so there is some headroom left at 38, but re-check on hardware if this clips.
-POPUP_VALUE_W = 38
+-- The Knob bitmap's usable inner hole, MEASURED on hardware 2026-09-20 with
+-- Scripts/probe-text-metrics.swift: the largest Write Text box that fits without touching the ring,
+-- given as an offset from the icon's top-left. Write Text's background box fills its whole maxWidth,
+-- so a box wider than the hole paints an opaque bar through the ring's sides.
+KNOB_HOLE_W = 36
+KNOB_HOLE_DY = 18
+
+-- The value is drawn in that hole, so its box IS the hole. Do not nudge these by eye - the pair was
+-- guessed twice that way before it was measured, and both guesses were wrong; re-run the probe
+-- instead. See docs/config-lua-history.md#write-text-box-heights-measured-2026-09-20.
+POPUP_VALUE_W = KNOB_HOLE_W
 POPUP_VALUE_X = POPUP_KNOB_X + math.floor((BMP_ICON_W - POPUP_VALUE_W) / 2) -- centred on the icon
--- SIZE_MEDIUM's glyph height, same ~27px estimate as above - centres the value vertically in the icon.
-POPUP_VALUE_GLYPH_H = 27
--- Eyeball correction: on hardware the value sits noticeably high in the ring relative to what
--- POPUP_VALUE_GLYPH_H's centring predicts, suggesting the real glyph box differs from that
--- estimate. Nudges the value down pending an actual measurement of both.
-POPUP_VALUE_Y_NUDGE = 8 -- was 5; still sat a touch high on hardware (2026-09-14)
-POPUP_VALUE_Y = POPUP_KNOB_Y + math.floor((BMP_ICON_H - POPUP_VALUE_GLYPH_H) / 2) + POPUP_VALUE_Y_NUDGE
+POPUP_VALUE_Y = POPUP_KNOB_Y + KNOB_HOLE_DY
 
 POPUP_BG_COLOR = { 0, 0, 0 }
 POPUP_KNOB_FG = { 255, 140, 0 } -- true orange, carried over from the old ring's lit-segment colour
