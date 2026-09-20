@@ -344,6 +344,13 @@ Copied from `CC_MAP` in `config.lua`:
 expected to be routed to channel 16, it wasn't worth the ambiguity of using it for something else if
 it ever is.
 
+### Ring colours are a mapping attribute, not a strip colour
+
+The four zone encoder rings show the colour MainStage reports for each knob's mapping
+(`controller_midi_out`'s `color`). That comes from the **knob mapping's Custom Color attribute**, whose
+default is yellow — so every ring is amber until Custom Color is set per knob. Confirmed on hardware
+2026-09-20. A ring is dark when the channel is muted or nothing is mapped.
+
 ### Mapping procedure
 
 In MainStage: pick a target (a patch/set action, a channel-strip control, anything assignable), hit
