@@ -1931,7 +1931,10 @@ function show_popup(eid)
 	popupCcNumber = cc
 	popupValue = fb and fb.value or encoderValue[eid]
 	popupMax = 127
-	popupFeedbackActive = fb ~= nil
+	-- FEEDBACK mode exists to show MainStage's own name, so a nameless entry (see controller_midi_out's
+	-- empty-name filter) falls back to LEGACY: the physical encoder's label and CC number. The ring still
+	-- uses that entry's colour either way.
+	popupFeedbackActive = fb ~= nil and fb.name ~= nil
 	popupFeedbackName = fb and fb.name
 	popupValueString = fb and fb.valueString
 	popupLastActivityIdleTick = idleTicks
@@ -3566,6 +3569,11 @@ function controller_midi_out(midiEvent, name, valueString, color)
 		midiOutFeedback[cc] = nil
 		return nil
 	end
+	-- MainStage also reports an EMPTY name for a mapped control (observed on hardware 2026-09-20,
+	-- cc 59). That is 'no name', not a name: painting it would leave the popup's title band blank.
+	-- The entry is still kept - the colour and value behind it drive the encoder ring - so only the
+	-- NAME is dropped, and the popup falls back to the physical encoder's own label.
+	if name:match('^%s*$') ~= nil then name = nil end
 
 	local value = midiEvent[2]
 	local cleanValueString = sanitize_value_string(valueString)
@@ -3589,7 +3597,9 @@ function controller_midi_out(midiEvent, name, valueString, color)
 	-- at KEEPALIVE_MS that is a ~3s lag. Pull the next tick forward. Safe from this flood-prone
 	-- callback because request_quick_rearm only acts when the timer is armed at the slow interval,
 	-- and only a real state change reaches here.
-	if name:lower():find('mute', 1, true) and wasMuted ~= (value ~= 0) then
+	-- name is nilable here: an empty report is normalised to nil above, and a nameless control cannot be
+	-- a Mute.
+	if name ~= nil and name:lower():find('mute', 1, true) and wasMuted ~= (value ~= 0) then
 		request_quick_rearm()
 	end
 	return nil
