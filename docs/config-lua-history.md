@@ -2713,3 +2713,77 @@ measurement — dy=18 is correct, and the 2026-09-14 in-situ reading that pushed
 `LUA_DEBUG` capture: 503 timer ticks, 0 Lua errors, 0 STANDBY. Two `IDENTIFICATION REJECTED
 (reason 00)` at init, recovered by the same-DeviceID retry path — see
 `docs/mainstage-integration.md`.
+
+## The config screen (2026-09-20)
+
+A third full display mode, `'config'`, alongside `'list'`/`'zoom'`/`'popup'`: the script version and
+the whole CC map, so the mapping can be read off the keyboard instead of these docs. Toggled by the
+SETTINGS button, scrolled by the joystick ring.
+
+**The button id was unknown and had to be measured.** The spec's button-id table is not vendored in
+this repo, and `docs/full-functionality-plan.md` guessed `0x09` was "Global". Pressing each candidate
+in isolation under `Scripts/probe-display.swift` settled it: **`0x09` is SETTINGS**, `0x0A` is DAW,
+`0x0E` is APPLY, and all three reach the host. The same run confirmed the Navigation bitmap group's
+icon indices (`0x00`-`0x07` = left, right, left-right, up-down, rotate, push, apply, cancel) — the
+first indices verified in any group other than Knob, and exactly the order the spec states. The round
+arrow (`0x04`) is the config screen's scroll indicator.
+
+### Layout
+
+Agreed with Jeroen before implementing, per the standing rule for screen changes. He chose the denser
+paired form over one row per CC, and required column headers.
+
+| Band | y | Regions |
+|:--|:--|:--|
+| Title | 4 | `cfgTitle` (`CONFIG`), `cfgVer` (`v2.4.1`, right-aligned) |
+| Header | 26 | `cfgHdrName` (`CONTROL`), `cfgHdrCC` (`SHORT  LONG`) |
+| Rule | 46 | `cfgRule`, a 1px line |
+| Rows | 52, +24 × 7 | `cfg0..6` (name) and `cfgv0..6` (CC pair) |
+| Footer | 216 | `cfgIcon` (rotate icon), `cfgFoot` (`1-7/20`) |
+
+**The CC pair is ONE right-aligned draw, not two columns of text.** Every CC is two digits (40-74), so
+`'40  41'` right-aligned lands consistently without a fixed-width font, and it halves what a row costs:
+2 draws instead of 3, so a page is 21 messages rather than 28. A turn-only control draws `'50   -'` —
+the dash holds the SHORT column's digits in place instead of letting a lone number drift right.
+
+`CONFIG_ROWS` is an explicit hand-written list of `{ SHORT key, LONG key }` pairs, 20 rows, so they can
+be compared by eye against `CC_MAP`. The displayed **name is not repeated** there: it comes from
+`CC_LABEL[short]`, which already reads `'Joy Up'`, `'Zone 1 Push'`, `'Joy Rotate'`. The harness asserts
+the table covers every `CC_MAP` key exactly once and names nothing outside it — the guard that makes a
+hand-written table safe.
+
+### Three decisions that shape the behaviour
+
+- **The joystick ring emits no CC while this screen shows.** It is normally CC 50 (`JOY_ROTATE`);
+  leaving that live would mean every scroll tick also moves whatever MainStage learned to it — editing
+  a fader while reading the mapping list. The `IT_ENCODER` branch returns before `queue_relative_cc`,
+  and no popup is shown either (it would cover the screen being scrolled). Every other control keeps
+  emitting normally.
+- **SETTINGS is not MIDI-mappable.** It is absent from `BUTTON_CC`, so it emits no CC and generates no
+  `controller_info()` item — the same treatment ZOOM already had. Asserted for both.
+- **ZOOM's SHORT press does nothing in config mode.** One button owns one mode. Left alone, the toggle
+  would compute `'zoom'` regardless of what config was covering and discard `configPreviousMode`. LONG
+  still forces a full repaint, which works on any screen.
+
+### The traps this touched
+
+- **Three dispatches, all ending in a bare `else` that means "list".** `paint_screen`,
+  `update_screen` and `set_display_mode` each needed an explicit `'config'` branch; without one a new
+  mode silently paints the patch list. `set_display_mode`'s guard would also have *rejected* `'config'`,
+  which would have broken `dismiss_popup`'s restore after a popup over the config screen.
+- **`queue_sacrificial_redraw` needed a config branch too.** Its duplicate line is chosen by mode, and
+  the `else` draws the list's context bar — over the config screen, that is the same bug as
+  [the popup case](#sacrificial-redraw-painted-the-list-line-under-a-popup-2026-09-14).
+- **A scroll repaint goes through `update_screen()`, not `paint_config_screen()` directly**, so it
+  picks up the trailing sacrificial redraw; without it the last row of every scroll is silently lost.
+- A content change from MainStage arriving while config shows needs no special case: the screen's
+  content does not depend on patch state, so per-region memoization makes the repaint a no-op.
+
+### Harness
+
+38 assertions, mutation-checked: adding SETTINGS to `BUTTON_CC`, duplicating or dropping a
+`CONFIG_ROWS` entry, letting the ring emit its CC in config mode, and letting ZOOM toggle out of config
+each fail the matching assertion. One mutation also exposed a fragile test of my own — with the ring's
+scroll branch disabled, the CC path opened a popup, and the leaked `popupActive` changed what the later
+SETTINGS round-trip assertion proved. That block now sets `popupActive` explicitly rather than
+inheriting it.

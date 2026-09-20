@@ -202,7 +202,7 @@ a redraw is.
 | Knob | `0x00` | `0x00`-`0x0C`, 13 fill levels | 61x54 px |
 | Knob Center | `0x01` | `0x00`-`0x0C`, 13 levels, centre-detent variant | 61x54 px |
 | Toggle | `0x02` | on/off | 35x35 px |
-| Navigation | `0x03` | left, right, left-right, up-down, rotate, push, apply, cancel | 20x20 px |
+| Navigation | `0x03` | left, right, left-right, up-down, rotate, push, apply, cancel — **indices confirmed 2026-09-20**, `0x00`-`0x07` in exactly that order | 20x20 px |
 | Arrow | `0x04` | up, down, left, right, left-right | 10-20 px |
 | General | `0x05` | download, edit, back, keyboard, volume-off, volume-on | 16-20 px |
 | Daw | `0x06` | play, pause, stop, rec, loop, next, prev — whole-icon or circle+glyph at a 5px offset | 10-20 px |
@@ -233,6 +233,10 @@ spec documents neither the hole nor that consequence.
 **Buttons** (`0x01`, Host ← SL): `<BID> <EVT>`. `EVT` `0x01` = SHORT (fires on *release*, if held under
 a second), `0x02` = LONG (fires immediately at one second). 21 buttons; IDs `0x00`–`0x15` with `0x08`
 and `0x0D` absent from the spec's table.
+
+Three ids not otherwise documented here were identified on hardware 2026-09-20 by pressing each button
+in isolation: **`0x09` = SETTINGS** (not "Global", as this project's own earlier notes guessed),
+`0x0A` = DAW, `0x0E` = APPLY. All three reach the host as ordinary button messages.
 
 **Encoders** (`0x03`, Host ← SL): `<EID> <TK>`, 7 encoders, `TK` 64-centred (§2). **Speed sensitivity is
 a feature** — the magnitude grows when turned fast (±2, ±3 per spec; ±8 observed). Add the delta
