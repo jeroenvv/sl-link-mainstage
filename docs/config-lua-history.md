@@ -1897,6 +1897,10 @@ interpolated figure `config.lua`'s `SIZE_MEDIUM` comment already flags). Settlin
 task, not something the offline harness can prove - if a hardware look finds the number wrong, retune
 the constant, not the reasoning above it.
 
+> **Superseded 2026-09-20.** Both were measured: the hole is 36px wide starting 18px down, and
+> `SIZE_MEDIUM`'s box is 23px. `POPUP_VALUE_GLYPH_H` no longer exists. See [Write Text box heights
+> measured](#write-text-box-heights-measured-2026-09-20).
+
 ## Sacrificial redraw painted the list line under a popup (2026-09-14)
 
 **Pre-existing bug, exposed (not introduced) by the popup-in-ring rework.** `queue_sacrificial_redraw()`
@@ -1992,6 +1996,10 @@ inbound recovery path firing/cooldown/cap - all reached via `controller_midi_in`
 
 Unrelated, same session: `POPUP_VALUE_Y_NUDGE` raised from 5 to 8 - still sat a touch high on hardware.
 Containment (harness section 59) holds with 6px of slack at the bottom edge.
+
+> **Superseded 2026-09-20.** The nudge is gone; the value box sits at the measured hole offset, which
+> is where `NUDGE = 5` had put it. The conflict between that reading and this one is discussed in
+> [Write Text box heights measured](#write-text-box-heights-measured-2026-09-20).
 
 ## Popup value repaint throttled (2026-09-14)
 
@@ -2618,3 +2626,79 @@ now assert `nil`.
 `(midiEvent, portName)` matches all 20 shipped implementations; `midiEvent` is read 0-indexed; the
 timer is re-armed here and never from `controller_timer_trigger` (rule 6); musical MIDI returns `nil`
 and is never swallowed; `outport` uses the short port name.
+
+## Write Text box heights measured (2026-09-20)
+
+`SIZE_MEDIUM`'s glyph height had been an estimate since the display work started, and the open item in
+`docs/mainstage-integration.md` framed it as a spec disagreement to reconcile. It is not one: the
+upstream spec contradicts **itself**, at the pinned commit `4c0824d` and at `main` alike.
+`sl-link/docs/display-messages.md` says in prose "the size of the text can be selected between *small*
+(21px), *medium* (27px), *big* (33px)", and a few lines later, in its table: `0x00` Small (21px),
+`0x01` **Medium (22px)**, `0x02` Big (33px). So 27 was never an interpolation of ours - it is one of
+the two figures the spec itself publishes.
+
+**Measured on hardware** (SL88 MK2, firmware 1.1.2) with `Scripts/probe-text-metrics.swift`:
+
+| SIZE | spec table | spec prose | measured |
+|:--|:--|:--|:--|
+| `SIZE_SMALL` | 21px | 21px | **18px** |
+| `SIZE_MEDIUM` | 22px | 27px | **23px** |
+| `SIZE_BIG` | 33px | 33px | **27px** |
+
+Every published figure is too large, and medium is neither of the two on offer. Treat the spec's pixel
+heights as font sizes or line pitches, not as the height of Write Text's background box - the box is
+what a layout actually has to fit, since it fills the whole `maxWidth` opaquely.
+
+### How it was measured, and why the first attempt failed
+
+Round one drew fixed 21/27/33px caliper bars beside a text box at each size and asked which bar's
+bottom edge was flush with the box's. That established the direction - all three too large - but
+stalled there: 1px resolution and the ring's hole were both reported "hard to see". A flush-edge
+judgement is a poor instrument for a 1px difference.
+
+Round two made the keyboard measure itself. Three copies of the same string are stacked exactly `H`
+apart in alternating background colours, with an encoder driving `H`:
+
+- `H` too large -> black seams appear between the stripes
+- `H` too small -> each stripe clips the one above it, leaving the last stripe visibly thicker
+- `H` exact -> one continuous block: no seam, equal stripes
+
+Seam / no seam is a binary judgement, so it resolves to 1px. The same probe draws the real Write Text
+box over the Knob bitmap, with encoders on its width and y offset, for the hole.
+
+### The Knob bitmap's hole
+
+The largest box that fits without touching the ring is **36px wide, starting 18px down** the 61x54
+icon - `KNOB_HOLE_W` and `KNOB_HOLE_DY`. The shipped `POPUP_VALUE_W = 38` was 2px too wide and had
+been painting an opaque bar through the ring's sides.
+
+This replaced `POPUP_VALUE_GLYPH_H = 27` and `POPUP_VALUE_Y_NUDGE`, an eyeball correction that had
+been guessed twice (5, then 8) because it was absorbing two unknowns at once: the glyph height *and*
+where the hole sits inside the icon. `POPUP_VALUE_Y` is now `POPUP_KNOB_Y + KNOB_HOLE_DY` with no
+correction term. `POPUP_HINT_Y`'s duplicated literal `27` became `TEXT_H_MEDIUM`, which moves the
+Master Volume hint row 4px up.
+
+`POPUP_MUTE_HINT_H = 21` stays as it is: it is space reserved in the panel, not a glyph height, and
+shrinking it to 18 would move the whole popup for no visible gain. The harness asserts it stays
+`>= TEXT_H_SMALL`.
+
+### A conflict with the 2026-09-14 note
+
+`POPUP_VALUE_Y_NUDGE = 5` put the value box at dy=18 - exactly where the caliper settled - and [the
+note from that day](#value-moved-inside-the-ring-2026-09-14) records it as still sitting "a touch
+high", which is what pushed it to 8 (dy=21). The two judgements used different instruments: 2026-09-14
+was an in-situ look at the live popup with a 38px box, this one an isolated box driven against the
+ring until it visibly cleared it. The measurement is the better evidence and is what ships - but the
+in-situ look is what a user actually sees, so if the value reads high again on the next hardware run,
+the cause is inside the glyph box (ink sitting high within it), not the geometry. Do not re-introduce
+a nudge without measuring which of the two it is.
+
+### Harness
+
+Section 59 asserts against the measured hole rather than the icon's bounds - the 38px box fit the icon
+and still hit the ring, so the old assertion could not have caught the defect. Section 83 checks that
+the five zoom-screen rows do not overlap at the measured heights; rule 4's non-overlap requirement was
+previously unverifiable, because no real glyph height existed to check it against. Both were
+mutation-tested: widening the value box to 45, nudging it 3px above the hole, setting
+`TEXT_H_MEDIUM = 40`, shrinking the hint row to 12, and moving `zname` to y=60 each fail exactly one
+assertion, and the first of those fails only the hole check - not the icon-bounds checks.
