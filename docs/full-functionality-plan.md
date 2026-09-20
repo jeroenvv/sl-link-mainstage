@@ -42,6 +42,9 @@ channel": mute on the encoder press, solo on the button below it. Each has a whi
 
 Depends on Q3 — if solo turns out to be unreachable, see the fallback below.
 
+> **Corrected 2026-09-20.** Button `0x09` is **SETTINGS**, not Global — confirmed on hardware by
+> pressing it in isolation. It now toggles the config screen. `0x0A` and `0x0E` are delivered too.
+
 Still unassigned: Global (`0x09`), DAW (`0x0A`), Apply (`0x0E`), Cancel (`0x0F`), Home (`0x10`), and
 the A encoder push button (`0x0B`). Suggested, not yet decided:
 

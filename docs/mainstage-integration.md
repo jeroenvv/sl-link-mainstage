@@ -399,7 +399,9 @@ in MainStage's MIDI Message Monitor by moving Stick 1 vertically and observing C
 
 Deployed and tested against the SL88 with a real concert loaded. MainStage's MIDI Learn does accept a CC arriving by injection — Selector 1 (CC 67) was learned and responded on the first attempt, confirming the one assumption the whole design rested on. The `[sllink] CC batch: N CC(s), B bytes` log line confirms each injection round on the script side.
 
-Not yet mapped, by choice — left for a later phase: Cancel, Apply, Global, DAW (Home/Zoom already has its own on-keyboard function, the list/zoom toggle).
+Not yet mapped, by choice — left for a later phase: Cancel, Apply, DAW. Home/Zoom and SETTINGS both
+have their own on-keyboard function instead (the list/zoom toggle and the config screen), and neither
+is MIDI-mappable — the harness asserts both stay out of `BUTTON_CC`.
 
 ### Sweep and mapping verification (2026-08-24)
 
