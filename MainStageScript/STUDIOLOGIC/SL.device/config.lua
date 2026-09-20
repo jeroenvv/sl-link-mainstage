@@ -1008,6 +1008,21 @@ function flush_pending_cc()
 	-- Nothing emitted (every queued relative delta netted to zero): return nil, NOT { midi = {} }.
 	-- An empty table swallows the inbound event and costs the round its SL flush for no MIDI at all -
 	-- see docs/mainstage-device-scripts.md section 4's return-value table.
+	if pendingProgram ~= nil then
+		if pendingBank ~= nil then
+			-- MSB then LSB, then the PC - the order Apple's documentation requires.
+			out[#out + 1] = 0xB0 + CC_CHANNEL
+			out[#out + 1] = 0x00
+			out[#out + 1] = math.floor(pendingBank / 128)
+			out[#out + 1] = 0xB0 + CC_CHANNEL
+			out[#out + 1] = 0x20
+			out[#out + 1] = pendingBank % 128
+			pendingBank = nil
+		end
+		out[#out + 1] = 0xC0 + CC_CHANNEL
+		out[#out + 1] = pendingProgram
+		pendingProgram = nil
+	end
 	if #out == 0 then return nil end
 	return { midi = out }
 end
@@ -2064,6 +2079,70 @@ function find_active_row_index()
 	return 0
 end
 
+-- Patch selection from the ring, confirmed working on hardware 2026-09-20 (MainStage 4.3.1): a Bank
+-- Select pair followed by a Program Change selects a patch exactly - no scaling, no skipped patches, and
+-- banks lift the 128-patch ceiling. Requires concert setup: Program Changes Device and Channel must admit
+-- this device/channel, and the patches need program change numbers (MainStage's own reset command assigns
+-- them in Patch List order). See
+-- docs/mainstage-integration.md#the-ring-selects-patches-with-bank-select-and-program-change.
+--
+-- Queued for this round's injection, or nil. MainStage's Program Change Range is 1-128, so patch p shows
+-- as PC p and goes on the wire as (p-1) % 128, with the bank as floor((p-1) / 128) - 0-based on the wire,
+-- which MainStage displays as bank 1, 2, ... (verified across the 128 boundary).
+pendingProgram = nil
+pendingBank = nil
+
+function queue_program(pc, bank)
+	pendingProgram = pc
+	pendingBank = bank
+end
+
+-- Bank and program bytes for the ring's current target patch.
+function ring_patch_program()
+	local p = ringPatchTarget
+	return math.floor((p - 1) / 128), (p - 1) % 128
+end
+
+-- The ACTIVE patch's ordinal among ALL patches in the concert, skipping set headers - which is what
+-- 'Jump to Patch' indexes, unlike find_active_row_index()'s position in the flat interleaved list.
+function active_patch_ordinal()
+	local n = 0
+	for i = 1, #listRows do
+		local row = listRows[i]
+		if row.isPatch then
+			n = n + 1
+			if row.setIndex == activeSetIndex and row.patchIndex == activePatchIndex then
+				return n
+			end
+		end
+	end
+	return 1
+end
+
+function concert_patch_count()
+	local n = 0
+	for i = 1, #listRows do
+		if listRows[i].isPatch then n = n + 1 end
+	end
+	return n
+end
+
+-- Where the ring is currently pointing, as a patch ordinal (1-based over patches). Re-synced from the
+-- active patch on every patch change, so the ring never drifts from what MainStage actually selected -
+-- whether that came from the ring itself, a direction button, or MainStage.
+ringPatchTarget = 1
+
+-- Moves the target by a ring delta and returns the CC value to send. Clamps to the concert's own ends and
+-- to what a CC can carry; raw delta, no acceleration curve of our own (the hardware is already
+-- speed-sensitive - see docs/implementing-sl-link.md section 6).
+function move_ring_patch_target(delta)
+	local count = concert_patch_count()
+	local v = ringPatchTarget + delta
+	if v < 1 then v = 1 end
+	if count > 0 and v > count then v = count end
+	ringPatchTarget = v
+end
+
 -- The ACTIVE patch's 1-based ordinal position among patches in its OWN set (activeSetIndex), and
 -- that set's total patch count - 'patch 3 of 7 in this song', for the zoom screen's zpos line (see
 -- paint_zoom_screen()). Counts only listRows entries with isPatch true AND setIndex ==
@@ -2957,6 +3036,15 @@ function handle_sl_frame(e)
 			end
 			slog('<- ENCODER joystick delta=' .. tostring(delta) .. ' - config scroll=' .. configScroll)
 		else
+			if eid == EID_JOYSTICK then
+				-- The ring selects patches directly: move the target, then inject Bank Select + Program
+				-- Change for it. JOY_ROTATE below still goes out, so an existing relative mapping keeps
+				-- working - just do not map it to patch selection as well, or the two fight.
+				move_ring_patch_target(delta)
+				local bank, pc = ring_patch_program()
+				queue_program(pc, bank)
+				slog('-> BANK ' .. bank .. ' + PROGRAM CHANGE ' .. pc .. ' (patch ' .. ringPatchTarget .. ')')
+			end
 			local control = ENCODER_CC[eid]
 			if control ~= nil then
 				local newValue = encoderValue[eid] + delta
@@ -3466,7 +3554,7 @@ function controller_midi_in(midiEvent, portName)
 		-- above rearm_timer).
 		-- Only pre-empt the SL flush when the CC batch actually produced bytes; a net-zero batch
 		-- returns nil and falls through, so the round still gets its SL flush.
-		if #pendingCCOrder > 0 then
+		if #pendingCCOrder > 0 or pendingProgram ~= nil then
 			local out = flush_pending_cc()
 			if out ~= nil then
 				rearm_timer()
@@ -3673,6 +3761,9 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 	-- Phase 1 has no independent browsing/cursor input yet (deferred to Phase 2's joystick handling) -
 	-- the cursor simply tracks the active patch's position in the flat list.
 	cursorIndex = find_active_row_index()
+	-- Keep the ring's patch target on whatever is actually selected, however it got there - otherwise the
+	-- next ring turn jumps from a stale position (see move_ring_patch_target).
+	ringPatchTarget = active_patch_ordinal()
 
 	-- currentConcert/setName logged alongside the existing fields so a blank concert line on the SL88
 	-- screen can be told apart from a draw failure.
