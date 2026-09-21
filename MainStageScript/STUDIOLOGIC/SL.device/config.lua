@@ -2226,7 +2226,12 @@ function draw_ctx()
 	-- read at a glance. Its box is then 2..25 (TEXT_H_MEDIUM), still clear of ROW_Y0 at 30. The sacrificial
 	-- duplicate in queue_sacrificial_redraw MUST use the same size, or it repaints a shorter box over this
 	-- one and leaves the bottom of the glyphs behind.
-	draw_text('ctx', ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_MEDIUM, 120, 120, 120, 0, 0, 0)
+	-- Blue, not grey: this line is structure rather than a patch, the same distinction ROW_COLORS draws
+	-- between a set header and a patch row. Taken from ROW_COLORS[ROW_HEADER] so the convention lives in
+	-- one place; amber stays reserved for the ACTIVE patch and the lit navigation icon.
+	local c = ROW_COLORS[ROW_HEADER]
+	draw_text('ctx', ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_MEDIUM,
+		c[1], c[2], c[3], 0, 0, 0)
 end
 
 -- Draws the list screen's current model, memoized per region - repeat calls with nothing changed
@@ -2571,9 +2576,10 @@ function queue_sacrificial_redraw()
 		queue_message(msg_write_text('CONFIG', CONFIG_NAME_X, CONFIG_TITLE_Y, CONFIG_NAME_W,
 			ALIGN_LEFT, SIZE_MEDIUM, hc[1], hc[2], hc[3], hc[4], hc[5], hc[6]))
 	else
-		-- SIZE_MEDIUM to match draw_ctx() byte for byte - see the note there.
+		-- Size AND colour must match draw_ctx() byte for byte - see the note there.
+		local c = ROW_COLORS[ROW_HEADER]
 		queue_message(msg_write_text(ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_MEDIUM,
-			120, 120, 120, 0, 0, 0))
+			c[1], c[2], c[3], 0, 0, 0))
 	end
 end
 
