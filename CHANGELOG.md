@@ -9,6 +9,7 @@ All notable changes to this project are documented in this file. The format foll
 - feat!: the joystick tilts select patches (up/down by patch, left/right by set, long up/down to the
   first/last patch) instead of emitting CC 40-47
 - feat: show the tilt icons on both patch screens
+- feat: raise FLUSH_BUDGET to 78, giving 43-character text lines instead of 37
 
 ## [2.7.0] - 2026-09-20
 

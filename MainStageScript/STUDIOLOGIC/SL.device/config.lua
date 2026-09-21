@@ -662,13 +662,13 @@ end
 -- MARK: - Outbound plumbing
 --
 -- A script can only send by returning MIDI from a callback. MainStage imposes a BYTE-LENGTH CEILING
--- on what it will emit (rule 2 in the banner): measured on hardware, 78 bytes render and 87 bytes
--- render NOTHING AT ALL - the whole array is discarded, not truncated. Keep queued messages
--- DISCRETE rather than pre-concatenated, and emit only as many whole messages per flush as fit
--- inside FLUSH_BUDGET; whatever is left over goes out on a following tick. FLUSH_BUDGET sits below
--- the 78 known to work, since the exact ceiling is only bracketed to [78, 87) and there is nothing
--- to gain from running close. See docs/config-lua-history.md#the-mainstage-byte-ceiling.
-FLUSH_BUDGET = 72
+-- on what it will emit (rule 2 in the banner): over it the whole array is discarded, not truncated.
+-- Keep queued messages DISCRETE rather than pre-concatenated, and emit only as many whole messages per
+-- flush as fit inside FLUSH_BUDGET; whatever is left over goes out on a following tick.
+-- 78 is the largest size measured to deliver in THIS flush shape ([display, query]) - 78, 79 and 80 all
+-- arrived, 2026-09-21 - and it also matches the original two-Write-Text measurement. Raised from 72,
+-- which was a guess below that. See docs/config-lua-history.md#the-mainstage-byte-ceiling.
+FLUSH_BUDGET = 78
 
 -- Write Text's fixed wire overhead before the string itself: header+ids (7) + itemType+func (2) +
 -- x/y/maxWidth (6) + align+size (2) + fg rgb (3) + bg rgb (3) + 0x00 terminator (1) + F7 (1) = 25.
