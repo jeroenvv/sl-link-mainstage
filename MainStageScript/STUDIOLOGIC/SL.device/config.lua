@@ -3624,6 +3624,7 @@ ceilingProbeTotal = CEILING_PROBE_FIRST
 ceilingProbeAwaiting = nil
 ceilingProbeDone = false
 ceilingProbeTurn = false
+ceilingProbeFastNext = false
 
 function ceiling_probe_step()
 	if ceilingProbeAwaiting ~= nil then
@@ -3652,6 +3653,7 @@ function ceiling_probe_step()
 		', text ' .. #text .. ' chars)')
 
 	ceilingProbeAwaiting = total
+	ceilingProbeFastNext = true -- bring the keepalive tick forward; see rearm_timer
 	ceilingProbeTotal = total + 1
 	if ceilingProbeTotal > CEILING_PROBE_LAST then ceilingProbeDone = true end
 	return { midi = out }
@@ -3742,7 +3744,14 @@ function rearm_timer()
 		framesSinceTick = 0
 		watchdogDiagLastFrames = 0
 	end
-	if state == STATE_LOGGED_OUT then
+	-- TEMPORARY, REVERT BEFORE MERGING - see CEILING_PROBE. The tick right after a probe carries the
+	-- keepalive, and it has to land inside the SL88's ~5s app-list timeout: at the ordinary 3s cadence
+	-- the probe's own tick pushes it to ~6s and the entry ages out mid-run.
+	if ceilingProbeFastNext then
+		ceilingProbeFastNext = false
+		settriggertimer(FLUSH_SOON_MS)
+		timerArmedInterval = FLUSH_SOON_MS
+	elseif state == STATE_LOGGED_OUT then
 		-- Pin the tick at KEEPALIVE_MS regardless of has_pending()/popupActive, so LOGOUT_SILENT_TICKS
 		-- maps to real seconds instead of whatever pace queued traffic would otherwise pick.
 		settriggertimer(KEEPALIVE_MS)
