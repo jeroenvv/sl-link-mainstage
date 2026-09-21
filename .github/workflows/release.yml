@@ -153,42 +153,73 @@ jobs:
           echo "version=$new_version" >> "$GITHUB_OUTPUT"
 
       - name: Update CHANGELOG.md
-        # Keeps CHANGELOG.md current without a human step: prepend the new version's section (the
-        # same commit-subject list the release notes use) under the [Unreleased] heading, leaving
-        # that heading in place and empty for the next cycle.
+        # Keeps CHANGELOG.md current without a human step: prepend the new version's section under the
+        # [Unreleased] heading, leaving that heading in place and empty for the next cycle.
+        #
+        # A CURATED [Unreleased] body wins. If anything has been written there by hand it is PROMOTED
+        # verbatim into the new version's section and removed from [Unreleased]; only an empty
+        # [Unreleased] falls back to the generated commit-subject list. A release worth hand-writing
+        # notes for - anything with a BREAKING section, in particular - is exactly the one where the
+        # commit list reads worst, and without this the hand-written text was left stranded below the
+        # generated section as if it belonged to the same release.
         if: steps.last_tag.outputs.has_tag == 'true' && steps.script_changed.outputs.changed == 'true'
         run: |
           version="${{ steps.version.outputs.version }}"
           release_date="$(date -u +%Y-%m-%d)"
 
+          # The [Unreleased] body: everything between that heading and the next version heading.
+          awk '/^## \[Unreleased\]/ { f = 1; next } /^## \[/ { f = 0 } f' CHANGELOG.md \
+            > /tmp/unreleased-body.md
+          # Real if/then rather than `grep -q ... && ...` - same set -e reason as the bump decision.
+          if grep -q '[^[:space:]]' /tmp/unreleased-body.md; then
+            curated=1
+          else
+            curated=0
+          fi
+          echo "curated [Unreleased] body: $curated"
+
           {
             echo "## [$version] - $release_date"
             echo
-            # Ordered feat -> fix -> docs -> everything else, stable within each group, rather
-            # than chronologically: a release note is read to decide whether to take the release,
-            # so new capability leads and documentation trails.
-            cut -f2 /tmp/commits-since-last-tag.tsv \
-              | awk '{
-                  rank = 4
-                  if ($0 ~ /^feat(\([^)]*\))?!?:/) rank = 1
-                  else if ($0 ~ /^fix(\([^)]*\))?!?:/) rank = 2
-                  else if ($0 ~ /^docs(\([^)]*\))?!?:/) rank = 3
-                  printf "%d\t%06d\t%s\n", rank, NR, $0
-                }' \
-              | sort -k1,1n -k2,2n | cut -f3 | sed 's/^/- /'
+            if [ "$curated" = "1" ]; then
+              # Verbatim, minus leading and trailing blank lines (awk drops the trailing ones by
+              # printing only as far as the last non-blank; sed drops the leading ones).
+              awk 'NF { last = NR } { line[NR] = $0 }
+                   END { for (i = 1; i <= last; i++) print line[i] }' \
+                /tmp/unreleased-body.md | sed '/./,$!d'
+            else
+              # Ordered feat -> fix -> docs -> everything else, stable within each group, rather
+              # than chronologically: a release note is read to decide whether to take the release,
+              # so new capability leads and documentation trails.
+              cut -f2 /tmp/commits-since-last-tag.tsv \
+                | awk '{
+                    rank = 4
+                    if ($0 ~ /^feat(\([^)]*\))?!?:/) rank = 1
+                    else if ($0 ~ /^fix(\([^)]*\))?!?:/) rank = 2
+                    else if ($0 ~ /^docs(\([^)]*\))?!?:/) rank = 3
+                    printf "%d\t%06d\t%s\n", rank, NR, $0
+                  }' \
+                | sort -k1,1n -k2,2n | cut -f3 | sed 's/^/- /'
+            fi
           } > /tmp/changelog-section.md
 
           # Real if/then, not `grep -q ... && ...`, for the same set -e reason as the bump-decision
           # step above. If the [Unreleased] heading is missing, append instead of failing the release
           # - a malformed insert point should not block shipping.
           if grep -q '^## \[Unreleased\]' CHANGELOG.md; then
-            awk -v section_file=/tmp/changelog-section.md '
-              { print }
+            awk -v section_file=/tmp/changelog-section.md -v curated="$curated" '
               /^## \[Unreleased\]/ && !inserted {
+                print
                 print ""
                 while ((getline line < section_file) > 0) print line
                 inserted = 1
+                # A promoted body must not also stay under [Unreleased] - drop it.
+                skipping = (curated == "1")
+                next
               }
+              skipping && /^## \[/ { skipping = 0; print "" }
+              skipping { next }
+              { print }
             ' CHANGELOG.md > /tmp/changelog-new.md
           else
             echo "No [Unreleased] heading found in CHANGELOG.md - appending instead."
