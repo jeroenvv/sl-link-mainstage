@@ -344,10 +344,14 @@ Copied from `CC_MAP` in `config.lua`:
 expected to be routed to channel 16, it wasn't worth the ambiguity of using it for something else if
 it ever is.
 
-### The ring selects patches with Bank Select and Program Change
+### The ring browses, the press selects with Bank Select and Program Change
 
-Confirmed on hardware 2026-09-20, MainStage 4.3.1, 133-patch concert: 174 ring steps produced 173 patch
-changes, 13 of them in bank 1. Exact - no scaling, no skipped patches, no 128 ceiling.
+The ring moves the list cursor locally; the joystick press injects the selection for the browsed patch.
+Confirmed on hardware: the injection itself 2026-09-20 (174 ring steps, 173 patch changes, 13 in bank 1 -
+exact, no scaling, no skipped patches, no 128 ceiling), and browse/commit with its snap-back 2026-09-21.
+
+Browsing rather than selecting live is what stops MainStage loading every patch scrolled past. An
+uncommitted browse reverts to the playing patch after `BROWSE_IDLE_TICKS`.
 
 Per ring step on `CC_CHANNEL` (16): `CC 0` (Bank MSB), `CC 32` (Bank LSB), then the Program Change. Bank is
 `floor((p-1) / 128)`, 0-based on the wire (MainStage displays bank 1 upward); program is `(p-1) % 128`.
