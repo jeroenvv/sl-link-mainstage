@@ -3014,3 +3014,20 @@ starts at 51 and holds 23 gestures.
   header-only set is never a stop and the cursor can never land on a header.
 - The CC count was already stale in four places (34 stated, 31 actual) before this change; the harness now
   pins it, since the number appears in two source comments, the README and the integration doc's table.
+
+## Tilt icons on both patch screens (2026-09-21)
+
+The tilts were undiscoverable from the keyboard, so both patch screens now carry the navigation group's
+up/down (`0x03`) and left/right (`0x02`) bitmaps. Layout agreed with Jeroen before implementing.
+
+- **List screen:** four icons in one band at y=214, 20px wide on a 26px pitch, right edge at 312 -
+  `⇕ ⇔ ↻ ⊙` in the order the gestures escalate. Paying for the two new ones cost the bottom row 50px
+  (`ROW_LAST_MAXW` 248 -> 198); the seven rows above keep the full width.
+- **Zoom screen:** the tilt pair only, level with the `n/N` counter. The counter's box was narrowed
+  **symmetrically** about the screen centre (`ZOOM_POS_X` 58, `ZOOM_POS_W` 204) so its digits did not move -
+  narrowing from x=8 would have shifted them left, since the device centres within the box.
+- The ring and press icons stay **off** the zoom screen: a ring turn there switches to the list before it
+  browses, so no browse can ever be pending on that screen.
+- Region ids are per screen (`navUpDown` vs `zNavUpDown`). The same id at two positions would let one
+  screen's memoized tuple stand in for the other's; the harness now asserts the two screens share no
+  region id at all.
