@@ -79,6 +79,12 @@ Right-click and choose **Show Package Contents** to look inside from Finder, or 
 normal directory from the terminal. Either way, nothing needs to be unpacked by hand —
 `install-mainstage-script.sh` copies the whole bundle to where MainStage expects it.
 
+## Example concert
+
+[`mainstage/Demo.concert`](mainstage/) is a starting-point rig built on MainStage's Keyboard Minimalist
+template. [`mainstage/README.md`](mainstage/README.md) lists every CC to assign and the two attributes
+that drive what the SL88's popup shows.
+
 ## Documentation
 
 - [`docs/implementing-sl-link.md`](docs/implementing-sl-link.md) — reusable guide to implementing the
