@@ -120,7 +120,12 @@ first; docs/CI/test-harness-only changes never move the version. When a bump is 
 is read from commit subjects since the last tag: `feat:` -> minor; `fix:`/`perf:`/`refactor:` ->
 patch; `docs:`/`chore:`/`test:` -> no bump on their own; `feat!:` (or any prefix with `!`, or a
 `BREAKING CHANGE:` trailer) -> major. If the script changed but no commit carries a bump-worthy
-prefix, it defaults to **patch** - a shipped change always gets a version. History predating this
+prefix, it defaults to **patch** - a shipped change always gets a version.
+
+The release notes come from the same commit subjects, **unless `CHANGELOG.md`'s `[Unreleased]` section
+has been written by hand** - then that text is promoted verbatim into the new version's section and
+`[Unreleased]` is left empty. Write it by hand for anything with a BREAKING section; the generated list
+is fine for ordinary releases. History predating this
 convention has no prefixes, which is why the workflow only reads commits since the last tag.
 
 ## Architecture
