@@ -291,6 +291,8 @@ BMP_ICON_H = 54
 -- states it: 0x00 left, 0x01 right, 0x02 left-right, 0x03 up-down, 0x04 rotate (round arrow),
 -- 0x05 push, 0x06 apply, 0x07 cancel.
 BMP_GROUP_NAV = 0x03
+BMP_ICON_LEFTRIGHT = 0x02
+BMP_ICON_UPDOWN = 0x03
 BMP_ICON_ROTATE = 0x04
 BMP_ICON_PUSH = 0x05
 BMP_NAV_ICON_W = 20
@@ -1326,17 +1328,29 @@ ROW_MAXW = 304
 -- rows the last one occupies y=212-230, so the icons cannot go below it and sit beside it instead. Only
 -- row ROW_COUNT-1 is shortened, so the seven rows above keep the full width for patch names - see
 -- draw_list_row(). The active-patch highlight is therefore narrower on the bottom row than elsewhere.
-ROW_LAST_MAXW = 248
+ROW_LAST_MAXW = 198
 
--- Navigation icons, bottom right of the list screen: the rotate icon says the ring scrolls, and the push
--- icon lights when a browsed patch is waiting to be committed. They own the gutter ROW_LAST_MAXW leaves,
--- so nothing else draws those pixels (rule 4). Colour, not presence, carries the state - same region id
--- and pixels either way, so nothing needs erasing.
+-- Navigation icons, bottom right of the list screen, in the order the gestures escalate: the tilt pairs
+-- select a patch or a set outright, the rotate icon says the ring browses, and the push icon lights when a
+-- browsed patch is waiting to be committed. 20px wide on a 26px pitch, right edge at 312 to match ROW_X's
+-- margin. They own the gutter ROW_LAST_MAXW leaves, so nothing else draws those pixels (rule 4). Colour,
+-- not presence, carries the state - same region id and pixels either way, so nothing needs erasing.
 NAV_ICON_Y = 214
-NAV_RING_X = 264
-NAV_PUSH_X = 290
+NAV_UPDOWN_X = 214
+NAV_LEFTRIGHT_X = 240
+NAV_RING_X = 266
+NAV_PUSH_X = 292
 NAV_ICON_DIM = { 60, 60, 70 }
 NAV_ICON_LIT = { 255, 170, 40 }
+
+-- The same tilt pair on the zoom screen, level with the n/N counter. The counter's box is narrowed
+-- SYMMETRICALLY about the screen centre (ZOOM_POS_X + ZOOM_POS_W / 2 == SCREEN_WIDTH / 2) so its digits
+-- stay where they were while the icons take the right-hand end - the harness asserts both.
+ZOOM_NAV_Y = 210
+ZOOM_NAV_UPDOWN_X = 266
+ZOOM_NAV_LEFTRIGHT_X = 292
+ZOOM_POS_X = 58
+ZOOM_POS_W = 204
 
 -- Max Width TRUNCATION is UNRELIABLE at SIZE_BIG - confirmed on hardware: a long patch name at
 -- maxWidth=304 rendered as a single letter followed by '...'. So the zoom screen's patch name is
@@ -2299,9 +2313,13 @@ end
 -- added here.
 function paint_list_screen()
 	draw_ctx()
-	-- Bottom right: the rotate icon says the ring scrolls this list; the push icon lights while a browsed
-	-- patch is waiting for the joystick press. See NAV_ICON_Y.
+	-- Bottom right: the two tilt pairs select a patch/set outright, the rotate icon says the ring browses
+	-- this list, and the push icon lights while a browsed patch is waiting for the press. See NAV_ICON_Y.
 	local dim, lit = NAV_ICON_DIM, NAV_ICON_LIT
+	draw_bitmap('navUpDown', NAV_UPDOWN_X, NAV_ICON_Y, BMP_GROUP_NAV, BMP_ICON_UPDOWN,
+		lit[1], lit[2], lit[3], 0, 0, 0)
+	draw_bitmap('navLeftRight', NAV_LEFTRIGHT_X, NAV_ICON_Y, BMP_GROUP_NAV, BMP_ICON_LEFTRIGHT,
+		lit[1], lit[2], lit[3], 0, 0, 0)
 	draw_bitmap('navRing', NAV_RING_X, NAV_ICON_Y, BMP_GROUP_NAV, BMP_ICON_ROTATE,
 		lit[1], lit[2], lit[3], 0, 0, 0)
 	local pushColor = browsePending and lit or dim
@@ -2395,7 +2413,17 @@ function paint_zoom_screen()
 	-- flat position across ALL listRows, 'row 41 of 98', does not answer the question this counter
 	-- exists to answer). See zoom_position_in_set().
 	local n, total = zoom_position_in_set()
-	draw_text('zpos', n .. '/' .. total, 8, 210, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0)
+	draw_text('zpos', n .. '/' .. total, ZOOM_POS_X, 210, ZOOM_POS_W, ALIGN_CENTER, SIZE_SMALL,
+		120, 120, 120, 0, 0, 0)
+
+	-- The tilt pairs, level with the counter: the joystick selects patches and sets on the zoom screen too.
+	-- The ring and press are deliberately absent here - a ring turn switches to the list before it browses,
+	-- so there is never a pending browse to commit from this screen. See ZOOM_NAV_Y.
+	local lit = NAV_ICON_LIT
+	draw_bitmap('zNavUpDown', ZOOM_NAV_UPDOWN_X, ZOOM_NAV_Y, BMP_GROUP_NAV, BMP_ICON_UPDOWN,
+		lit[1], lit[2], lit[3], 0, 0, 0)
+	draw_bitmap('zNavLeftRight', ZOOM_NAV_LEFTRIGHT_X, ZOOM_NAV_Y, BMP_GROUP_NAV, BMP_ICON_LEFTRIGHT,
+		lit[1], lit[2], lit[3], 0, 0, 0)
 end
 
 -- MARK: - Config screen

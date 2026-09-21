@@ -803,8 +803,8 @@ do
 	paint_zoom_screen()
 
 	check(
-		'paint_zoom_screen queues zcnc + zset + zname + znext + zpos = 5 messages (was 7 before the device-centring migration)',
-		#pendingMessages == 5
+		'paint_zoom_screen queues zcnc + zset + zname + znext + zpos + the two tilt icons = 7 messages',
+		#pendingMessages == 7
 	)
 
 	local allWithinBudget = true
@@ -4779,15 +4779,23 @@ do
 	paint_zoom_screen()
 
 	local heightForSize = { [SIZE_SMALL] = TEXT_H_SMALL, [SIZE_MEDIUM] = TEXT_H_MEDIUM, [SIZE_BIG] = TEXT_H_BIG }
-	local rows = {}
+	local rows, navIcons = {}, 0
 	for i = 1, #pendingMessages do
 		local m = pendingMessages[i]
-		rows[#rows + 1] = {
-			id = m.regionId,
-			y = m[12] * 128 + m[13],
-			h = heightForSize[m[17]],
-		}
+		-- The two tilt icons are Plot Bitmap, not Write Text, so their bytes decode differently and they
+		-- are excluded here. They share the counter's BAND on purpose and are separated HORIZONTALLY
+		-- instead - asserted beside the counter's own geometry in section 88.
+		if type(m.regionId) == 'string' and m.regionId:find('^zNav') then
+			navIcons = navIcons + 1
+		else
+			rows[#rows + 1] = {
+				id = m.regionId,
+				y = m[12] * 128 + m[13],
+				h = heightForSize[m[17]],
+			}
+		end
 	end
+	check('both zoom tilt icons are queued', navIcons == 2)
 	table.sort(rows, function(a, b) return a.y < b.y end)
 
 	local overlap, offScreen = nil, nil
@@ -5340,7 +5348,7 @@ do
 	-- With 8 rows the bottom one shares the icons' band vertically, so separation is HORIZONTAL: the
 	-- bottom row stops short of the gutter the icons own.
 	check('the bottom row stops short of the icon gutter',
-		ROW_X + ROW_LAST_MAXW <= NAV_RING_X)
+		ROW_X + ROW_LAST_MAXW <= NAV_UPDOWN_X)
 	check('only the bottom row is narrowed', ROW_LAST_MAXW < ROW_MAXW)
 
 	-- The ctx bar is SIZE_MEDIUM now, so it must still clear the first row. Size and y are decoded from the
@@ -5377,10 +5385,27 @@ do
 	end
 	check('exactly one row is narrowed for the gutter', narrowRows == 1)
 	check('...and the rest span the full width', fullWidthRows == ROW_COUNT - 1)
-	check('the navigation icons do not overlap',
-		NAV_RING_X + BMP_NAV_ICON_W <= NAV_PUSH_X)
+	-- All four icons share one band, so they must be separated horizontally, in the declared order, and
+	-- the last one must still fit on screen.
+	local navXs = { NAV_UPDOWN_X, NAV_LEFTRIGHT_X, NAV_RING_X, NAV_PUSH_X }
+	local navOverlap = nil
+	for i = 2, #navXs do
+		if navXs[i - 1] + BMP_NAV_ICON_W > navXs[i] then navOverlap = i end
+	end
+	check('the four navigation icons do not overlap', navOverlap == nil)
 	check('the navigation icons fit on screen',
-		NAV_PUSH_X + BMP_NAV_ICON_W <= SCREEN_WIDTH and NAV_ICON_Y + BMP_NAV_ICON_H <= SCREEN_HEIGHT)
+		navXs[#navXs] + BMP_NAV_ICON_W <= SCREEN_WIDTH and NAV_ICON_Y + BMP_NAV_ICON_H <= SCREEN_HEIGHT)
+	do
+		local savedDrawn5, savedPending6 = drawn, pendingMessages
+		drawn, pendingMessages, listRows, scrollOffset = {}, {}, concert(10), 0
+		paint_list_screen()
+		local icons = 0
+		for _, m in ipairs(pendingMessages) do
+			if type(m.regionId) == 'string' and m.regionId:find('^nav') then icons = icons + 1 end
+		end
+		drawn, pendingMessages = savedDrawn5, savedPending6
+		check('the list screen draws all four navigation icons', icons == 4)
+	end
 
 	-- The push icon's COLOUR carries the state, so its bytes differ between browsing and idle.
 	local function pushIconBytes()
@@ -5524,6 +5549,46 @@ do
 	handle_sl_frame(tilt(BID_JOY_DOWN, PRESS_SHORT))
 	check('a tilt continues a ring browse from the cursor', pendingProgram == 3)
 	check('...and clears the pending browse', browsePending == false)
+
+	-- ICONS: the tilt pair appears on BOTH patch screens, so the gesture is discoverable from either.
+	-- On the zoom screen they take the right-hand end of the counter's band, which is why the counter's
+	-- box was narrowed - and narrowed symmetrically, so its digits stay centred where they were.
+	check('the zoom counter box stays centred on the screen',
+		ZOOM_POS_X + ZOOM_POS_W / 2 == SCREEN_WIDTH / 2)
+	check('the zoom tilt icons clear the counter box',
+		ZOOM_POS_X + ZOOM_POS_W <= ZOOM_NAV_UPDOWN_X)
+	check('the zoom tilt icons do not overlap each other',
+		ZOOM_NAV_UPDOWN_X + BMP_NAV_ICON_W <= ZOOM_NAV_LEFTRIGHT_X)
+	check('the zoom tilt icons fit on screen',
+		ZOOM_NAV_LEFTRIGHT_X + BMP_NAV_ICON_W <= SCREEN_WIDTH
+			and ZOOM_NAV_Y + BMP_NAV_ICON_H <= SCREEN_HEIGHT)
+	-- Distinct bitmaps, not the same one twice: up/down is 0x03 and left/right 0x02 in the navigation
+	-- group, and neither is the rotate or push icon.
+	check('the tilt icons are four distinct bitmaps with the ring and push',
+		BMP_ICON_UPDOWN ~= BMP_ICON_LEFTRIGHT
+			and BMP_ICON_UPDOWN ~= BMP_ICON_ROTATE and BMP_ICON_UPDOWN ~= BMP_ICON_PUSH
+			and BMP_ICON_LEFTRIGHT ~= BMP_ICON_ROTATE and BMP_ICON_LEFTRIGHT ~= BMP_ICON_PUSH)
+	-- No region id may be drawn by BOTH patch screens. Two screens sharing an id at different
+	-- coordinates would let one screen's memoized tuple stand in for the other's (rule 4) - the icons are
+	-- the easiest place to get this wrong, since both screens draw the same two bitmaps.
+	do
+		local savedDrawn6, savedPending7 = drawn, pendingMessages
+		local function idsDrawnBy(paintFn)
+			drawn, pendingMessages = {}, {}
+			paintFn()
+			local ids = {}
+			for _, m in ipairs(pendingMessages) do ids[m.regionId] = true end
+			return ids
+		end
+		local listIds = idsDrawnBy(paint_list_screen)
+		local zoomIds = idsDrawnBy(paint_zoom_screen)
+		local shared = nil
+		for id in pairs(zoomIds) do
+			if listIds[id] then shared = tostring(id) end
+		end
+		drawn, pendingMessages = savedDrawn6, savedPending7
+		check('the list and zoom screens share no region id (' .. tostring(shared) .. ')', shared == nil)
+	end
 
 	listRows, cursorIndex, scrollOffset = savedRows, savedCursor, savedScroll
 	activeSetIndex, activePatchIndex, displayMode = savedSet, savedPatch, savedMode

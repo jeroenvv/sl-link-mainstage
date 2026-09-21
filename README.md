@@ -46,8 +46,9 @@ The joystick tilts select immediately, no press needed:
 
 At the ends of the concert or setlist a tilt does nothing, rather than reloading the patch already
 playing. No joystick gesture sends a CC any more (40–50 are unused from v3.0.0), and there is no popup —
-the list itself is the feedback. Bottom right, the rotate icon says the ring scrolls; the push icon lights
-while a browsed patch is waiting for the press.
+the screen itself is the feedback. Bottom right of the patch list: ⇕ and ⇔ for the tilts, then the rotate
+icon for the ring, then the push icon, which lights while a browsed patch is waiting for the press. The
+zoom screen carries ⇕ and ⇔ beside its counter.
 
 ## Versioning
 
