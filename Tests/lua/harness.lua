@@ -35,10 +35,6 @@ end
 local configPath = arg[1] or 'MainStageScript/STUDIOLOGIC/SL.device/config.lua'
 dofile(configPath)
 
--- TEMPORARY, REVERT WITH THE PROBE - see CEILING_PROBE in config.lua. The probe hijacks every other
--- timer tick, which is not the behaviour any assertion below is about.
-CEILING_PROBE = false
-
 -- Baseline "a READ reply has landed at least once" state for the rest of the suite. masterVolumeRead
 -- no longer feeds masterVolume at all (see
 -- docs/config-lua-history.md#master-volume-read-reply-does-not-track-writes-2026-09-12), so this is
