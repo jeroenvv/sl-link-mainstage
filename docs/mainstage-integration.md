@@ -315,32 +315,48 @@ to map. This is the same pattern Novation's Launchkey script uses ("Round 5" abo
 recognisable MIDI event and let the user assign it in Layout mode, rather than trying to reach a
 parser the script has no legitimate route into.
 
-### CC map (23 gestures, CC 51–74, skipping 64)
+### CC map (23 gestures, CC 85–89 and 102–119)
 
 Copied from `CC_MAP` in `config.lua`:
 
-| CC | Gesture | | CC | Gesture |
-|---:|:---|---|---:|:---|
-| 51 | `ENC1_PRESS_SHORT` | | 63 | `ENCB_TURN` |
-| 52 | `ENC1_PRESS_LONG` | | *64* | *(skipped — sustain CC)* |
-| 53 | `ENC2_PRESS_SHORT` | | 65 | `ENCB_PRESS_SHORT` |
-| 54 | `ENC2_PRESS_LONG` | | 66 | `ENCB_PRESS_LONG` |
-| 55 | `ENC3_PRESS_SHORT` | | 67 | `SEL1_SHORT` |
-| 56 | `ENC3_PRESS_LONG` | | 68 | `SEL1_LONG` |
-| 57 | `ENC4_PRESS_SHORT` | | 69 | `SEL2_SHORT` |
-| 58 | `ENC4_PRESS_LONG` | | 70 | `SEL2_LONG` |
-| 59 | `ENC1_TURN` | | 71 | `SEL3_SHORT` |
-| 60 | `ENC2_TURN` | | 72 | `SEL3_LONG` |
-| 61 | `ENC3_TURN` | | 73 | `SEL4_SHORT` |
-| 62 | `ENC4_TURN` | | 74 | `SEL4_LONG` |
+| CC | Gesture | Type |
+|---:|:--|:--|
+| 85 | `B Encoder` | Knob |
+| 86–89 | `Zone 1–4 Encoder` | Knob |
+| 102–105 | `Zone 1–4 Select` | Button |
+| 106–109 | `Zone 1–4 Push` | Button |
+| 110 | `B Push` | Button |
+| 111–114 | `Zone 1–4 Select (long)` | Button |
+| 115–118 | `Zone 1–4 Push (long)` | Button |
+| 119 | `B Push (long)` | Button |
 
-`64` is deliberately skipped — it's the conventional sustain-pedal CC, and while nothing else is
-expected to be routed to channel 16, it wasn't worth the ambiguity of using it for something else if
-it ever is.
+The joystick appears nowhere: tilts, press and ring all select patches in the script instead.
 
-**40–50 are unused.** The whole joystick — tilts (40–47), press (48/49) and ring (50) — selects patches
-in-script with Bank Select + Program Change instead. Left as gaps rather than reassigned: renumbering
-would break every learned mapping after them.
+**Why these numbers.** They dodge two things. MainStage keeps its own channel-strip controller table in
+`BaseplateMIDIControllers.plist` — Volume 7, Pan 10, Sends 28–35, **Insert #1–16 Bypass 56–71, Send Mute
+1–8 72–79** — and the MIDI spec defines 64–79 as switches and sound controllers. 85–90 and 102–119 are
+free in both. The earlier 51–74 map sat squarely on the Insert Bypass block.
+
+### Automap
+
+With the SL88 connected, MainStage **assigns a fresh concert's screen controls by itself** from the items
+`controller_info()` declares. It takes them per type, in declaration order:
+
+| Screen control | Gets |
+|:--|:--|
+| Vertical Fader 1 | the first `Knob` |
+| Smart Knob 1–4 | the next four `Knob`s |
+| Button 1–4 | the first four `Button`s |
+
+The stock templates wire Button 1–4 to Prev Set, Next Set, Prev Patch, Next Patch, and map Smart Knob
+1–4 to whatever the loaded patch's Smart Controls are — so the assignments are fixed while the parameters
+follow the patch.
+
+**The declaration order is therefore a default rig, not a formality.** It is ordered deliberately: the B
+encoder first among the turns so it lands on the output fader, then zones 1–4 for Smart Knob 1–4, the
+four zone selects first among the buttons, and every long press last so the automap can never consume
+one. Observed before that ordering (2026-09-21): a *long* press of Zone 1's encoder did "Next Set",
+because CC 52 happened to be next in line.
 
 ### The ring browses, the press selects with Bank Select and Program Change
 

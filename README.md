@@ -47,8 +47,7 @@ The joystick tilts select immediately, no press needed:
 At the ends of the concert or setlist a tilt does nothing, rather than reloading the patch already
 playing.
 
-No joystick gesture sends a CC any more — 40–50 are unused from v3.0.0. The screen is the feedback
-instead: the patch list carries ⇕ ⇔ ↻ ⊙ bottom right (tilts, ring, press — the press icon lights while a
+No joystick gesture sends a CC any more. The screen is the feedback instead: the patch list carries ⇕ ⇔ ↻ ⊙ bottom right (tilts, ring, press — the press icon lights while a
 browsed patch waits), and the zoom screen carries ⇕ ⇔ beside its counter.
 
 ## Versioning
@@ -82,8 +81,9 @@ normal directory from the terminal. Either way, nothing needs to be unpacked by 
 ## Example concert
 
 [`mainstage/Demo.concert`](mainstage/) is a starting-point rig built on MainStage's Keyboard Minimalist
-template. [`mainstage/README.md`](mainstage/README.md) lists every CC to assign and the two attributes
-that drive what the SL88's popup shows.
+template. With the SL88 connected MainStage assigns it automatically — the B encoder to output volume,
+the zone encoders to Smart Knob 1–4, the zone select buttons to patch and set navigation — so it needs
+no MIDI Learn. [`mainstage/README.md`](mainstage/README.md) has the full CC map.
 
 ## Documentation
 

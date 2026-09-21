@@ -8,15 +8,21 @@ layout — the point is the mappings, not the sounds.
 
 ## What is already set up
 
-The template's screen controls — `Smart Knob 1`-`8` and `Button 1`-`4` — are already **mapped** to the
-patch's Smart Controls, so they follow whatever patch is loaded. What they lack is an **assignment**: no
-MIDI message drives them yet. Those are two separate things in MainStage, and only the second one is
-missing.
+**Nothing needs mapping by hand.** With the SL88 connected, MainStage assigns a fresh concert's screen
+controls from the items this device script declares, and the script declares them in an order chosen to
+produce a working rig:
 
-The template's only assignments are on the keyboard object itself: CC 1, 11, 64, 16 and 82 — mod wheel,
-expression, sustain. Nothing conflicts with our channel-16 map.
+| SL88 control | Screen control | What it does |
+|:--|:--|:--|
+| B Encoder | Vertical Fader 1 | Output volume |
+| Zone 1–4 Encoders | Smart Knob 1–4 | The loaded patch's Smart Controls |
+| Zone 1–4 Select | Button 1–4 | Prev Set, Next Set, Prev Patch, Next Patch |
 
-So the work is to assign the CCs below to the controls that already exist, not to build new ones.
+The mappings behind Smart Knob 1–4 follow the patch — Compressor Threshold in one, E-Piano Tremolo in
+another — while the assignment stays put. Long presses are deliberately declared last so the automap
+never consumes one; they are free for you to assign.
+
+The joystick needs no assignment at all: it selects patches in the script.
 
 ## Patch switching
 
@@ -26,39 +32,23 @@ carry **sequential program numbers**: select them in the Patch List, then
 - **Reset Program Numbers** — for a concert of up to 128 patches, or
 - **Set Bank and Program Numbers** — for a larger one. ⚠️ Deletes existing numbering first.
 
-## Assignments
+## The full CC map
 
-Every other SL88 control sends a CC on **channel 16**. In Layout mode, select the screen control, then
-use **MIDI Learn** and move the matching control on the keyboard. The four zone encoders are the obvious
-fit for `Smart Knob 1`-`4`; add screen controls only for what the template does not already have.
+Everything the SL88 sends, on **channel 16**. Anything the automap did not claim is yours to MIDI Learn.
 
-| CC | Control | Screen control |
+| CC | Control | Type |
 |---:|:--|:--|
-| 51 | Zone 1 Push | Button |
-| 52 | Zone 1 Push (long) | Button |
-| 53 | Zone 2 Push | Button |
-| 54 | Zone 2 Push (long) | Button |
-| 55 | Zone 3 Push | Button |
-| 56 | Zone 3 Push (long) | Button |
-| 57 | Zone 4 Push | Button |
-| 58 | Zone 4 Push (long) | Button |
-| 59 | Zone 1 Encoder | Knob |
-| 60 | Zone 2 Encoder | Knob |
-| 61 | Zone 3 Encoder | Knob |
-| 62 | Zone 4 Encoder | Knob |
-| 63 | B Encoder | Knob |
-| 65 | B Push | Button |
-| 66 | B Push (long) | Button |
-| 67 | Zone 1 Select | Button |
-| 68 | Zone 1 Select (long) | Button |
-| 69 | Zone 2 Select | Button |
-| 70 | Zone 2 Select (long) | Button |
-| 71 | Zone 3 Select | Button |
-| 72 | Zone 3 Select (long) | Button |
-| 73 | Zone 4 Select | Button |
-| 74 | Zone 4 Select (long) | Button |
+| 85 | B Encoder | Knob |
+| 86–89 | Zone 1–4 Encoder | Knob |
+| 102–105 | Zone 1–4 Select | Button |
+| 106–109 | Zone 1–4 Push | Button |
+| 110 | B Push | Button |
+| 111–114 | Zone 1–4 Select (long) | Button |
+| 115–118 | Zone 1–4 Push (long) | Button |
+| 119 | B Push (long) | Button |
 
-CC 40-50 are deliberately unused — the joystick drives patch selection in the script instead.
+These numbers avoid MainStage's own channel-strip controllers (Insert Bypass 56–71, Send Mute 72–79) and
+the MIDI spec's defined range, so nothing else claims them.
 
 Two attributes on a mapped control drive what the SL88 shows in its popup:
 

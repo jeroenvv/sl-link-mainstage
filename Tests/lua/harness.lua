@@ -949,16 +949,50 @@ do
 	-- The count is stated in CC_MAP's own comment, controller_info()'s comment, the README and
 	-- docs/mainstage-integration.md's table. It had already drifted (34 vs 31) before this pinned it.
 	check('CC_MAP has 23 gestures (update those four places if this changes)', ccMapCount == 23)
-	local reusedGap = nil
+	-- The map must stay clear of MainStage's OWN channel-strip controller table (Insert Bypass 56-71,
+	-- Send Mute 72-79 in BaseplateMIDIControllers.plist) and of the MIDI spec's defined controllers.
+	-- 85-90 and 102-119 are free in both; nothing may drift back out of them.
+	local function inFreeSpace(n) return (n >= 85 and n <= 90) or (n >= 102 and n <= 119) end
+	local strayCc = nil
 	for key, n in pairs(CC_MAP) do
-		if n >= 40 and n <= 50 then reusedGap = key .. '=' .. n end
+		if not inFreeSpace(n) then strayCc = key .. '=' .. n end
 	end
-	check('CC 40-50 are left unused, not reassigned', reusedGap == nil)
-	local joyItem = nil
+	check('every CC sits in free space (85-90, 102-119) (' .. tostring(strayCc) .. ')', strayCc == nil)
+	local strayItem = nil
 	for _, item in ipairs(generated) do
-		if item.midi[2] >= 40 and item.midi[2] <= 50 then joyItem = item.name end
+		if not inFreeSpace(item.midi[2]) then strayItem = item.name .. '=' .. item.midi[2] end
 	end
-	check('controller_info() declares no item in the 40-50 gap', joyItem == nil)
+	check('controller_info() declares nothing outside free space (' .. tostring(strayItem) .. ')',
+		strayItem == nil)
+
+	-- AUTOMAP ORDER. With the SL88 connected MainStage fills a fresh concert's screen controls from
+	-- these items in declaration order, per type: first Knob -> Vertical Fader 1, next four -> Smart
+	-- Knob 1-4, first four Buttons -> Button 1-4. So this order IS the default rig, and nothing else
+	-- here would notice it changing. See docs/mainstage-integration.md#automap.
+	local knobOrder, buttonOrder = {}, {}
+	for _, item in ipairs(generated) do
+		if item.objectType == 'Knob' then knobOrder[#knobOrder + 1] = item.name
+		elseif item.objectType == 'Button' then buttonOrder[#buttonOrder + 1] = item.name end
+	end
+	check('the B encoder is the first Knob, so it automaps to the output fader',
+		knobOrder[1] == CC_LABEL['ENCB_TURN'])
+	check('...then the four zone encoders in panel order, for Smart Knob 1-4',
+		knobOrder[2] == CC_LABEL['ENC1_TURN'] and knobOrder[3] == CC_LABEL['ENC2_TURN']
+			and knobOrder[4] == CC_LABEL['ENC3_TURN'] and knobOrder[5] == CC_LABEL['ENC4_TURN'])
+	check('the four zone selects are the first Buttons, for Button 1-4',
+		buttonOrder[1] == CC_LABEL['SEL1_SHORT'] and buttonOrder[2] == CC_LABEL['SEL2_SHORT']
+			and buttonOrder[3] == CC_LABEL['SEL3_SHORT'] and buttonOrder[4] == CC_LABEL['SEL4_SHORT'])
+	-- No LONG press may precede a short one, or the automap would consume a long press for an action.
+	local firstLong, lateShort = nil, nil
+	for i, name in ipairs(buttonOrder) do
+		if name:find('%(long%)') then
+			if firstLong == nil then firstLong = i end
+		elseif firstLong ~= nil then
+			lateShort = name
+		end
+	end
+	check('every LONG press comes after every short one (' .. tostring(lateShort) .. ')',
+		lateShort == nil)
 	local tiltsWired = true
 	for _, bid in ipairs({ BID_JOY_UP, BID_JOY_DOWN, BID_JOY_LEFT, BID_JOY_RIGHT }) do
 		if BUTTON_CC[bid] ~= nil or JOYSTICK_NAV[bid] == nil then tiltsWired = false end
@@ -4995,8 +5029,11 @@ do
 
 	-- A turn-only control keeps its number in the SHORT column rather than drifting right.
 	check('a paired row shows both CCs',
-		config_cc_text({ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' }) == '51  52')
-	check('a turn-only row pads the LONG column', config_cc_text({ 'ENC1_TURN' }) == '59   -')
+		config_cc_text({ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' }) == '106  115')
+	-- Both columns pad to three characters, so a two-digit turn lines up under a three-digit press.
+	check('a turn-only row pads the LONG column', config_cc_text({ 'ENC1_TURN' }) == ' 86    -')
+	check('...and both rows are the same width',
+		#config_cc_text({ 'ENC1_TURN' }) == #config_cc_text({ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' }))
 
 	displayMode, configScroll, configPreviousMode, pendingMessages, drawn =
 		savedMode, savedScroll, savedPrev, savedPending, savedDrawn
