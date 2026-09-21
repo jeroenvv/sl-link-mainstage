@@ -3184,6 +3184,7 @@ function handle_joystick_press(pressKind)
 		return
 	end
 	local ordinal = cursor_patch_ordinal()
+	-- -1 because MainStage counts program changes from 1 and MIDI from 0: patch 1 is wire value 0.
 	local bank, pc = math.floor((ordinal - 1) / 128), (ordinal - 1) % 128
 	queue_program(pc, bank)
 	browsePending = false
