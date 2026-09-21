@@ -6,10 +6,28 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
-- feat!: the joystick tilts select patches (up/down by patch, left/right by set, long up/down to the
-  first/last patch) instead of emitting CC 40-47
-- feat: show the tilt icons on both patch screens
-- feat: raise FLUSH_BUDGET to 78, giving 43-character text lines instead of 37
+### BREAKING
+
+- **CC 40-50 are gone.** Every joystick gesture — the four tilts (40-47), the press (48/49) and the
+  ring (50) — now selects patches in the script instead of emitting a CC, so any mapping learned to one
+  of them must be redone and has nothing to remap to. The numbers are left unused rather than
+  reassigned, so every other mapping is unaffected.
+- Patch selection needs the concert's patches to carry **sequential program numbers** — see the README.
+
+### Added
+
+- Turn the ring to browse the patch list, press the joystick to select. Browsing moves the cursor only;
+  an uncommitted browse returns to the playing patch after a few seconds. The press sends Bank Select +
+  Program Change.
+- Joystick tilts select directly: up/down by patch, left/right by set, long up/down to the first/last
+  patch of the concert. At either end a tilt does nothing rather than reloading the playing patch.
+- Navigation icons on both patch screens, white, with the press icon lit while a browse waits.
+- `FLUSH_BUDGET` 72 → 78, so text lines carry 43 characters instead of 37. Hardware-verified.
+
+### Fixed
+
+- No popup on a ring turn — the patch list is the feedback.
+- The list's context bar stays readable: small and blue, after medium overflowed its box.
 
 ## [2.7.0] - 2026-09-20
 
