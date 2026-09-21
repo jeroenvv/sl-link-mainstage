@@ -8,7 +8,15 @@ layout — the point is the mappings, not the sounds.
 
 ## What is already set up
 
-Nothing yet beyond the template. The assignments below have to be made once, in MainStage, and saved.
+The template's screen controls — `Smart Knob 1`-`8` and `Button 1`-`4` — are already **mapped** to the
+patch's Smart Controls, so they follow whatever patch is loaded. What they lack is an **assignment**: no
+MIDI message drives them yet. Those are two separate things in MainStage, and only the second one is
+missing.
+
+The template's only assignments are on the keyboard object itself: CC 1, 11, 64, 16 and 82 — mod wheel,
+expression, sustain. Nothing conflicts with our channel-16 map.
+
+So the work is to assign the CCs below to the controls that already exist, not to build new ones.
 
 ## Patch switching
 
@@ -20,8 +28,9 @@ carry **sequential program numbers**: select them in the Patch List, then
 
 ## Assignments
 
-Every other SL88 control sends a CC on **channel 16**. In Layout mode, add a screen control, then use
-**MIDI Learn** and move the matching control on the keyboard.
+Every other SL88 control sends a CC on **channel 16**. In Layout mode, select the screen control, then
+use **MIDI Learn** and move the matching control on the keyboard. The four zone encoders are the obvious
+fit for `Smart Knob 1`-`4`; add screen controls only for what the template does not already have.
 
 | CC | Control | Screen control |
 |---:|:--|:--|
