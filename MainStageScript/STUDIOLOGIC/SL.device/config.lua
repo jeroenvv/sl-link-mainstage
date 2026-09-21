@@ -675,7 +675,11 @@ FLUSH_BUDGET = 72
 -- ([Write Text, Identification Query]) - the archive's bracket was measured with two Write Texts, a
 -- different shape. The size reached is drawn on the SL88's top line, so the LAST number left on screen is
 -- the largest array MainStage delivers. See ceiling_probe_step().
+-- Armed by the Apply button (panel: CONFIRM), never automatically: during MainStage's concert load the
+-- ticks are irregular, and a probe running through that starves the keepalive and drops the app from the
+-- SL88's list before anyone can watch it. Press again to stop.
 CEILING_PROBE = true
+CEILING_PROBE_BID = 0x0E -- spec's Apply Button; otherwise unhandled, so it costs no real binding
 CEILING_PROBE_FIRST = 78
 CEILING_PROBE_LAST = 110
 
@@ -3124,7 +3128,10 @@ function handle_sl_frame(e)
 		local bid = func
 		local pressKind = e[9]
 		local ccButton = BUTTON_CC[bid]
-		if bid == BID_HOME then
+		if CEILING_PROBE and bid == CEILING_PROBE_BID and pressKind == PRESS_SHORT then
+			-- TEMPORARY, REVERT BEFORE MERGING - see CEILING_PROBE.
+			ceiling_probe_toggle()
+		elseif bid == BID_HOME then
 			handle_home_button(pressKind)
 		elseif bid == BID_GLOBAL then
 			handle_global_button(pressKind)
@@ -3604,7 +3611,7 @@ function controller_timer_trigger()
 
 	-- TEMPORARY, REVERT BEFORE MERGING - see CEILING_PROBE. Every OTHER tick, so the ticks in between
 	-- still flush the queued keepalive; without it the SL88 ages the app out of its list mid-probe.
-	if CEILING_PROBE and not ceilingProbeDone and state == STATE_ACTIVE then
+	if CEILING_PROBE and ceilingProbeArmed and not ceilingProbeDone and state == STATE_ACTIVE then
 		ceilingProbeTurn = not ceilingProbeTurn
 		if ceilingProbeTurn then return ceiling_probe_step() end
 	end
@@ -3625,6 +3632,23 @@ ceilingProbeAwaiting = nil
 ceilingProbeDone = false
 ceilingProbeTurn = false
 ceilingProbeFastNext = false
+ceilingProbeArmed = false
+
+-- Apply button: arm or stop the probe, and say so on the SL88's own top line so the tool is visibly
+-- alive before the numbers start climbing.
+function ceiling_probe_toggle()
+	ceilingProbeArmed = not ceilingProbeArmed
+	ceilingProbeTotal = CEILING_PROBE_FIRST
+	ceilingProbeAwaiting = nil
+	ceilingProbeDone = false
+	ceilingProbeTurn = false
+	local banner = ceilingProbeArmed and ('CEIL PROBE ARMED ' .. CEILING_PROBE_FIRST .. '-' ..
+		CEILING_PROBE_LAST) or 'CEIL PROBE STOPPED'
+	slog('CEILING PROBE: ' .. banner)
+	queue_message(msg_write_text(banner, ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
+		255, 255, 255, 0, 0, 0), 'ctx')
+	request_quick_rearm()
+end
 
 function ceiling_probe_step()
 	if ceilingProbeAwaiting ~= nil then
