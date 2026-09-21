@@ -5564,6 +5564,50 @@ do
 			and ZOOM_NAV_Y + BMP_NAV_ICON_H <= SCREEN_HEIGHT)
 	-- Distinct bitmaps, not the same one twice: up/down is 0x03 and left/right 0x02 in the navigation
 	-- group, and neither is the rotate or push icon.
+	-- COLOUR: every icon whose gesture is available right now is WHITE; only the push icon goes grey, and
+	-- only while nothing is browsed. Decoded from the foreground RGB the message actually carries (bytes
+	-- 16-18 of a Plot Bitmap, halved by append_rgb) rather than compared against the constants, so a
+	-- mis-wired argument order is caught too.
+	do
+		local savedDrawn7, savedPending8 = drawn, pendingMessages
+		local function iconColors(paintFn)
+			drawn, pendingMessages = {}, {}
+			paintFn()
+			local colors = {}
+			for _, m in ipairs(pendingMessages) do
+				if type(m.regionId) == 'string' and m.regionId:lower():find('nav') then
+					colors[m.regionId] = m[16] .. ',' .. m[17] .. ',' .. m[18]
+				end
+			end
+			return colors
+		end
+		local function halved(c) return math.floor(c[1] / 2) .. ',' .. math.floor(c[2] / 2) .. ',' ..
+			math.floor(c[3] / 2) end
+		local white, grey = halved(NAV_ICON_LIT), halved(NAV_ICON_DIM)
+		browsePending = false
+		local listIdle, zoomIdle = iconColors(paint_list_screen), iconColors(paint_zoom_screen)
+		browsePending = true
+		local listBrowsing = iconColors(paint_list_screen)
+		browsePending = false
+		drawn, pendingMessages = savedDrawn7, savedPending8
+
+		check('the lit colour is white', white == '127,127,127')
+		check('...and the dim colour is a neutral grey', grey == '30,30,35')
+		local wrong = nil
+		for id, c in pairs(listIdle) do
+			if id ~= 'navPush' and c ~= white then wrong = id .. '=' .. c end
+		end
+		for id, c in pairs(zoomIdle) do
+			if c ~= white then wrong = id .. '=' .. c end
+		end
+		check('every available-gesture icon is white on both screens (' .. tostring(wrong) .. ')',
+			wrong == nil)
+		check('the push icon is grey while nothing is browsed', listIdle['navPush'] == grey)
+		check('...and white while a browse is pending', listBrowsing['navPush'] == white)
+		check('both screens drew icons at all',
+			next(listIdle) ~= nil and next(zoomIdle) ~= nil)
+	end
+
 	check('the tilt icons are four distinct bitmaps with the ring and push',
 		BMP_ICON_UPDOWN ~= BMP_ICON_LEFTRIGHT
 			and BMP_ICON_UPDOWN ~= BMP_ICON_ROTATE and BMP_ICON_UPDOWN ~= BMP_ICON_PUSH
