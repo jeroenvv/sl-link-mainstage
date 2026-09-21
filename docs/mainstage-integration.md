@@ -315,34 +315,32 @@ to map. This is the same pattern Novation's Launchkey script uses ("Round 5" abo
 recognisable MIDI event and let the user assign it in Layout mode, rather than trying to reach a
 parser the script has no legitimate route into.
 
-### CC map (34 gestures, CC 40–74, skipping 64)
+### CC map (23 gestures, CC 51–74, skipping 64)
 
 Copied from `CC_MAP` in `config.lua`:
 
 | CC | Gesture | | CC | Gesture |
 |---:|:---|---|---:|:---|
-| 40 | `JOY_UP_SHORT` | | 58 | `ENC4_PRESS_LONG` |
-| 41 | `JOY_UP_LONG` | | 59 | `ENC1_TURN` |
-| 42 | `JOY_DOWN_SHORT` | | 60 | `ENC2_TURN` |
-| 43 | `JOY_DOWN_LONG` | | 61 | `ENC3_TURN` |
-| 44 | `JOY_LEFT_SHORT` | | 62 | `ENC4_TURN` |
-| 45 | `JOY_LEFT_LONG` | | 63 | `ENCB_TURN` |
-| 46 | `JOY_RIGHT_SHORT` | | *64* | *(skipped — sustain CC)* |
-| 47 | `JOY_RIGHT_LONG` | | 65 | `ENCB_PRESS_SHORT` |
-| 48 | `JOY_PRESS_SHORT` | | 66 | `ENCB_PRESS_LONG` |
-| 49 | `JOY_PRESS_LONG` | | 67 | `SEL1_SHORT` |
-| 50 | `JOY_ROTATE` | | 68 | `SEL1_LONG` |
-| 51 | `ENC1_PRESS_SHORT` | | 69 | `SEL2_SHORT` |
-| 52 | `ENC1_PRESS_LONG` | | 70 | `SEL2_LONG` |
-| 53 | `ENC2_PRESS_SHORT` | | 71 | `SEL3_SHORT` |
-| 54 | `ENC2_PRESS_LONG` | | 72 | `SEL3_LONG` |
-| 55 | `ENC3_PRESS_SHORT` | | 73 | `SEL4_SHORT` |
-| 56 | `ENC3_PRESS_LONG` | | 74 | `SEL4_LONG` |
-| 57 | `ENC4_PRESS_SHORT` | | | |
+| 51 | `ENC1_PRESS_SHORT` | | 63 | `ENCB_TURN` |
+| 52 | `ENC1_PRESS_LONG` | | *64* | *(skipped — sustain CC)* |
+| 53 | `ENC2_PRESS_SHORT` | | 65 | `ENCB_PRESS_SHORT` |
+| 54 | `ENC2_PRESS_LONG` | | 66 | `ENCB_PRESS_LONG` |
+| 55 | `ENC3_PRESS_SHORT` | | 67 | `SEL1_SHORT` |
+| 56 | `ENC3_PRESS_LONG` | | 68 | `SEL1_LONG` |
+| 57 | `ENC4_PRESS_SHORT` | | 69 | `SEL2_SHORT` |
+| 58 | `ENC4_PRESS_LONG` | | 70 | `SEL2_LONG` |
+| 59 | `ENC1_TURN` | | 71 | `SEL3_SHORT` |
+| 60 | `ENC2_TURN` | | 72 | `SEL3_LONG` |
+| 61 | `ENC3_TURN` | | 73 | `SEL4_SHORT` |
+| 62 | `ENC4_TURN` | | 74 | `SEL4_LONG` |
 
 `64` is deliberately skipped — it's the conventional sustain-pedal CC, and while nothing else is
 expected to be routed to channel 16, it wasn't worth the ambiguity of using it for something else if
 it ever is.
+
+**40–50 are unused.** The whole joystick — tilts (40–47), press (48/49) and ring (50) — selects patches
+in-script with Bank Select + Program Change instead. Left as gaps rather than reassigned: renumbering
+would break every learned mapping after them.
 
 ### The ring browses, the press selects with Bank Select and Program Change
 
@@ -352,6 +350,12 @@ exact, no scaling, no skipped patches, no 128 ceiling), and browse/commit with i
 
 Browsing rather than selecting live is what stops MainStage loading every patch scrolled past. An
 uncommitted browse reverts to the playing patch after `BROWSE_IDLE_TICKS`.
+
+The four **tilts** select in one gesture instead, via the same `commit_cursor_patch()`: up/down step a
+patch, left/right step to the first patch of the neighbouring set, and long up/down jump to the first/last
+patch of the concert (long left/right do what short does). They step from the CURSOR, not the playing
+patch, so a fast double-tilt advances two patches even before MainStage answers the first, and a tilt can
+continue a ring browse. A tilt that cannot move sends nothing rather than re-triggering the playing patch.
 
 Per ring step on `CC_CHANNEL` (16): `CC 0` (Bank MSB), `CC 32` (Bank LSB), then the Program Change. Bank is
 `floor((p-1) / 128)`, 0-based on the wire (MainStage displays bank 1 upward); program is `(p-1) % 128`.

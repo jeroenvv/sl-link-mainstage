@@ -6,6 +6,9 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+- feat!: the joystick tilts select patches (up/down by patch, left/right by set, long up/down to the
+  first/last patch) instead of emitting CC 40-47
+
 ## [2.7.0] - 2026-09-20
 
 - feat: select patches from the joystick ring via Bank Select + Program Change

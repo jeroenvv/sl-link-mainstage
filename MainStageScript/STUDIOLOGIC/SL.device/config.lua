@@ -161,7 +161,7 @@ EID_B = 0x06
 
 -- MARK: - Phase 2 CC dispatch (every SL88 control emits a mappable CC)
 --
--- One dedicated MIDI channel carries every gesture below (34 total, CC 40-74 skipping 64) so
+-- One dedicated MIDI channel carries every gesture below (23 total, CC 51-74 skipping 64) so
 -- MainStage can MIDI-Learn each one directly - no in-script patch-selection logic, which is dead:
 -- MainStage's patchselector parser only runs when controller_midi_in returns falsy, so injected
 -- MIDI (the old Q1a spike's approach) can never reach it. See docs/mainstage-integration.md for the
@@ -170,11 +170,6 @@ CC_CHANNEL = 0x0F -- channel 16; nothing else is expected to be routed here
 CC_STATUS = 0xB0 + CC_CHANNEL -- our CC channel's Control Change status byte - controller_midi_out's filter
 
 CC_MAP = {
-	JOY_UP_SHORT = 40,    JOY_UP_LONG = 41,
-	JOY_DOWN_SHORT = 42,  JOY_DOWN_LONG = 43,
-	JOY_LEFT_SHORT = 44,  JOY_LEFT_LONG = 45,
-	JOY_RIGHT_SHORT = 46, JOY_RIGHT_LONG = 47,
-
 	ENC1_PRESS_SHORT = 51, ENC1_PRESS_LONG = 52,
 	ENC2_PRESS_SHORT = 53, ENC2_PRESS_LONG = 54,
 	ENC3_PRESS_SHORT = 55, ENC3_PRESS_LONG = 56,
@@ -183,9 +178,9 @@ CC_MAP = {
 	ENC1_TURN = 59, ENC2_TURN = 60, ENC3_TURN = 61, ENC4_TURN = 62,
 
 	ENCB_TURN = 63,
-	-- 48, 49 and 50 are unused: 50 was the ring's relative CC and 48/49 the joystick press, all removed
-	-- when the ring became browse-and-commit (Bank Select + Program Change, which is not a CC at all).
-	-- Left as gaps rather than reassigned: renumbering would break every learned mapping below them.
+	-- 40-50 are unused: the whole joystick (tilts 40-47, press 48/49, ring 50) now drives patch
+	-- selection with Bank Select + Program Change, which is not a CC at all. Left as gaps rather than
+	-- reassigned: renumbering would break every learned mapping below them.
 	-- 64 deliberately skipped (sustain CC; harmless on a channel nothing listens to, but not worth the
 	-- ambiguity if it's ever routed anywhere).
 	ENCB_PRESS_SHORT = 65, ENCB_PRESS_LONG = 66,
@@ -199,11 +194,6 @@ CC_MAP = {
 -- Human-readable name per CC_MAP key, for the controller_info() items generated below - shown in
 -- MainStage's Layout mode. One entry per CC_MAP key, no more, no less (asserted by the harness).
 CC_LABEL = {
-	JOY_UP_SHORT = 'Joy Up',       JOY_UP_LONG = 'Joy Up (long)',
-	JOY_DOWN_SHORT = 'Joy Down',   JOY_DOWN_LONG = 'Joy Down (long)',
-	JOY_LEFT_SHORT = 'Joy Left',   JOY_LEFT_LONG = 'Joy Left (long)',
-	JOY_RIGHT_SHORT = 'Joy Right', JOY_RIGHT_LONG = 'Joy Right (long)',
-
 	ENC1_PRESS_SHORT = 'Zone 1 Push', ENC1_PRESS_LONG = 'Zone 1 Push (long)',
 	ENC2_PRESS_SHORT = 'Zone 2 Push', ENC2_PRESS_LONG = 'Zone 2 Push (long)',
 	ENC3_PRESS_SHORT = 'Zone 3 Push', ENC3_PRESS_LONG = 'Zone 3 Push (long)',
@@ -226,12 +216,9 @@ CC_TURN = {
 	ENC1_TURN = true, ENC2_TURN = true, ENC3_TURN = true, ENC4_TURN = true, ENCB_TURN = true,
 }
 
--- BID -> { short, long } CC_MAP keys, for every button wired to a CC.
+-- BID -> { short, long } CC_MAP keys, for every button wired to a CC. The joystick is deliberately
+-- absent: its tilts and press select patches directly (see JOYSTICK_NAV).
 BUTTON_CC = {
-	[BID_JOY_UP]    = { short = 'JOY_UP_SHORT',    long = 'JOY_UP_LONG' },
-	[BID_JOY_DOWN]  = { short = 'JOY_DOWN_SHORT',  long = 'JOY_DOWN_LONG' },
-	[BID_JOY_LEFT]  = { short = 'JOY_LEFT_SHORT',  long = 'JOY_LEFT_LONG' },
-	[BID_JOY_RIGHT] = { short = 'JOY_RIGHT_SHORT', long = 'JOY_RIGHT_LONG' },
 	[BID_ZONE1_SEL] = { short = 'SEL1_SHORT', long = 'SEL1_LONG' },
 	[BID_ZONE2_SEL] = { short = 'SEL2_SHORT', long = 'SEL2_LONG' },
 	[BID_ZONE3_SEL] = { short = 'SEL3_SHORT', long = 'SEL3_LONG' },
@@ -2155,10 +2142,13 @@ function cursor_patch_ordinal()
 end
 
 -- Moves the browse cursor by `delta` PATCHES, skipping set headers - a header is not selectable, so the
--- cursor must never rest on one. Clamps at the first and last patch of the concert.
+-- cursor must never rest on one. Clamps at the first and last patch of the concert. Returns true only if
+-- the cursor actually moved, which is what the joystick tilts use to decide whether to send a Program
+-- Change at all (see handle_joystick_direction).
 function move_browse_cursor(delta)
 	local step = delta > 0 and 1 or -1
 	local remaining = math.abs(delta)
+	local start = cursorIndex
 	local i = cursorIndex
 	while remaining > 0 do
 		local next_i = i + step
@@ -2172,6 +2162,61 @@ function move_browse_cursor(delta)
 	end
 	cursorIndex = i
 	clamp_scroll()
+	return cursorIndex ~= start
+end
+
+-- The 0-based listRows index of the first or last patch in the concert, or nil if there are none.
+function edge_patch_index(last)
+	local found = nil
+	for i = 1, #listRows do
+		if listRows[i].isPatch then
+			found = i - 1
+			if not last then return found end
+		end
+	end
+	return found
+end
+
+-- The first patch of each set, in listRows order: { setIndex, index }, index 0-based. A set with no
+-- patches of its own contributes nothing, so set stepping can never land the cursor on a header.
+function set_entry_points()
+	local starts, seen = {}, {}
+	for i = 1, #listRows do
+		local row = listRows[i]
+		if row.isPatch and not seen[row.setIndex] then
+			seen[row.setIndex] = true
+			starts[#starts + 1] = { setIndex = row.setIndex, index = i - 1 }
+		end
+	end
+	return starts
+end
+
+-- Moves the cursor to the first patch of the set `step` sets away from the cursor's own set, clamped at
+-- the first and last set. From mid-set, step -1 therefore lands on the top of the PREVIOUS set, not the
+-- top of the current one. Returns true only if the cursor moved.
+function move_cursor_by_set(step)
+	local starts = set_entry_points()
+	if #starts == 0 then return false end
+	local row = listRows[cursorIndex + 1]
+	local pos = 1
+	for k = 1, #starts do
+		if row ~= nil and starts[k].setIndex == row.setIndex then pos = k end
+	end
+	local target = pos + step
+	if target < 1 then target = 1 elseif target > #starts then target = #starts end
+	if starts[target].index == cursorIndex then return false end
+	cursorIndex = starts[target].index
+	clamp_scroll()
+	return true
+end
+
+-- Moves the cursor to the first or last patch of the concert. Returns true only if it moved.
+function move_cursor_to_edge(last)
+	local target = edge_patch_index(last)
+	if target == nil or target == cursorIndex then return false end
+	cursorIndex = target
+	clamp_scroll()
+	return true
 end
 
 function concert_patch_count()
@@ -2389,10 +2434,6 @@ CONFIG_COUNT_W = 162
 -- The displayed NAME is not repeated here - it comes from CC_LABEL[short], so there is no third copy
 -- of the names to drift. The harness asserts this covers every CC_MAP key exactly once.
 CONFIG_ROWS = {
-	{ 'JOY_UP_SHORT',    'JOY_UP_LONG' },
-	{ 'JOY_DOWN_SHORT',  'JOY_DOWN_LONG' },
-	{ 'JOY_LEFT_SHORT',  'JOY_LEFT_LONG' },
-	{ 'JOY_RIGHT_SHORT', 'JOY_RIGHT_LONG' },
 	{ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' },
 	{ 'ENC2_PRESS_SHORT', 'ENC2_PRESS_LONG' },
 	{ 'ENC3_PRESS_SHORT', 'ENC3_PRESS_LONG' },
@@ -3041,6 +3082,8 @@ function handle_sl_frame(e)
 			handle_global_button(pressKind)
 		elseif bid == BID_JOY_MAIN then
 			handle_joystick_press(pressKind)
+		elseif JOYSTICK_NAV[bid] ~= nil and (pressKind == PRESS_SHORT or pressKind == PRESS_LONG) then
+			handle_joystick_direction(bid, pressKind)
 		elseif bid == BID_A_ENC then
 			handle_a_encoder_button(pressKind)
 		elseif bid == BID_CANCEL then
@@ -3193,8 +3236,20 @@ function handle_home_button(pressKind)
 	end
 end
 
--- The joystick press commits a browsed patch: Bank Select + Program Change for whatever the cursor is on
--- (see move_browse_cursor). Nothing browsed means nothing to commit - the press is not a patch re-trigger.
+-- Selects whatever patch the cursor is on: Bank Select + Program Change for its ordinal. The single exit
+-- for every in-script patch selection - the joystick press (browse-and-commit) and the joystick tilts
+-- (which move the cursor and commit in one gesture) both end here, so the wire arithmetic lives once.
+function commit_cursor_patch(why)
+	local ordinal = cursor_patch_ordinal()
+	-- -1 because MainStage counts program changes from 1 and MIDI from 0: patch 1 is wire value 0.
+	local bank, pc = math.floor((ordinal - 1) / 128), (ordinal - 1) % 128
+	queue_program(pc, bank)
+	browsePending = false
+	slog('-> BANK ' .. bank .. ' + PROGRAM CHANGE ' .. pc .. ' (' .. why .. ', patch ' .. ordinal .. ')')
+end
+
+-- The joystick press commits a browsed patch (see move_browse_cursor). Nothing browsed means nothing to
+-- commit - the press is not a patch re-trigger.
 -- LONG runs the same action as SHORT, the project rule for LONG_PRESSION (see handle_home_button).
 -- Commit-only: this button's CC (48/49) was removed, so it emits nothing to MainStage but the selection.
 function handle_joystick_press(pressKind)
@@ -3202,12 +3257,36 @@ function handle_joystick_press(pressKind)
 		slog('<- BUTTON joystick press - nothing browsed, ignored')
 		return
 	end
-	local ordinal = cursor_patch_ordinal()
-	-- -1 because MainStage counts program changes from 1 and MIDI from 0: patch 1 is wire value 0.
-	local bank, pc = math.floor((ordinal - 1) / 128), (ordinal - 1) % 128
-	queue_program(pc, bank)
-	browsePending = false
-	slog('-> BANK ' .. bank .. ' + PROGRAM CHANGE ' .. pc .. ' (committing browsed patch ' .. ordinal .. ')')
+	commit_cursor_patch('committing browsed patch')
+end
+
+-- The joystick tilts select patches directly, with no CC of their own: each gesture moves the cursor and
+-- the move is committed immediately. Stepping from the CURSOR rather than the playing patch is what makes
+-- a fast double-tilt advance two patches (the second press sees the first one's cursor, whether or not
+-- MainStage has answered yet) and what lets a tilt continue a ring browse.
+-- LONG absent means LONG does what SHORT does - the project rule for LONG_PRESSION.
+JOYSTICK_NAV = {
+	[BID_JOY_UP]    = { name = 'up',    short = function() return move_browse_cursor(-1) end,
+	                                    long = function() return move_cursor_to_edge(false) end },
+	[BID_JOY_DOWN]  = { name = 'down',  short = function() return move_browse_cursor(1) end,
+	                                    long = function() return move_cursor_to_edge(true) end },
+	[BID_JOY_LEFT]  = { name = 'left',  short = function() return move_cursor_by_set(-1) end },
+	[BID_JOY_RIGHT] = { name = 'right', short = function() return move_cursor_by_set(1) end },
+}
+
+-- Runs one JOYSTICK_NAV gesture. No move means no Program Change: at the ends of the concert or setlist
+-- the gesture is a no-op rather than a re-trigger of the patch already playing, which would reload it.
+function handle_joystick_direction(bid, pressKind)
+	local nav = JOYSTICK_NAV[bid]
+	local isLong = pressKind == PRESS_LONG
+	local move = (isLong and nav.long) or nav.short
+	if not move() then
+		slog('<- JOY ' .. nav.name .. (isLong and ' LONG' or '') .. ' - at the end, nothing sent')
+		return
+	end
+	commit_cursor_patch('joystick ' .. nav.name .. (isLong and ' long' or ''))
+	update_screen()
+	request_quick_rearm()
 end
 
 -- The Global button (panel: SETTINGS) toggles the config screen, restoring whatever it covered. LONG runs the same action as
@@ -3886,8 +3965,8 @@ end
 -- modulation, second stick, sustain - all on LINK, none on CTRL). Ports use the short names for the
 -- same reason outport does; see the banner at the top of this file.
 --
--- The 34 gesture items below are written out literally, one per line, fields in the same order every
--- time, ordered by ascending CC number (40-74) to match CC_MAP - not generated - so they can be
+-- The 23 gesture items below are written out literally, one per line, fields in the same order every
+-- time, ordered by ascending CC number (51-74) to match CC_MAP - not generated - so they can be
 -- compared by eye against CC_MAP/CC_LABEL above. CC_LABEL is still the source of truth for the names;
 -- the harness asserts these literal strings match it.
 function controller_info()
@@ -3908,15 +3987,8 @@ function controller_info()
 		{name='Sustain Pedal', label='Sustain', objectType='Sustain Pedal', midiType='Momentary',
 			midi={0xB0,0x40,MIDI_LSB}, inport='LINK', outport='LINK'},
 
-		-- joystick
-		{name='Joy Up',            objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 40, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Joy Up (long)',     objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 41, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Joy Down',          objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 42, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Joy Down (long)',   objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 43, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Joy Left',          objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 44, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Joy Left (long)',   objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 45, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Joy Right',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 46, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Joy Right (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 47, MIDI_LSB}, inport='LINK', outport='LINK'},
+		-- No joystick items: the whole joystick drives patch selection in-script (see JOYSTICK_NAV),
+		-- so CC 40-50 are unused and there is nothing for MainStage to learn.
 
 		-- zone encoder pushes
 		{name='Zone 1 Push',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 51, MIDI_LSB}, inport='LINK', outport='LINK'},

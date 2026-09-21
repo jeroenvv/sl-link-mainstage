@@ -2995,3 +2995,22 @@ snap-back included.
 SL88's Max Width truncation mangled the line to `Jose..` - the same defect `docs/implementing-sl-link.md`
 records at `SIZE_BIG`, now seen at medium too. `MEDIUM_MAX_CHARS = 36` is therefore unsafe at this width
 and is flagged in the source; `zset` survives only because set names are usually short.
+
+## The joystick tilts select patches (2026-09-21)
+
+The four tilts lost their CCs (40-47) and now select patches directly, through the same
+`commit_cursor_patch()` the press uses: up/down step one patch, left/right step to the first patch of the
+neighbouring set, long up/down jump to the first/last patch of the concert. Long left/right do what short
+does, the project rule for `LONG_PRESSION`. With the press (48/49) and the ring (50) already converted,
+CC 40-50 are now all unused gaps - renumbering would break every learned mapping after them, so the CC map
+starts at 51 and holds 23 gestures.
+
+- They step from the **cursor**, not the playing patch. That is what makes a fast double-tilt advance two
+  patches - the second tilt sees the first one's cursor whether or not MainStage has answered yet - and it
+  lets a tilt commit a ring browse in progress.
+- A tilt that **cannot move** sends nothing. Re-sending the playing patch's own Program Change would make
+  MainStage reload it, which on a live rig cuts the sound.
+- Set stepping uses `set_entry_points()`, which lists only sets that actually contain patches, so a
+  header-only set is never a stop and the cursor can never land on a header.
+- The CC count was already stale in four places (34 stated, 31 actual) before this change; the harness now
+  pins it, since the number appears in two source comments, the README and the integration doc's table.

@@ -110,7 +110,7 @@ Semantic versioning, currently **1.0.0**. Single source of truth is the repo-roo
 `config.lua`'s `SCRIPT_VERSION` must be kept in step with it (the harness asserts this) and is
 stamped into the `controller_initialize` log line so `/tmp/lua.log` shows which build is actually
 loaded. **major** is anything that breaks an existing MIDI-Learn mapping (the CC map in
-`config.lua`) or changes the install layout - the 34 CCs are learned by hand in MainStage, so
+`config.lua`) or changes the install layout - the 23 CCs are learned by hand in MainStage, so
 renumbering one silently breaks a working rig. **minor** is a backwards-compatible feature/screen
 addition; **patch** is fixes/tuning with no mapping or layout change.
 
@@ -131,7 +131,7 @@ convention has no prefixes, which is why the workflow only reads commits since t
 | Section | Responsibility |
 |:---|:---|
 | Protocol constants | Header bytes, item types, function codes, button/encoder/LED ids - kept in sync with the upstream spec and the archived Swift protocol layer. |
-| CC dispatch | `CC_MAP`/`BUTTON_CC`/`ENCODER_CC`: every SL88 control (34 gestures) mapped to a MIDI CC on a dedicated channel, so MainStage can MIDI-Learn each one directly. |
+| CC dispatch | `CC_MAP`/`BUTTON_CC`/`ENCODER_CC`: every SL88 control (23 gestures) mapped to a MIDI CC on a dedicated channel, so MainStage can MIDI-Learn each one directly. |
 | Session state | Module-level state: connection state machine, `instanceID`/retry bookkeeping, `timerPending`/`timerArmedInterval`, `displayFlushReady`, encoder/display caches. |
 | Outbound plumbing | `queue_message`/`flush_pending`: the single byte-budgeted, one-message-per-flush send path every outbound message goes through. |
 | CC queue/emit | Coalesces and drains queued CC messages within the same flush budget as display traffic. |
