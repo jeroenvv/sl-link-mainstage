@@ -1372,6 +1372,10 @@ BIG_MAX_CHARS = 27
 -- Same idea, for SIZE_MEDIUM text (only zset uses this - znext draws SIZE_SMALL with a trusted Max
 -- Width instead, needing no character-count truncation). Also eye-calibrated; retune the same way
 -- as BIG_MAX_CHARS.
+-- WARNING, unverified and probably too high: 35 characters at SIZE_MEDIUM overflowed a 304px box on
+-- hardware (2026-09-21) and the device's own truncation mangled it to 'Jose..' - so anything near 36 is
+-- unsafe at this width. zset survives only because set names are usually short. Measure with
+-- Scripts/probe-text-metrics.swift before relying on it.
 MEDIUM_MAX_CHARS = 36
 
 -- truncate_text() cuts zname/zset to exactly these character counts before they are drawn, even
@@ -2229,8 +2233,12 @@ function draw_ctx()
 	-- Blue, not grey: this line is structure rather than a patch, the same distinction ROW_COLORS draws
 	-- between a set header and a patch row. Taken from ROW_COLORS[ROW_HEADER] so the convention lives in
 	-- one place; amber stays reserved for the ACTIVE patch and the lit navigation icon.
+	--
+	-- SIZE_SMALL, not MEDIUM: at medium this line's 35 characters overflowed the 304px box and the SL88's
+	-- own Max Width truncation mangled it to 'Jose..' (hardware, 2026-09-21). Concert plus set name only
+	-- fits at small. The sacrificial duplicate must match size AND colour - see queue_sacrificial_redraw.
 	local c = ROW_COLORS[ROW_HEADER]
-	draw_text('ctx', ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_MEDIUM,
+	draw_text('ctx', ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
 		c[1], c[2], c[3], 0, 0, 0)
 end
 
@@ -2578,7 +2586,7 @@ function queue_sacrificial_redraw()
 	else
 		-- Size AND colour must match draw_ctx() byte for byte - see the note there.
 		local c = ROW_COLORS[ROW_HEADER]
-		queue_message(msg_write_text(ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_MEDIUM,
+		queue_message(msg_write_text(ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
 			c[1], c[2], c[3], 0, 0, 0))
 	end
 end
