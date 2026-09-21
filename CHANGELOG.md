@@ -24,6 +24,8 @@ All notable changes to this project are documented in this file. The format foll
   patch of the concert. At either end a tilt does nothing rather than reloading the playing patch.
 - Navigation icons on both patch screens, white, with the press icon lit while a browse waits.
 - `FLUSH_BUDGET` 72 → 78, so text lines carry 43 characters instead of 37. Hardware-verified.
+- `mainstage/Demo.concert`, an example rig on MainStage's Keyboard Minimalist template, with a README
+  listing every CC to assign.
 
 ### Fixed
 
