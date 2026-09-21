@@ -24,8 +24,10 @@ MainStage's stdout — turn it back off afterward, since it measurably slows Mai
 
 ## Setting up patch switching from the joystick ring
 
-The joystick's rotary ring selects patches by sending Bank Select + Program Change, so the concert's
-patches need **sequential** numbers. Assign them from the Patch List:
+**Turn the ring to browse the patch list, press the joystick to select.** Browsing moves the cursor only
+— MainStage loads nothing until you press, and an unpressed browse returns to the playing patch after a
+few seconds. The press sends Bank Select + Program Change, so the concert's patches need **sequential**
+numbers. Assign them from the Patch List:
 
 - **Reset Program Numbers** — program change numbers only. Enough for a concert of up to 128 patches.
 - **Set Bank and Program Numbers** — assigns banks too, so a larger concert stays addressable.
@@ -35,7 +37,9 @@ That is the only step verified as necessary (MainStage 4.3.1, 133-patch concert)
 nothing, check **Concert Settings → Attributes**: *Program Changes Device* must admit this device and
 *Program Changes Channel* must admit channel 16 — both plausible gates, neither isolated in testing.
 
-The ring sends nothing else: no CC, and no popup, since the patch list is already the feedback.
+Neither gesture sends a CC any more (48, 49 and 50 are unused from v3.0.0), and there is no popup — the
+list itself is the feedback. Bottom right, the rotate icon says the ring scrolls; the push icon lights
+while a browsed patch is waiting for the press.
 
 ## Versioning
 

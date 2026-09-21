@@ -2972,3 +2972,26 @@ the generic CC path (which would have logged `(unhandled)` on every tick once it
 absence rather than trusting it: no `CC_MAP`/`CC_LABEL`/`CC_TURN` entry, no `ENCODER_CC` wiring, and CC 50
 not reassigned to anything else. Mutation-checked by re-adding the ring to `ENCODER_CC`, by pointing
 another control at CC 50, and by removing the ring's branch so it falls back to the CC path.
+
+## Browse with the ring, commit with the press (2026-09-21)
+
+The ring moves `cursorIndex` and nothing else; the joystick press injects Bank Select + Program Change for
+the browsed patch. Replaces live selection, which loaded every patch scrolled past. Confirmed on hardware,
+snap-back included.
+
+- The **cursor is the browse target** - `ringPatchTarget` and its helpers are gone. `cursorIndex` already
+  re-syncs from the active patch in `controller_select_patch`, so a commit or an external change keeps it
+  in step for free.
+- It **steps over set headers**: a header is not selectable, so the cursor never rests on one.
+- `browsePending` also arms the ~1s tick (`rearm_timer`), which is what lets `check_browse_revert()` snap
+  back after `BROWSE_IDLE_TICKS` rather than a multiple of `KEEPALIVE_MS`.
+- The press is **commit-only**: its CC (48/49) went the way of the ring's CC 50. All three are left unused
+  rather than reassigned.
+- The bottom list row is narrowed (`ROW_LAST_MAXW`) to carve a gutter for the rotate and push icons, since
+  with 8 rows there is no space below them. The push icon changes **colour**, not presence, so the region
+  never needs erasing.
+
+**The context bar is SIZE_SMALL, not medium.** At medium its 35 characters overflowed the 304px box and the
+SL88's Max Width truncation mangled the line to `Jose..` - the same defect `docs/implementing-sl-link.md`
+records at `SIZE_BIG`, now seen at medium too. `MEDIUM_MAX_CHARS = 36` is therefore unsafe at this width
+and is flagged in the source; `zset` survives only because set names are usually short.
