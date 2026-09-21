@@ -675,10 +675,12 @@ FLUSH_BUDGET = 72
 -- ([Write Text, Identification Query]) - the archive's bracket was measured with two Write Texts, a
 -- different shape. The size reached is drawn on the SL88's top line, so the LAST number left on screen is
 -- the largest array MainStage delivers. See ceiling_probe_step().
--- Armed by a LONG press on the Global button (panel: SETTINGS), never automatically: during MainStage's concert load the
--- ticks are irregular, and a probe running through that starves the keepalive and drops the app from the
--- SL88's list before anyone can watch it. Press again to stop.
+-- Armed by the Apply button (panel: CONFIRM) pressed AGAIN once the app is already running - never
+-- automatically: during MainStage's concert load the ticks are irregular, and a probe running through
+-- that starves the keepalive and drops the app from the SL88's list before anyone can watch it. Press
+-- again to stop. The trigger is matched without the usual id check - see controller_midi_in.
 CEILING_PROBE = true
+CEILING_PROBE_BID = 0x0E -- spec's Apply Button, the one CONFIRM sends
 CEILING_PROBE_FIRST = 78
 CEILING_PROBE_LAST = 110
 
@@ -3348,13 +3350,6 @@ end
 -- dismiss_popup() first: that would be a second full Clear-Screen repaint for a screen nobody sees.
 -- configScroll deliberately survives a dismiss, so re-opening returns to the same page.
 function handle_global_button(pressKind)
-	-- TEMPORARY, REVERT BEFORE MERGING - see CEILING_PROBE. A LONG press arms/stops the probe. The Apply
-	-- button would have been the natural trigger, but hardware sends no frame for it at all (2026-09-21);
-	-- this button is confirmed to report both press kinds.
-	if CEILING_PROBE and pressKind == PRESS_LONG then
-		ceiling_probe_toggle()
-		return
-	end
 	if displayMode == 'config' then
 		local back = configPreviousMode or 'list'
 		configPreviousMode = nil
@@ -3637,7 +3632,7 @@ ceilingProbeTurn = false
 ceilingProbeFastNext = false
 ceilingProbeArmed = false
 
--- Long SETTINGS press: arm or stop the probe, and say so on the SL88's own top line so the tool is visibly
+-- Apply press: arm or stop the probe, and say so on the SL88's own top line so the tool is visibly
 -- alive before the numbers start climbing.
 function ceiling_probe_toggle()
 	ceilingProbeArmed = not ceilingProbeArmed
@@ -3829,6 +3824,21 @@ function controller_midi_in(midiEvent, portName)
 
 	if midiEvent[0] == 0xF0 then
 		slog('<- SYSEX on port=' .. tostring(portName) .. ': ' .. dump_event(midiEvent))
+	end
+
+	-- TEMPORARY, REVERT BEFORE MERGING - see CEILING_PROBE. Matched BEFORE is_our_sl_frame and with NO
+	-- id check: button frames have been seen arriving addressed to (00 1F) rather than our own
+	-- (SL_HOST_ID, instanceID), and those are dropped by that filter without ever reaching a handler.
+	-- Whatever the addressing turns out to mean, the probe's arm/stop press must not be lost to it.
+	if CEILING_PROBE and midiEvent[0] == 0xF0
+		and midiEvent[1] == 0x00 and midiEvent[2] == 0x20 and midiEvent[3] == 0x1A
+		and midiEvent[4] == 0x16
+		and midiEvent[7] == IT_BUTTON and midiEvent[8] == CEILING_PROBE_BID
+		and midiEvent[9] == PRESS_SHORT then
+		slog('CEILING PROBE: trigger frame ' .. dump_event(midiEvent))
+		ceiling_probe_toggle()
+		rearm_timer()
+		return { midi = {} }
 	end
 
 	if is_our_sl_frame(midiEvent) then
