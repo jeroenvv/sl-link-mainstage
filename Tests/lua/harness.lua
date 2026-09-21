@@ -2902,6 +2902,23 @@ do
 	currentConcert = 'Test Concert'
 	displayMode = 'popup'
 
+	-- Expectations derived from the REAL draws rather than hardcoded: the invariant is that the sacrificial
+	-- duplicate matches what the screen itself emits for that region, so repeating the arguments here just
+	-- hides the next drift (enlarging the ctx bar to SIZE_MEDIUM broke exactly this assertion, which is the
+	-- point). hex() ignores the regionId field, so a memoized draw and a regionId-less duplicate compare
+	-- equal when their bytes match.
+	local function realDrawBytes(paintFn, regionId)
+		local savedDrawn3, savedPending4 = drawn, pendingMessages
+		drawn, pendingMessages = {}, {}
+		paintFn()
+		local found = nil
+		for _, m in ipairs(pendingMessages) do
+			if m.regionId == regionId then found = hex(m) end
+		end
+		drawn, pendingMessages = savedDrawn3, savedPending4
+		return found
+	end
+
 	-- (a) Popup covering the zoom screen: the duplicate must be the zoom concert line, byte-for-byte.
 	popupPreviousMode = 'zoom'
 	pendingMessages = {}
@@ -2911,7 +2928,7 @@ do
 		checkHex(
 			'popup-over-zoom sacrificial redraw matches the zoom duplicate, not the list one',
 			pendingMessages[1],
-			hex(msg_write_text(currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0))
+			realDrawBytes(paint_zoom_screen, 'zcnc')
 		)
 	end
 
@@ -2924,7 +2941,7 @@ do
 		checkHex(
 			'popup-over-list sacrificial redraw matches the LIST duplicate, not the zoom one',
 			pendingMessages[1],
-			hex(msg_write_text(ctx_text(), ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL, 120, 120, 120, 0, 0, 0))
+			realDrawBytes(paint_list_screen, 'ctx')
 		)
 	end
 
@@ -2938,7 +2955,7 @@ do
 		checkHex(
 			'popup with unset popupPreviousMode falls back to the zoom duplicate',
 			pendingMessages[1],
-			hex(msg_write_text(currentConcert, 8, 12, 304, ALIGN_CENTER, SIZE_SMALL, 120, 120, 120, 0, 0, 0))
+			realDrawBytes(paint_zoom_screen, 'zcnc')
 		)
 	end
 
@@ -5302,6 +5319,24 @@ do
 	check('the bottom row stops short of the icon gutter',
 		ROW_X + ROW_LAST_MAXW <= NAV_RING_X)
 	check('only the bottom row is narrowed', ROW_LAST_MAXW < ROW_MAXW)
+
+	-- The ctx bar is SIZE_MEDIUM now, so it must still clear the first row. Size and y are decoded from the
+	-- emitted bytes (y at 12/13, size at 17) so this tracks whatever draw_ctx actually uses rather than a
+	-- constant repeated here.
+	do
+		local savedDrawn4, savedPending5 = drawn, pendingMessages
+		drawn, pendingMessages, listRows, scrollOffset = {}, {}, concert(10), 0
+		paint_list_screen()
+		local ctxY, ctxSize
+		for _, m in ipairs(pendingMessages) do
+			if m.regionId == 'ctx' then ctxY, ctxSize = m[12] * 128 + m[13], m[17] end
+		end
+		local heights = { [SIZE_SMALL] = TEXT_H_SMALL, [SIZE_MEDIUM] = TEXT_H_MEDIUM, [SIZE_BIG] = TEXT_H_BIG }
+		check('the ctx bar is drawn', ctxY ~= nil)
+		check('the ctx bar clears the first list row',
+			ctxY ~= nil and ctxY + heights[ctxSize] <= ROW_Y0)
+		drawn, pendingMessages = savedDrawn4, savedPending5
+	end
 	-- ...and the rows above it keep the full width, which is the point of carving only the last one.
 	local fullWidthRows, narrowRows = 0, 0
 	do
