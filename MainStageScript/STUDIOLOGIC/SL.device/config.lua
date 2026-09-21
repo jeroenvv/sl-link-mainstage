@@ -1340,8 +1340,10 @@ NAV_UPDOWN_X = 214
 NAV_LEFTRIGHT_X = 240
 NAV_RING_X = 266
 NAV_PUSH_X = 292
+-- White for an available gesture, grey for the push icon while nothing is browsed. Amber was tried on
+-- hardware and swapped for white (2026-09-21); amber now means ONLY the active patch.
 NAV_ICON_DIM = { 60, 60, 70 }
-NAV_ICON_LIT = { 255, 170, 40 }
+NAV_ICON_LIT = { 255, 255, 255 }
 
 -- The same tilt pair on the zoom screen, level with the n/N counter. The counter's box is narrowed
 -- SYMMETRICALLY about the screen centre (ZOOM_POS_X + ZOOM_POS_W / 2 == SCREEN_WIDTH / 2) so its digits
@@ -2291,7 +2293,7 @@ function draw_ctx()
 	-- one and leaves the bottom of the glyphs behind.
 	-- Blue, not grey: this line is structure rather than a patch, the same distinction ROW_COLORS draws
 	-- between a set header and a patch row. Taken from ROW_COLORS[ROW_HEADER] so the convention lives in
-	-- one place; amber stays reserved for the ACTIVE patch and the lit navigation icon.
+	-- one place; amber stays reserved for the ACTIVE patch alone (the navigation icons are white).
 	--
 	-- SIZE_SMALL, not MEDIUM: at medium this line's 35 characters overflowed the 304px box and the SL88's
 	-- own Max Width truncation mangled it to 'Jose..' (hardware, 2026-09-21). Concert plus set name only

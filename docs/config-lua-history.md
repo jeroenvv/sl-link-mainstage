@@ -3028,6 +3028,9 @@ up/down (`0x03`) and left/right (`0x02`) bitmaps. Layout agreed with Jeroen befo
   narrowing from x=8 would have shifted them left, since the device centres within the box.
 - The ring and press icons stay **off** the zoom screen: a ring turn there switches to the list before it
   browses, so no browse can ever be pending on that screen.
+- Icons are WHITE, not amber - Jeroen's call after seeing the amber version on hardware. Amber therefore
+  now marks only the active patch. The push icon keeps its grey/white distinction, the one piece of state
+  any icon carries.
 - Region ids are per screen (`navUpDown` vs `zNavUpDown`). The same id at two positions would let one
   screen's memoized tuple stand in for the other's; the harness now asserts the two screens share no
   region id at all.
