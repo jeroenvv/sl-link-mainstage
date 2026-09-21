@@ -670,20 +670,6 @@ end
 -- to gain from running close. See docs/config-lua-history.md#the-mainstage-byte-ceiling.
 FLUSH_BUDGET = 72
 
--- TEMPORARY, REVERT BEFORE MERGING (this script ships no debug toggles). Walks the returned array from
--- CEILING_PROBE_FIRST bytes upward, one size every other tick, in the shape flush_pending actually uses
--- ([Write Text, Identification Query]) - the archive's bracket was measured with two Write Texts, a
--- different shape. The size reached is drawn on the SL88's top line, so the LAST number left on screen is
--- the largest array MainStage delivers. See ceiling_probe_step().
--- Arms itself once the session has been ACTIVE and QUIET for CEILING_PROBE_ARM_IDLE_TICKS, not from a
--- button: every screen button tried turned out to act on the SL88 itself (Apply forwards its frame AND
--- exits the app; a long Global press behaved the same way), and starting at load time instead starves
--- the keepalive while MainStage's ticks are irregular, dropping the app before anyone can watch.
-CEILING_PROBE = true
-CEILING_PROBE_ARM_IDLE_TICKS = 10 -- ~30s of quiet after login, at KEEPALIVE_MS
-CEILING_PROBE_FIRST = 78
-CEILING_PROBE_LAST = 110
-
 -- Write Text's fixed wire overhead before the string itself: header+ids (7) + itemType+func (2) +
 -- x/y/maxWidth (6) + align+size (2) + fg rgb (3) + bg rgb (3) + 0x00 terminator (1) + F7 (1) = 25.
 WRITE_TEXT_OVERHEAD = 25
@@ -1205,9 +1191,7 @@ function msg_clear_screen(r, g, b)
 	return m
 end
 
--- `cap` overrides TEXT_STRING_CAP for one call; only the byte-ceiling probe passes it, since the whole
--- point there is to build a message BIGGER than the current budget allows.
-function msg_write_text(text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, bb, cap)
+function msg_write_text(text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, bb)
 	local m = sl_header()
 	table.insert(m, IT_DISPLAY)
 	table.insert(m, DISP_WRITE_TEXT)
@@ -1218,14 +1202,13 @@ function msg_write_text(text, x, y, maxWidth, align, size, fr, fg, fb, br, bg, b
 	table.insert(m, size)
 	append_rgb(m, fr, fg, fb)
 	append_rgb(m, br, bg, bb)
-	local limit = cap or TEXT_STRING_CAP
-	if text ~= nil and #text > limit then
+	if text ~= nil and #text > TEXT_STRING_CAP then
 		slog('msg_write_text: clamping "' .. text .. '" (' .. #text ..
-			' chars) to ' .. limit .. ' chars - transport limit (see' ..
+			' chars) to ' .. TEXT_STRING_CAP .. ' chars - transport limit (see' ..
 			' TEXT_STRING_CAP), not a visual-truncation change; Max Width still' ..
 			' does its own "..." truncation on screen.')
 	end
-	append_text(m, text, limit)
+	append_text(m, text, TEXT_STRING_CAP)
 	table.insert(m, SL_END)
 	return m
 end
@@ -3045,12 +3028,6 @@ function handle_sl_frame(e)
 			-- both recovery watchdogs (ACTIVE_QUERY_DROP_MS/_FRAMES) watch for.
 			activeMsSinceQueryReply = 0
 			framesSinceQueryReply = 0
-			-- TEMPORARY, REVERT BEFORE MERGING - see CEILING_PROBE. This reply is the proof that the
-			-- array carrying it was delivered whole, so the trial that sent it is confirmed.
-			if ceilingProbeAwaiting ~= nil then
-				slog('CEILING PROBE: total=' .. ceilingProbeAwaiting .. ' CONFIRMED')
-				ceilingProbeAwaiting = nil
-			end
 			-- The reply to our own keepalive query. Receiving it is what re-arms the timer, but its result
 			-- byte is also the most reliable session signal we get - far more dependable than waiting for a
 			-- LOGIN CONFIRMATION, which the keyboard only sends on a *fresh* login and skips entirely if it
@@ -3606,84 +3583,7 @@ function controller_timer_trigger()
 	-- inbound event, which re-arms the timer and schedules the next tick - a self-sustaining
 	-- request/response heartbeat that does not depend on anyone playing. flush_pending appends the
 	-- query itself and reserves budget for it.
-
-	-- TEMPORARY, REVERT BEFORE MERGING - see CEILING_PROBE. Every OTHER tick, so the ticks in between
-	-- still flush the queued keepalive; without it the SL88 ages the app out of its list mid-probe.
-	if CEILING_PROBE and not ceilingProbeDone and state == STATE_ACTIVE then
-		if not ceilingProbeArmed and idleTicks >= CEILING_PROBE_ARM_IDLE_TICKS then
-			ceiling_probe_toggle()
-		end
-		if ceilingProbeArmed then
-			ceilingProbeTurn = not ceilingProbeTurn
-			if ceilingProbeTurn then return ceiling_probe_step() end
-		end
-	end
-
 	return flush_pending(true)
-end
-
--- TEMPORARY, REVERT BEFORE MERGING - see CEILING_PROBE.
---
--- One trial per call: build [Write Text of exactly the right length, Identification Query] totalling
--- ceilingProbeTotal bytes and return it INSTEAD of flush_pending's output, so the ordinary budget check
--- is bypassed. The query is the detector - if MainStage delivers the array the SL88 replies, and that
--- reply is also the only thing keeping the session clock running, so a dropped array stalls the probe
--- exactly where the ceiling is. Do not touch the keyboard while it runs: other inbound MIDI would re-arm
--- the clock and make a dropped trial look confirmed.
-ceilingProbeTotal = CEILING_PROBE_FIRST
-ceilingProbeAwaiting = nil
-ceilingProbeDone = false
-ceilingProbeTurn = false
-ceilingProbeFastNext = false
-ceilingProbeArmed = false
-
--- Arm the probe, and say so on the SL88's own top line so the tool is visibly
--- alive before the numbers start climbing.
-function ceiling_probe_toggle()
-	ceilingProbeArmed = not ceilingProbeArmed
-	ceilingProbeTotal = CEILING_PROBE_FIRST
-	ceilingProbeAwaiting = nil
-	ceilingProbeDone = false
-	ceilingProbeTurn = false
-	local banner = ceilingProbeArmed and ('CEIL PROBE ARMED ' .. CEILING_PROBE_FIRST .. '-' ..
-		CEILING_PROBE_LAST) or 'CEIL PROBE STOPPED'
-	slog('CEILING PROBE: ' .. banner)
-	queue_message(msg_write_text(banner, ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
-		255, 255, 255, 0, 0, 0), 'ctx')
-	request_quick_rearm()
-end
-
-function ceiling_probe_step()
-	if ceilingProbeAwaiting ~= nil then
-		-- The previous trial never drew a reply: that array never left MainStage.
-		ceilingProbeDone = true
-		local verdict = 'CEILING = ' .. (ceilingProbeAwaiting - 1) .. ' (' .. ceilingProbeAwaiting ..
-			' lost)'
-		slog('CEILING PROBE: ' .. verdict)
-		queue_message(msg_write_text(verdict, ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
-			255, 255, 255, 0, 0, 0), 'ctx')
-		return flush_pending(true)
-	end
-
-	local query = msg_identification_query()
-	local total = ceilingProbeTotal
-	local label = 'CEIL ' .. total .. ' '
-	local textLen = total - #query - WRITE_TEXT_OVERHEAD
-	local text = label .. string.rep('.', math.max(0, textLen - #label))
-	local m = msg_write_text(text, ROW_X, 2, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
-		255, 255, 255, 0, 0, 0, textLen)
-
-	local out = {}
-	for i = 1, #m do out[#out + 1] = m[i] end
-	for i = 1, #query do out[#out + 1] = query[i] end
-	slog('CEILING PROBE: trying total=' .. #out .. ' (intended ' .. total ..
-		', text ' .. #text .. ' chars)')
-
-	ceilingProbeAwaiting = total
-	ceilingProbeFastNext = true -- bring the keepalive tick forward; see rearm_timer
-	ceilingProbeTotal = total + 1
-	if ceilingProbeTotal > CEILING_PROBE_LAST then ceilingProbeDone = true end
-	return { midi = out }
 end
 
 function dump_event(e)
@@ -3771,14 +3671,7 @@ function rearm_timer()
 		framesSinceTick = 0
 		watchdogDiagLastFrames = 0
 	end
-	-- TEMPORARY, REVERT BEFORE MERGING - see CEILING_PROBE. The tick right after a probe carries the
-	-- keepalive, and it has to land inside the SL88's ~5s app-list timeout: at the ordinary 3s cadence
-	-- the probe's own tick pushes it to ~6s and the entry ages out mid-run.
-	if ceilingProbeFastNext then
-		ceilingProbeFastNext = false
-		settriggertimer(FLUSH_SOON_MS)
-		timerArmedInterval = FLUSH_SOON_MS
-	elseif state == STATE_LOGGED_OUT then
+	if state == STATE_LOGGED_OUT then
 		-- Pin the tick at KEEPALIVE_MS regardless of has_pending()/popupActive, so LOGOUT_SILENT_TICKS
 		-- maps to real seconds instead of whatever pace queued traffic would otherwise pick.
 		settriggertimer(KEEPALIVE_MS)
