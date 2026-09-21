@@ -455,7 +455,7 @@ becomes the clock.
 
 ## 6. There is a byte ceiling on what a callback may return
 
-Measured between **78 and 87 bytes**, and exceeding it discards the **entire returned array** — not
+**80 bytes deliver, 96 do not**, and exceeding the ceiling discards the **entire returned array** — not
 just the overflow, and with no error. Symptoms are baffling: a burst of drawing commands where
 seemingly arbitrary ones never take effect.
 
@@ -570,7 +570,7 @@ Techniques worth stealing:
 - [ ] `controller_info` returns `model`, `manufacturer`, `items`
 - [ ] Generic matching unless you have a specific reason to use USB IDs
 - [ ] `outport` uses the **short** port name — confirm it against `controller_midi_in`'s `portName`
-- [ ] One message per return; stay well under ~78 bytes
+- [ ] One message per return; 80 bytes is measured good, 96 is not
 - [ ] Timer re-armed from `controller_midi_in`, never from `controller_timer_trigger`
 - [ ] Periodic work has a real clock source (inbound traffic you provoke, if necessary)
 - [ ] `controller_midi_in` returns `nil` for musical MIDI

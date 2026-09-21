@@ -384,7 +384,7 @@ any documentation and cost a great deal to discover.
   — only from `controller_midi_in`. So a script has no free-running clock. Workaround: have every
   flush carry an Identification Query; its reply arrives at `controller_midi_in` and schedules the next
   tick. That request/response chain becomes your clock.
-- **There is a byte ceiling on a returned array** — measured between 78 and 87 bytes, and exceeding it
+- **There is a byte ceiling on a returned array** — 80 bytes deliver, 96 do not, and exceeding it
   discards the **whole** array, not the overflow. Send one message per flush.
 - **`io` does not exist** in the sandbox (`attempt to index global 'io'`), so no file-based side
   channel. Wrap any attempt in `pcall`.

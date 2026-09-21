@@ -90,11 +90,40 @@ off-tick (inbound-frame flushes in `controller_midi_in`, `controller_select_patc
 
 ### The MainStage byte ceiling
 
-Measured on hardware: a returned array of 78 bytes renders; one of 87 bytes renders **nothing at all**
+Measured on hardware: a returned array of 78 bytes renders; one of 96 bytes renders **nothing at all**
 — the whole array is discarded, not truncated. The SL Link spec itself has no such limit (Write Text is
 `S(1)...S(N)` for arbitrary N; Max Width truncates visually in pixels), so this is purely a MainStage
-transport constraint. `FLUSH_BUDGET` (72) sits comfortably below the known-good 78, since the exact
-ceiling is only bracketed to `[78, 87)` and there's nothing to gain from running close to it.
+transport constraint.
+
+2026-09-21 measured the same thing in the shape `flush_pending` actually uses (`[display, query]`, where
+the original table used two Write Texts): **78, 79 and 80 bytes all delivered**. `FLUSH_BUDGET` is
+therefore **78**, raised from the 72 that had been a guess below the known-good value. It buys six
+characters on every text line (`TEXT_STRING_CAP` 37 → 43).
+
+Earlier revisions of this section, and three other documents, stated the bracket as `[78, 87)`. That was
+wrong: the table it derives from tested 96, not 87. The number is corrected here and in
+`docs/implementing-sl-link.md` and `docs/mainstage-device-scripts.md`.
+
+The exact ceiling is still unknown, and one attempt to pin it was abandoned — see below.
+
+### Why the byte-ceiling probe was abandoned (2026-09-21)
+
+A temporary probe walked the returned array upward one byte per trial, in the real flush shape, using the
+Identification Query riding inside each trial as the detector: if the array arrives the SL88 replies, and
+that reply is also what keeps the session clock running.
+
+It could not be trusted, because **it destabilised the session it was measuring**. One run confirmed 78,
+79 and 80 and then stalled; a later run sent the identical 78-byte array into a session that had been
+healthy for 46 ticks with every query answered, and the session died on that first trial. A dropped array
+and a dropped app produce exactly the same signature — silence — so the probe cannot tell them apart.
+
+Two hardware facts fell out of the attempt regardless:
+
+- **The Apply button (panel: CONFIRM) sends `01 0E 01` to the host AND exits the app on the SL88.** It
+  cannot be used as a host-side binding; the keyboard acts on it locally at the same time.
+- **Some button frames arrive addressed to `(00 1F)` instead of `(SL_HOST_ID, instanceID)`** and are
+  discarded by `is_our_sl_frame` before any handler sees them — observed for Global short and long, and
+  for Cancel. This is the most likely reason the Cancel button has never been confirmed on hardware.
 
 ### `FLUSH_SOON_MS` retuning and the sweep plan
 
