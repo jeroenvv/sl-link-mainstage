@@ -5297,8 +5297,28 @@ do
 	check('...and injects nothing', pendingProgram == nil)
 
 	-- GEOMETRY: 7 rows must clear the icon strip, and the icons must not overlap each other.
-	check('the list rows clear the navigation icons',
-		ROW_Y0 + ROW_PITCH * (ROW_COUNT - 1) + TEXT_H_SMALL <= NAV_ICON_Y)
+	-- With 8 rows the bottom one shares the icons' band vertically, so separation is HORIZONTAL: the
+	-- bottom row stops short of the gutter the icons own.
+	check('the bottom row stops short of the icon gutter',
+		ROW_X + ROW_LAST_MAXW <= NAV_RING_X)
+	check('only the bottom row is narrowed', ROW_LAST_MAXW < ROW_MAXW)
+	-- ...and the rows above it keep the full width, which is the point of carving only the last one.
+	local fullWidthRows, narrowRows = 0, 0
+	do
+		local savedDrawn2, savedPending3 = drawn, pendingMessages
+		drawn, pendingMessages, listRows, scrollOffset = {}, {}, concert(20), 0
+		paint_list_screen()
+		for _, m in ipairs(pendingMessages) do
+			if type(m.regionId) == 'string' and m.regionId:match('^row%d$') then
+				local w = m[14] * 128 + m[15]
+				if w == ROW_MAXW then fullWidthRows = fullWidthRows + 1 end
+				if w == ROW_LAST_MAXW then narrowRows = narrowRows + 1 end
+			end
+		end
+		drawn, pendingMessages = savedDrawn2, savedPending3
+	end
+	check('exactly one row is narrowed for the gutter', narrowRows == 1)
+	check('...and the rest span the full width', fullWidthRows == ROW_COUNT - 1)
 	check('the navigation icons do not overlap',
 		NAV_RING_X + BMP_NAV_ICON_W <= NAV_PUSH_X)
 	check('the navigation icons fit on screen',

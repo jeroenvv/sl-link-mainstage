@@ -1329,18 +1329,22 @@ SCREEN_HEIGHT = 240
 TEXT_X = 8
 TEXT_MAXW = SCREEN_WIDTH - (2 * TEXT_X)
 
--- 7, not 8: the eighth row reached y=230 and left no room for the navigation icons below (see
--- NAV_ICON_Y). Pitch is unchanged - Jeroen chose the row over the tighter spacing.
-ROW_COUNT = 7
+ROW_COUNT = 8
 ROW_Y0 = 30
 ROW_PITCH = 26
 ROW_X = 8
 ROW_MAXW = 304
 
+-- The BOTTOM row is narrower than the rest, carving a right-hand gutter for the navigation icons: with 8
+-- rows the last one occupies y=212-230, so the icons cannot go below it and sit beside it instead. Only
+-- row ROW_COUNT-1 is shortened, so the seven rows above keep the full width for patch names - see
+-- draw_list_row(). The active-patch highlight is therefore narrower on the bottom row than elsewhere.
+ROW_LAST_MAXW = 248
+
 -- Navigation icons, bottom right of the list screen: the rotate icon says the ring scrolls, and the push
--- icon lights when a browsed patch is waiting to be committed. Below the last row (204) and inside the
--- screen (234). Colour, not presence, carries the state - same region id and pixels either way, so
--- nothing needs erasing and no stale layer is possible (rule 4).
+-- icon lights when a browsed patch is waiting to be committed. They own the gutter ROW_LAST_MAXW leaves,
+-- so nothing else draws those pixels (rule 4). Colour, not presence, carries the state - same region id
+-- and pixels either way, so nothing needs erasing.
 NAV_ICON_Y = 214
 NAV_RING_X = 264
 NAV_PUSH_X = 290
@@ -2079,10 +2083,12 @@ end
 function draw_list_row(i, row, isCursor)
 	local y = ROW_Y0 + ROW_PITCH * i
 	local id = 'row' .. i
+	-- The bottom row stops short of the navigation icons' gutter; every other row spans the full width.
+	local maxw = (i == ROW_COUNT - 1) and ROW_LAST_MAXW or ROW_MAXW
 
 	if row == nil then
 		local c = ROW_COLORS[ROW_PATCH]
-		draw_text(id, '', ROW_X, y, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL, c[1], c[2], c[3], c[4], c[5], c[6])
+		draw_text(id, '', ROW_X, y, maxw, ALIGN_LEFT, SIZE_SMALL, c[1], c[2], c[3], c[4], c[5], c[6])
 		return
 	end
 
@@ -2094,7 +2100,7 @@ function draw_list_row(i, row, isCursor)
 	local c = ROW_COLORS[state]
 	local marker = isCursor and '> ' or '  '
 	local indent = row.isPatch and '  ' or ''
-	draw_text(id, marker .. indent .. row.label, ROW_X, y, ROW_MAXW, ALIGN_LEFT, SIZE_SMALL,
+	draw_text(id, marker .. indent .. row.label, ROW_X, y, maxw, ALIGN_LEFT, SIZE_SMALL,
 		c[1], c[2], c[3], c[4], c[5], c[6])
 end
 
