@@ -174,7 +174,6 @@ CC_MAP = {
 	JOY_DOWN_SHORT = 42,  JOY_DOWN_LONG = 43,
 	JOY_LEFT_SHORT = 44,  JOY_LEFT_LONG = 45,
 	JOY_RIGHT_SHORT = 46, JOY_RIGHT_LONG = 47,
-	JOY_PRESS_SHORT = 48, JOY_PRESS_LONG = 49,
 
 	ENC1_PRESS_SHORT = 51, ENC1_PRESS_LONG = 52,
 	ENC2_PRESS_SHORT = 53, ENC2_PRESS_LONG = 54,
@@ -184,9 +183,9 @@ CC_MAP = {
 	ENC1_TURN = 59, ENC2_TURN = 60, ENC3_TURN = 61, ENC4_TURN = 62,
 
 	ENCB_TURN = 63,
-	-- 50 was the ring's relative CC, removed when the ring became patch-selection-only (Bank Select +
-	-- Program Change, which is not a CC at all). Left unused rather than reassigned: renumbering the map
-	-- would break every learned mapping below it.
+	-- 48, 49 and 50 are unused: 50 was the ring's relative CC and 48/49 the joystick press, all removed
+	-- when the ring became browse-and-commit (Bank Select + Program Change, which is not a CC at all).
+	-- Left as gaps rather than reassigned: renumbering would break every learned mapping below them.
 	-- 64 deliberately skipped (sustain CC; harmless on a channel nothing listens to, but not worth the
 	-- ambiguity if it's ever routed anywhere).
 	ENCB_PRESS_SHORT = 65, ENCB_PRESS_LONG = 66,
@@ -204,7 +203,6 @@ CC_LABEL = {
 	JOY_DOWN_SHORT = 'Joy Down',   JOY_DOWN_LONG = 'Joy Down (long)',
 	JOY_LEFT_SHORT = 'Joy Left',   JOY_LEFT_LONG = 'Joy Left (long)',
 	JOY_RIGHT_SHORT = 'Joy Right', JOY_RIGHT_LONG = 'Joy Right (long)',
-	JOY_PRESS_SHORT = 'Joy Press', JOY_PRESS_LONG = 'Joy Press (long)',
 
 	ENC1_PRESS_SHORT = 'Zone 1 Push', ENC1_PRESS_LONG = 'Zone 1 Push (long)',
 	ENC2_PRESS_SHORT = 'Zone 2 Push', ENC2_PRESS_LONG = 'Zone 2 Push (long)',
@@ -234,7 +232,6 @@ BUTTON_CC = {
 	[BID_JOY_DOWN]  = { short = 'JOY_DOWN_SHORT',  long = 'JOY_DOWN_LONG' },
 	[BID_JOY_LEFT]  = { short = 'JOY_LEFT_SHORT',  long = 'JOY_LEFT_LONG' },
 	[BID_JOY_RIGHT] = { short = 'JOY_RIGHT_SHORT', long = 'JOY_RIGHT_LONG' },
-	[BID_JOY_MAIN]  = { short = 'JOY_PRESS_SHORT', long = 'JOY_PRESS_LONG' },
 	[BID_ZONE1_SEL] = { short = 'SEL1_SHORT', long = 'SEL1_LONG' },
 	[BID_ZONE2_SEL] = { short = 'SEL2_SHORT', long = 'SEL2_LONG' },
 	[BID_ZONE3_SEL] = { short = 'SEL3_SHORT', long = 'SEL3_LONG' },
@@ -308,6 +305,7 @@ BMP_ICON_H = 54
 -- 0x05 push, 0x06 apply, 0x07 cancel.
 BMP_GROUP_NAV = 0x03
 BMP_ICON_ROTATE = 0x04
+BMP_ICON_PUSH = 0x05
 BMP_NAV_ICON_W = 20
 BMP_NAV_ICON_H = 20
 
@@ -633,6 +631,12 @@ patchName = ''
 -- patch (joystick navigation); Phase 1 has no wired input for that, so controller_select_patch
 -- simply keeps it tracking whatever MainStage just loaded - see find_active_row_index().
 cursorIndex = 0
+
+-- BROWSE: the ring moves cursorIndex on its own, without changing patch - the joystick press commits it
+-- (see handle_joystick_press). browsePending says a browsed patch is waiting; it also brings the tick
+-- forward to POPUP_TICK_MS so check_browse_revert() can put the cursor back after a few seconds.
+browsePending = false
+browseLastActivityIdleTick = 0
 scrollOffset = 0
 
 -- The flat, interleaved patchlist, normalised: { label, isPatch, setIndex, patchIndex }, in the
@@ -1325,11 +1329,23 @@ SCREEN_HEIGHT = 240
 TEXT_X = 8
 TEXT_MAXW = SCREEN_WIDTH - (2 * TEXT_X)
 
-ROW_COUNT = 8
+-- 7, not 8: the eighth row reached y=230 and left no room for the navigation icons below (see
+-- NAV_ICON_Y). Pitch is unchanged - Jeroen chose the row over the tighter spacing.
+ROW_COUNT = 7
 ROW_Y0 = 30
 ROW_PITCH = 26
 ROW_X = 8
 ROW_MAXW = 304
+
+-- Navigation icons, bottom right of the list screen: the rotate icon says the ring scrolls, and the push
+-- icon lights when a browsed patch is waiting to be committed. Below the last row (204) and inside the
+-- screen (234). Colour, not presence, carries the state - same region id and pixels either way, so
+-- nothing needs erasing and no stale layer is possible (rule 4).
+NAV_ICON_Y = 214
+NAV_RING_X = 264
+NAV_PUSH_X = 290
+NAV_ICON_DIM = { 60, 60, 70 }
+NAV_ICON_LIT = { 255, 170, 40 }
 
 -- Max Width TRUNCATION is UNRELIABLE at SIZE_BIG - confirmed on hardware: a long patch name at
 -- maxWidth=304 rendered as a single letter followed by '...'. So the zoom screen's patch name is
@@ -1730,7 +1746,7 @@ end
 ENCODER_MUTE_BUTTON = {
 	[EID_ZONE1] = BID_ZONE1_ENC, [EID_ZONE2] = BID_ZONE2_ENC,
 	[EID_ZONE3] = BID_ZONE3_ENC, [EID_ZONE4] = BID_ZONE4_ENC,
-	[EID_JOYSTICK] = BID_JOY_MAIN, [EID_B] = BID_B_ENC,
+	[EID_B] = BID_B_ENC,
 }
 
 -- Ring LED id for an encoder's mute state - only A and B have a ring LED (WLID_A_ENC/WLID_B_ENC);
@@ -2011,6 +2027,11 @@ end
 -- 6 in the banner fixes. See docs/config-lua-history.md#popup-dismiss-doubled-to-2s-2026-09-10.
 POPUP_DISMISS_IDLE_TICKS = 2
 
+-- Idle ticks before an uncommitted browse puts the cursor back on the playing patch. Same units as
+-- POPUP_DISMISS_IDLE_TICKS - browsePending also arms the ~1s tick, so 4 is roughly 4s. A screen left
+-- pointing at a patch you did not select is a hazard on stage.
+BROWSE_IDLE_TICKS = 4
+
 -- Popup is a full-screen mode, so dismissal is just switching BACK to whatever mode was active
 -- before it took over - reusing set_display_mode's own proven double-Clear-Screen/
 -- drop_queued_display/invalidate_all/sacrificial-redraw sequence. popupActive is cleared BEFORE
@@ -2019,6 +2040,18 @@ POPUP_DISMISS_IDLE_TICKS = 2
 function dismiss_popup()
 	popupActive = false
 	set_display_mode(popupPreviousMode)
+end
+
+-- Puts an uncommitted browse back on the playing patch, once the ring has been still for
+-- BROWSE_IDLE_TICKS. Called from the tick beside check_popup_dismiss().
+function check_browse_revert()
+	if not browsePending then return end
+	if (idleTicks - browseLastActivityIdleTick) < BROWSE_IDLE_TICKS then return end
+	browsePending = false
+	cursorIndex = find_active_row_index()
+	clamp_scroll()
+	slog('browse reverted to the playing patch (cursor=' .. cursorIndex .. ')')
+	update_screen()
 end
 
 -- Called once per timer tick (controller_timer_trigger), after idleTicks is updated for this tick.
@@ -2098,26 +2131,37 @@ function queue_program(pc, bank)
 	pendingBank = bank
 end
 
--- Bank and program bytes for the ring's current target patch.
-function ring_patch_program()
-	local p = ringPatchTarget
-	return math.floor((p - 1) / 128), (p - 1) % 128
-end
-
--- The ACTIVE patch's ordinal among ALL patches in the concert, skipping set headers - which is what
--- 'Jump to Patch' indexes, unlike find_active_row_index()'s position in the flat interleaved list.
-function active_patch_ordinal()
+-- The cursor's ordinal among all patches in the concert - what a commit sends. Counts patches only, since
+-- listRows interleaves set headers and a program change indexes patches.
+function cursor_patch_ordinal()
 	local n = 0
 	for i = 1, #listRows do
-		local row = listRows[i]
-		if row.isPatch then
+		if listRows[i].isPatch then
 			n = n + 1
-			if row.setIndex == activeSetIndex and row.patchIndex == activePatchIndex then
-				return n
-			end
+			if i - 1 == cursorIndex then return n end
 		end
 	end
 	return 1
+end
+
+-- Moves the browse cursor by `delta` PATCHES, skipping set headers - a header is not selectable, so the
+-- cursor must never rest on one. Clamps at the first and last patch of the concert.
+function move_browse_cursor(delta)
+	local step = delta > 0 and 1 or -1
+	local remaining = math.abs(delta)
+	local i = cursorIndex
+	while remaining > 0 do
+		local next_i = i + step
+		-- Walk past headers rather than counting them as steps.
+		while listRows[next_i + 1] ~= nil and not listRows[next_i + 1].isPatch do
+			next_i = next_i + step
+		end
+		if listRows[next_i + 1] == nil then break end -- at an end: stop, do not wrap
+		i = next_i
+		remaining = remaining - 1
+	end
+	cursorIndex = i
+	clamp_scroll()
 end
 
 function concert_patch_count()
@@ -2126,22 +2170,6 @@ function concert_patch_count()
 		if listRows[i].isPatch then n = n + 1 end
 	end
 	return n
-end
-
--- Where the ring is currently pointing, as a patch ordinal (1-based over patches). Re-synced from the
--- active patch on every patch change, so the ring never drifts from what MainStage actually selected -
--- whether that came from the ring itself, a direction button, or MainStage.
-ringPatchTarget = 1
-
--- Moves the target by a ring delta and returns the CC value to send. Clamps to the concert's own ends and
--- to what a CC can carry; raw delta, no acceleration curve of our own (the hardware is already
--- speed-sensitive - see docs/implementing-sl-link.md section 6).
-function move_ring_patch_target(delta)
-	local count = concert_patch_count()
-	local v = ringPatchTarget + delta
-	if v < 1 then v = 1 end
-	if count > 0 and v > count then v = count end
-	ringPatchTarget = v
 end
 
 -- The ACTIVE patch's 1-based ordinal position among patches in its OWN set (activeSetIndex), and
@@ -2203,6 +2231,14 @@ end
 -- added here.
 function paint_list_screen()
 	draw_ctx()
+	-- Bottom right: the rotate icon says the ring scrolls this list; the push icon lights while a browsed
+	-- patch is waiting for the joystick press. See NAV_ICON_Y.
+	local dim, lit = NAV_ICON_DIM, NAV_ICON_LIT
+	draw_bitmap('navRing', NAV_RING_X, NAV_ICON_Y, BMP_GROUP_NAV, BMP_ICON_ROTATE,
+		lit[1], lit[2], lit[3], 0, 0, 0)
+	local pushColor = browsePending and lit or dim
+	draw_bitmap('navPush', NAV_PUSH_X, NAV_ICON_Y, BMP_GROUP_NAV, BMP_ICON_PUSH,
+		pushColor[1], pushColor[2], pushColor[3], 0, 0, 0)
 	for i = 0, ROW_COUNT - 1 do
 		local row = listRows[scrollOffset + i + 1]
 		local isCursor = (scrollOffset + i == cursorIndex)
@@ -2334,7 +2370,6 @@ CONFIG_ROWS = {
 	{ 'JOY_DOWN_SHORT',  'JOY_DOWN_LONG' },
 	{ 'JOY_LEFT_SHORT',  'JOY_LEFT_LONG' },
 	{ 'JOY_RIGHT_SHORT', 'JOY_RIGHT_LONG' },
-	{ 'JOY_PRESS_SHORT', 'JOY_PRESS_LONG' },
 	{ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' },
 	{ 'ENC2_PRESS_SHORT', 'ENC2_PRESS_LONG' },
 	{ 'ENC3_PRESS_SHORT', 'ENC3_PRESS_LONG' },
@@ -2979,6 +3014,8 @@ function handle_sl_frame(e)
 			handle_home_button(pressKind)
 		elseif bid == BID_GLOBAL then
 			handle_global_button(pressKind)
+		elseif bid == BID_JOY_MAIN then
+			handle_joystick_press(pressKind)
 		elseif bid == BID_A_ENC then
 			handle_a_encoder_button(pressKind)
 		elseif bid == BID_CANCEL then
@@ -3036,14 +3073,17 @@ function handle_sl_frame(e)
 			end
 			slog('<- ENCODER joystick delta=' .. tostring(delta) .. ' - config scroll=' .. configScroll)
 		elseif eid == EID_JOYSTICK then
-			-- The ring selects patches and emits NOTHING else: Bank Select + Program Change only. It used
-			-- to also send a relative CC (JOY_ROTATE, CC 50), removed once patch selection worked - the
-			-- patch list is the feedback, so there is nothing for a CC or a popup to add here. CC 50 is
-			-- now unused, like 64. See docs/config-lua-history.md#the-ring-sends-only-patch-selection.
-			move_ring_patch_target(delta)
-			local bank, pc = ring_patch_program()
-			queue_program(pc, bank)
-			slog('-> BANK ' .. bank .. ' + PROGRAM CHANGE ' .. pc .. ' (patch ' .. ringPatchTarget .. ')')
+			-- The ring BROWSES: it moves the cursor and changes no patch. The joystick press commits (see
+			-- handle_joystick_press), which is what keeps MainStage from loading every patch scrolled past.
+			-- Emits no CC either - CC 50 was removed once patch selection worked.
+			-- A turn on the zoom screen switches to the list first, so the gesture is not wasted.
+			if displayMode ~= 'list' then set_display_mode('list') end
+			move_browse_cursor(delta)
+			browsePending = true
+			browseLastActivityIdleTick = idleTicks
+			update_screen()
+			request_quick_rearm()
+			slog('<- RING browse -> cursor=' .. cursorIndex .. ' (patch ' .. cursor_patch_ordinal() .. ')')
 		else
 			local control = ENCODER_CC[eid]
 			if control ~= nil then
@@ -3126,6 +3166,22 @@ function handle_home_button(pressKind)
 		slog('<- BUTTON home SHORT - toggling display mode -> ' .. newMode)
 		set_display_mode(newMode)
 	end
+end
+
+-- The joystick press commits a browsed patch: Bank Select + Program Change for whatever the cursor is on
+-- (see move_browse_cursor). Nothing browsed means nothing to commit - the press is not a patch re-trigger.
+-- LONG runs the same action as SHORT, the project rule for LONG_PRESSION (see handle_home_button).
+-- Commit-only: this button's CC (48/49) was removed, so it emits nothing to MainStage but the selection.
+function handle_joystick_press(pressKind)
+	if not browsePending then
+		slog('<- BUTTON joystick press - nothing browsed, ignored')
+		return
+	end
+	local ordinal = cursor_patch_ordinal()
+	local bank, pc = math.floor((ordinal - 1) / 128), (ordinal - 1) % 128
+	queue_program(pc, bank)
+	browsePending = false
+	slog('-> BANK ' .. bank .. ' + PROGRAM CHANGE ' .. pc .. ' (committing browsed patch ' .. ordinal .. ')')
 end
 
 -- The Global button (panel: SETTINGS) toggles the config screen, restoring whatever it covered. LONG runs the same action as
@@ -3289,6 +3345,7 @@ function controller_timer_trigger()
 	local draining = has_pending()
 	if not draining then idleTicks = idleTicks + 1 end
 	check_popup_dismiss()
+	check_browse_revert()
 	check_mvol_settle()
 	-- Drain a throttle-withheld popupValue redraw once it's due (see POPUP_VALUE_THROTTLE_TICKS) -
 	-- this is what guarantees a settled value is never left stale.
@@ -3487,8 +3544,9 @@ function rearm_timer()
 	elseif has_pending() then
 		settriggertimer(FLUSH_SOON_MS) -- still draining a repaint; come back soon
 		timerArmedInterval = FLUSH_SOON_MS
-	elseif popupActive then
-		-- While the popup is showing and nothing is draining, arm the ~1s popup tick instead of the ~3s
+	elseif popupActive or browsePending then
+		-- While the popup is showing OR a browse is waiting to revert, and nothing is draining, arm the ~1s
+		-- popup tick instead of the ~3s
 		-- keepalive tick, so POPUP_DISMISS_IDLE_TICKS (an idleTicks count, not a literal duration)
 		-- actually dismisses after ~1s. Only reached once has_pending() is false, so this never delays
 		-- the popup's own draw burst - only the idle wait afterward, before dismissal.
@@ -3761,9 +3819,6 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 	-- Phase 1 has no independent browsing/cursor input yet (deferred to Phase 2's joystick handling) -
 	-- the cursor simply tracks the active patch's position in the flat list.
 	cursorIndex = find_active_row_index()
-	-- Keep the ring's patch target on whatever is actually selected, however it got there - otherwise the
-	-- next ring turn jumps from a stale position (see move_ring_patch_target).
-	ringPatchTarget = active_patch_ordinal()
 
 	-- currentConcert/setName logged alongside the existing fields so a blank concert line on the SL88
 	-- screen can be told apart from a draw failure.
@@ -3836,8 +3891,6 @@ function controller_info()
 		{name='Joy Left (long)',   objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 45, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Joy Right',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 46, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Joy Right (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 47, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Joy Press',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 48, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Joy Press (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 49, MIDI_LSB}, inport='LINK', outport='LINK'},
 
 		-- zone encoder pushes
 		{name='Zone 1 Push',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 51, MIDI_LSB}, inport='LINK', outport='LINK'},

@@ -5190,19 +5190,19 @@ do
 		savedDrawn, savedPending, savedName, savedCc, savedFeedback
 end
 
--- MARK: - 87. The ring selects patches: Bank Select + Program Change injection
+-- MARK: - 87. Browse with the ring, commit with the press
 --
--- Confirmed on hardware 2026-09-20 (MainStage 4.3.1): injecting a Bank Select pair followed by a Program
--- Change selects a patch EXACTLY - no scaling, no skipped patches - and banks lift the 128 ceiling. The
--- earlier absolute-CC approach is gone; see
--- docs/mainstage-integration.md#the-ring-selects-patches-with-bank-select-and-program-change.
+-- The ring moves the cursor only - no patch change, no CC - and the joystick press injects Bank Select +
+-- Program Change for the browsed patch. An uncommitted browse reverts to the playing patch after
+-- BROWSE_IDLE_TICKS. See docs/config-lua-history.md#browse-with-the-ring-commit-with-the-press.
 do
-	local savedRows, savedTarget, savedSet, savedPatch, savedMode =
-		listRows, ringPatchTarget, activeSetIndex, activePatchIndex, displayMode
+	local savedRows, savedCursor, savedScroll = listRows, cursorIndex, scrollOffset
+	local savedSet, savedPatch, savedMode = activeSetIndex, activePatchIndex, displayMode
 	local savedCC, savedDelta, savedOrder = pendingCC, pendingDelta, pendingCCOrder
 	local savedProgram, savedBank = pendingProgram, pendingBank
+	local savedBrowse, savedBrowseTick = browsePending, browseLastActivityIdleTick
 
-	-- A concert with set headers interleaved: the ordinal counts patches, not rows.
+	-- Headers interleaved, as MainStage's own list has them: P1 P2 P3 then a header then P4...
 	local function concert(patchCount)
 		local rows = { { label = 'Set A', isPatch = false, setIndex = 0 } }
 		for i = 1, patchCount do
@@ -5216,99 +5216,118 @@ do
 		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_JOYSTICK,
 			0x40 + delta, 0xF7)
 	end
+	local function press(kind)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, BID_JOY_MAIN,
+			kind, 0xF7)
+	end
 
-	displayMode, listRows = 'list', concert(10)
-	check('the concert patch count skips set headers', concert_patch_count() == 10)
+	displayMode, listRows, scrollOffset = 'list', concert(10), 0
+	activeSetIndex, activePatchIndex = 0, 0
 
-	-- The target moves by the delta and the injection carries ITS bank and program.
-	ringPatchTarget, pendingCC, pendingDelta, pendingCCOrder = 1, {}, {}, {}
-	pendingProgram, pendingBank = nil, nil
+	-- BROWSING changes the cursor and NOTHING else.
+	cursorIndex, browsePending = 1, false
+	pendingCC, pendingDelta, pendingCCOrder, pendingProgram, pendingBank = {}, {}, {}, nil, nil
 	handle_sl_frame(ring(2))
-	check('a ring turn moves the patch target', ringPatchTarget == 3)
-	check('...and queues that patch as a program change', pendingProgram == 2)
-	check('...in bank 0 for the first 128 patches', pendingBank == 0)
+	check('a ring turn moves the browse cursor', cursorIndex == 3)
+	check('...and marks a browse pending', browsePending == true)
+	check('...and changes no patch', pendingProgram == nil and pendingBank == nil)
+	check('...and emits no CC', next(pendingCC) == nil and next(pendingDelta) == nil)
 
-	-- The injected bytes: Bank MSB, Bank LSB, then the PC - the order Apple's guidance requires, since
-	-- MainStage latches the bank and acts on the program change.
-	local out = flush_pending_cc()
-	local bytes = out ~= nil and out.midi or {}
-	local tail = {}
-	for i = math.max(1, #bytes - 7), #bytes do tail[#tail + 1] = bytes[i] end
-	check('the injection ends with Bank MSB, Bank LSB, then Program Change',
-		hex(tail) == string.format('%02X 00 00 %02X 20 00 %02X 02',
-			0xB0 + CC_CHANNEL, 0xB0 + CC_CHANNEL, 0xC0 + CC_CHANNEL))
-	check('the pending program is consumed by the flush', pendingProgram == nil)
-	check('the pending bank is consumed by the flush', pendingBank == nil)
-
-	-- NOTHING but the patch selection goes out: the ring's old relative CC was removed once patch
-	-- selection worked, so a turn injects bank + program and no CC at all.
-	ringPatchTarget, pendingCC, pendingDelta, pendingCCOrder = 1, {}, {}, {}
+	-- The cursor never rests on a set header. In this stub the rows are, 0-based: 0 'Set A', 1 P1, 2 P2,
+	-- 3 P3, 4 'Set B', 5 P4 ... so browsing from index 3 must step OVER index 4 and land on P4. Browsing
+	-- from anywhere earlier would pass even without skipping, which is what an earlier version of this
+	-- assertion did.
+	cursorIndex = 3 -- P3, the row immediately before the 'Set B' header
 	handle_sl_frame(ring(1))
-	check('the ring emits no CC alongside the patch selection',
-		next(pendingDelta) == nil and next(pendingCC) == nil)
-	check('...only the program change', pendingProgram == 1)
+	check('the cursor skips set headers', listRows[cursorIndex + 1].isPatch == true)
+	check('...landing on the patch beyond it', listRows[cursorIndex + 1].label == 'P4')
 
-	-- Past 128 patches the bank advances instead of the program wrapping silently: patch 129 is bank 1,
-	-- program 0. This is what lifts the 128-patch ceiling, and it was verified across the boundary.
-	listRows = concert(200)
-	ringPatchTarget, pendingCC, pendingDelta, pendingCCOrder = 128, {}, {}, {}
-	pendingProgram, pendingBank = nil, nil
-	handle_sl_frame(ring(1))
-	check('patch 129 crosses into bank 1', pendingBank == 1)
-	check('...with the program wrapping to 0', pendingProgram == 0)
-	ringPatchTarget = 128
-	pendingProgram, pendingBank = nil, nil
-	handle_sl_frame(ring(0 - 1))
-	check('patch 127 stays in bank 0', pendingBank == 0 and pendingProgram == 126)
-
-	-- Clamps at the concert's own ends.
-	listRows = concert(10)
-	ringPatchTarget, pendingProgram = 2, nil
+	-- Clamps at the concert's ends rather than wrapping.
+	cursorIndex = 1
 	handle_sl_frame(ring(-8))
-	check('scrolling back past the first patch clamps there', ringPatchTarget == 1)
-	check('...and selects program 0', pendingProgram == 0)
-	ringPatchTarget, pendingProgram = 9, nil
-	handle_sl_frame(ring(8))
-	check('scrolling past the last patch clamps at the count', ringPatchTarget == 10)
-	check('...and selects that patch', pendingProgram == 9)
+	check('browsing back past the first patch clamps there',
+		listRows[cursorIndex + 1].label == 'P1')
+	handle_sl_frame(ring(40))
+	check('browsing past the last patch clamps there', listRows[cursorIndex + 1].label == 'P10')
 
-	-- In config mode the ring scrolls that screen and injects NOTHING.
-	displayMode = 'config'
-	ringPatchTarget, pendingProgram, pendingBank = 1, nil, nil
-	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
-	handle_sl_frame(ring(2))
-	check('the ring injects no program change while the config screen shows', pendingProgram == nil)
-	check('...and does not move the patch target either', ringPatchTarget == 1)
+	-- THE PRESS commits the browsed patch: P10 is the tenth patch, so program 9 in bank 0.
+	pendingProgram, pendingBank = nil, nil
+	handle_sl_frame(press(PRESS_SHORT))
+	check('the press commits the browsed patch', pendingProgram == 9 and pendingBank == 0)
+	check('...and clears the pending browse', browsePending == false)
+	check('...and emits no CC of its own', next(pendingCC) == nil and next(pendingDelta) == nil)
 
-	-- NO popup for the ring: the patch list is the feedback, and a popup would cover it. A zone encoder
-	-- still pops up, so this is a ring-specific suppression rather than the popup being broken.
-	displayMode, listRows = 'list', concert(10)
-	local savedPopupActive, savedPopupEid = popupActive, popupEid
-	popupActive, popupEid, midiOutFeedback = false, nil, {}
+	-- A press with nothing browsed is not a patch re-trigger.
+	pendingProgram, pendingBank = nil, nil
+	handle_sl_frame(press(PRESS_SHORT))
+	check('a press with nothing browsed injects nothing', pendingProgram == nil)
+
+	-- LONG does the same as SHORT rather than being dropped.
+	cursorIndex, browsePending, pendingProgram = 1, true, nil
+	handle_sl_frame(press(PRESS_LONG))
+	check('a LONG press commits too', pendingProgram == 0)
+
+	-- The press CC is gone: 48 and 49 unused, and the button carries no mapping.
+	check('the joystick press has no CC mapping', BUTTON_CC[BID_JOY_MAIN] == nil)
+	check('...and JOY_PRESS_SHORT is gone from CC_MAP', CC_MAP['JOY_PRESS_SHORT'] == nil)
+	local used = {}
+	for _, n in pairs(CC_MAP) do used[n] = true end
+	check('CC 48 and 49 are left unused', used[48] == nil and used[49] == nil)
+
+	-- REVERT: an uncommitted browse goes back to the playing patch after BROWSE_IDLE_TICKS.
+	activeSetIndex, activePatchIndex = 0, 0 -- P1 is playing
+	cursorIndex, browsePending, browseLastActivityIdleTick = 6, true, idleTicks
+	check_browse_revert()
+	check('a fresh browse is not reverted yet', browsePending == true and cursorIndex == 6)
+	browseLastActivityIdleTick = idleTicks - BROWSE_IDLE_TICKS
+	check_browse_revert()
+	check('an idle browse reverts to the playing patch', cursorIndex == find_active_row_index())
+	check('...and clears the pending browse', browsePending == false)
+
+	-- A ring turn on the zoom screen switches to the list, so the gesture is not wasted.
+	displayMode, cursorIndex = 'zoom', 1
 	handle_sl_frame(ring(1))
-	check('the ring shows no popup - the patch list is the feedback', popupActive == false)
-	handle_sl_frame(frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_ZONE1,
-		0x41, 0xF7))
-	check('a zone encoder still shows its popup', popupActive == true)
-	popupActive, popupEid = savedPopupActive, savedPopupEid
+	check('a ring turn in zoom mode switches to the list', displayMode == 'list')
 
-	-- A patch change re-syncs the target, however the patch was selected.
+	-- Config mode is untouched: the ring scrolls that screen and commits nothing.
+	displayMode, browsePending, pendingProgram = 'config', false, nil
+	local beforeCursor = cursorIndex
+	handle_sl_frame(ring(2))
+	check('the ring does not browse while the config screen shows', cursorIndex == beforeCursor)
+	check('...and injects nothing', pendingProgram == nil)
+
+	-- GEOMETRY: 7 rows must clear the icon strip, and the icons must not overlap each other.
+	check('the list rows clear the navigation icons',
+		ROW_Y0 + ROW_PITCH * (ROW_COUNT - 1) + TEXT_H_SMALL <= NAV_ICON_Y)
+	check('the navigation icons do not overlap',
+		NAV_RING_X + BMP_NAV_ICON_W <= NAV_PUSH_X)
+	check('the navigation icons fit on screen',
+		NAV_PUSH_X + BMP_NAV_ICON_W <= SCREEN_WIDTH and NAV_ICON_Y + BMP_NAV_ICON_H <= SCREEN_HEIGHT)
+
+	-- The push icon's COLOUR carries the state, so its bytes differ between browsing and idle.
+	local function pushIconBytes()
+		for _, m in ipairs(pendingMessages) do
+			if m.regionId == 'navPush' then return hex(m) end
+		end
+		return nil
+	end
+	local savedDrawn, savedPending2 = drawn, pendingMessages
 	displayMode, listRows = 'list', concert(10)
-	ringPatchTarget = 99
-	local rows = {
-		{ IsPatch = false, Label = 'Set A', SetIndex = 0 },
-		{ IsPatch = true, Label = 'P1', SetIndex = 0, PatchIndex = 0 },
-		{ IsPatch = true, Label = 'P2', SetIndex = 0, PatchIndex = 1 },
-		{ IsPatch = false, Label = 'Set B', SetIndex = 1 },
-		{ IsPatch = true, Label = 'P3', SetIndex = 1, PatchIndex = 0 },
-	}
-	controller_select_patch(0, 'P3', 'Set B', 'Concert', rows, 1, 0)
-	check('a patch change re-syncs the ring target to the active patch ordinal', ringPatchTarget == 3)
+	drawn, pendingMessages, browsePending = {}, {}, false
+	paint_list_screen()
+	local dimBytes = pushIconBytes()
+	drawn, pendingMessages, browsePending = {}, {}, true
+	paint_list_screen()
+	local litBytes = pushIconBytes()
+	check('the push icon is drawn on the list screen', dimBytes ~= nil and litBytes ~= nil)
+	check('...dim when idle and lit while browsing', dimBytes ~= litBytes)
+	drawn, pendingMessages = savedDrawn, savedPending2
 
-	listRows, ringPatchTarget, activeSetIndex, activePatchIndex, displayMode =
-		savedRows, savedTarget, savedSet, savedPatch, savedMode
+	listRows, cursorIndex, scrollOffset = savedRows, savedCursor, savedScroll
+	activeSetIndex, activePatchIndex, displayMode = savedSet, savedPatch, savedMode
 	pendingCC, pendingDelta, pendingCCOrder = savedCC, savedDelta, savedOrder
 	pendingProgram, pendingBank = savedProgram, savedBank
+	browsePending, browseLastActivityIdleTick = savedBrowse, savedBrowseTick
 end
 
 -- MARK: - Summary
