@@ -98,7 +98,9 @@ transport constraint.
 2026-09-21 measured the same thing in the shape `flush_pending` actually uses (`[display, query]`, where
 the original table used two Write Texts): **78, 79 and 80 bytes all delivered**. `FLUSH_BUDGET` is
 therefore **78**, raised from the 72 that had been a guess below the known-good value. It buys six
-characters on every text line (`TEXT_STRING_CAP` 37 → 43).
+characters on every text line (`TEXT_STRING_CAP` 37 → 43), and a normal session confirmed it the same
+day: the 43-character context bar rendered, patch changes and mode switches kept repainting, and the app
+stayed in the APP list.
 
 Earlier revisions of this section, and three other documents, stated the bracket as `[78, 87)`. That was
 wrong: the table it derives from tested 96, not 87. The number is corrected here and in
