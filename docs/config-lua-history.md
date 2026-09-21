@@ -3065,3 +3065,25 @@ up/down (`0x03`) and left/right (`0x02`) bitmaps. Layout agreed with Jeroen befo
 - Region ids are per screen (`navUpDown` vs `zNavUpDown`). The same id at two positions would let one
   screen's memoized tuple stand in for the other's; the harness now asserts the two screens share no
   region id at all.
+
+## The item order is a default rig (2026-09-21)
+
+With the SL88 connected, MainStage **automaps** a fresh concert's screen controls from the items
+`controller_info()` declares, taking them per type in declaration order: the first `Knob` to Vertical
+Fader 1, the next four to Smart Knob 1-4, the first four `Button`s to Button 1-4. The stock templates
+wire those buttons to Prev/Next Set and Prev/Next Patch, and map the Smart Knobs to the loaded patch's
+Smart Controls - so the assignment is fixed while the parameters follow the patch.
+
+Observed with the previous, accidental order: Button 1-4 took CC 51-54, which were Zone 1 Push, Zone 1
+Push **(long)**, Zone 2 Push and Zone 2 Push (long) - so a long press of Zone 1's encoder did "Next Set".
+Vertical Fader 1 took Zone 1's encoder, leaving Smart Knob 1-4 driven by zones 2, 3, 4 and B, one off
+from the panel labels.
+
+The order is now chosen deliberately, and the harness asserts it: B encoder first among the turns, then
+zones 1-4; the four zone selects first among the buttons; every long press last, where the automap
+cannot reach it.
+
+The numbers moved with it, to 85-89 and 102-119. The old 51-74 map sat on MainStage's own channel-strip
+controller table (`BaseplateMIDIControllers.plist`: Insert #1-16 Bypass 56-71, Send Mute 1-8 72-79) and
+on the MIDI spec's switch and sound controllers. 85-90 and 102-119 are free in both. Whether the automap
+walks declaration order or ascending CC number was never established - the two agree here, deliberately.

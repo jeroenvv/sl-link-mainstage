@@ -8,10 +8,11 @@ All notable changes to this project are documented in this file. The format foll
 
 ### BREAKING
 
-- **CC 40-50 are gone.** Every joystick gesture — the four tilts (40-47), the press (48/49) and the
-  ring (50) — now selects patches in the script instead of emitting a CC, so any mapping learned to one
-  of them must be redone and has nothing to remap to. The numbers are left unused rather than
-  reassigned, so every other mapping is unaffected.
+- **Every CC has moved.** The map is now 85-89 and 102-119, chosen to avoid MainStage's own
+  channel-strip controllers (Insert Bypass 56-71, Send Mute 72-79) and the MIDI spec's defined range.
+  Every learned mapping must be redone.
+- **The joystick emits no CC at all.** Its tilts, press and ring select patches in the script instead,
+  so mappings learned to the old 40-50 have nothing to remap to.
 - Patch selection needs the concert's patches to carry **sequential program numbers** — see the README.
 - The config screen no longer lists the joystick: with no CCs left to show, its four rows are gone.
 
@@ -24,8 +25,11 @@ All notable changes to this project are documented in this file. The format foll
   patch of the concert. At either end a tilt does nothing rather than reloading the playing patch.
 - Navigation icons on both patch screens, white, with the press icon lit while a browse waits.
 - `FLUSH_BUDGET` 72 → 78, so text lines carry 43 characters instead of 37. Hardware-verified.
-- `mainstage/Demo.concert`, an example rig on MainStage's Keyboard Minimalist template, with a README
-  listing every CC to assign.
+- The declared item order now produces a working rig automatically: with the SL88 connected MainStage
+  assigns the B encoder to output volume, the zone encoders to Smart Knob 1-4 and the zone selects to
+  patch and set navigation. Long presses are declared last so the automap never takes one.
+- `mainstage/Demo.concert`, an example rig on MainStage's Keyboard Minimalist template, needing no
+  MIDI Learn.
 
 ### Fixed
 
