@@ -930,23 +930,45 @@ do
 	end
 	check('all CC_TURN gestures declare midiType Relative2C', allTurnsAreRelative2C)
 
-	-- The ring has NO CC at all any more: it selects patches with Bank Select + Program Change, which is
-	-- not a CC, so JOY_ROTATE was removed from every table rather than left emitting nothing. CC 50 stays
-	-- unused rather than reassigned - renumbering would break every learned mapping after it.
+	-- The whole joystick has NO CC any more: ring, press and tilts all select patches with Bank Select +
+	-- Program Change, which is not a CC, so every JOY_* key was removed from every table rather than left
+	-- emitting nothing. CC 40-50 stay unused rather than reassigned - renumbering would break every
+	-- learned mapping after them.
 	check('the ring has no CC mapping', CC_MAP['JOY_ROTATE'] == nil)
 	check('...and no label', CC_LABEL['JOY_ROTATE'] == nil)
 	check('...and is not a CC_TURN gesture', CC_TURN['JOY_ROTATE'] == nil)
 	check('...and no encoder is wired to it', ENCODER_CC[EID_JOYSTICK] == nil)
-	local ccFiftyUsed = false
-	for _, n in pairs(CC_MAP) do
-		if n == 50 then ccFiftyUsed = true end
+	local anyJoyKey = false
+	for key in pairs(CC_MAP) do
+		if key:find('^JOY_') then anyJoyKey = true end
 	end
-	check('CC 50 is left unused, not reassigned', ccFiftyUsed == false)
+	for key in pairs(CC_LABEL) do
+		if key:find('^JOY_') then anyJoyKey = true end
+	end
+	check('no JOY_* gesture is left in CC_MAP or CC_LABEL', anyJoyKey == false)
+	-- The count is stated in CC_MAP's own comment, controller_info()'s comment, the README and
+	-- docs/mainstage-integration.md's table. It had already drifted (34 vs 31) before this pinned it.
+	check('CC_MAP has 23 gestures (update those four places if this changes)', ccMapCount == 23)
+	local reusedGap = nil
+	for key, n in pairs(CC_MAP) do
+		if n >= 40 and n <= 50 then reusedGap = key .. '=' .. n end
+	end
+	check('CC 40-50 are left unused, not reassigned', reusedGap == nil)
+	local joyItem = nil
+	for _, item in ipairs(generated) do
+		if item.midi[2] >= 40 and item.midi[2] <= 50 then joyItem = item.name end
+	end
+	check('controller_info() declares no item in the 40-50 gap', joyItem == nil)
+	local tiltsWired = true
+	for _, bid in ipairs({ BID_JOY_UP, BID_JOY_DOWN, BID_JOY_LEFT, BID_JOY_RIGHT }) do
+		if BUTTON_CC[bid] ~= nil or JOYSTICK_NAV[bid] == nil then tiltsWired = false end
+	end
+	check('every joystick tilt is in JOYSTICK_NAV and absent from BUTTON_CC', tiltsWired)
 
-	local joyUpItem = byName[CC_LABEL['JOY_UP_SHORT']]
+	local pushItem = byName[CC_LABEL['ENC1_PRESS_SHORT']]
 	check(
-		'a spot-checked button gesture (JOY_UP_SHORT) generates objectType Button',
-		joyUpItem ~= nil and joyUpItem.objectType == 'Button'
+		'a spot-checked button gesture (ENC1_PRESS_SHORT) generates objectType Button',
+		pushItem ~= nil and pushItem.objectType == 'Button'
 	)
 
 	-- Determinism: items must come out in ascending CC order (guards the hand-written list's order).
@@ -4964,7 +4986,8 @@ do
 		#pendingMessages == 7 + 2 * CONFIG_ROW_COUNT)
 
 	-- A turn-only control keeps its number in the SHORT column rather than drifting right.
-	check('a paired row shows both CCs', config_cc_text({ 'JOY_UP_SHORT', 'JOY_UP_LONG' }) == '40  41')
+	check('a paired row shows both CCs',
+		config_cc_text({ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' }) == '51  52')
 	check('a turn-only row pads the LONG column', config_cc_text({ 'ENC1_TURN' }) == '59   -')
 
 	displayMode, configScroll, configPreviousMode, pendingMessages, drawn =
@@ -5377,6 +5400,130 @@ do
 	check('the push icon is drawn on the list screen', dimBytes ~= nil and litBytes ~= nil)
 	check('...dim when idle and lit while browsing', dimBytes ~= litBytes)
 	drawn, pendingMessages = savedDrawn, savedPending2
+
+	listRows, cursorIndex, scrollOffset = savedRows, savedCursor, savedScroll
+	activeSetIndex, activePatchIndex, displayMode = savedSet, savedPatch, savedMode
+	pendingCC, pendingDelta, pendingCCOrder = savedCC, savedDelta, savedOrder
+	pendingProgram, pendingBank = savedProgram, savedBank
+	browsePending, browseLastActivityIdleTick = savedBrowse, savedBrowseTick
+end
+
+-- MARK: - 88. Joystick tilts select patches: up/down by patch, left/right by set
+--
+-- The four tilts carry no CC at all - each moves the cursor and commits it as Bank Select + Program
+-- Change in one gesture. LONG up/down jump to the first/last patch of the concert; LONG left/right do
+-- what SHORT does (the project rule for LONG_PRESSION).
+do
+	local savedRows, savedCursor, savedScroll = listRows, cursorIndex, scrollOffset
+	local savedSet, savedPatch, savedMode = activeSetIndex, activePatchIndex, displayMode
+	local savedCC, savedDelta, savedOrder = pendingCC, pendingDelta, pendingCCOrder
+	local savedProgram, savedBank = pendingProgram, pendingBank
+	local savedBrowse, savedBrowseTick = browsePending, browseLastActivityIdleTick
+
+	-- Three sets, so 'next set' and 'previous set' have somewhere to go from the middle one, and one
+	-- header carries no patches of its own - a set stop must never land the cursor on it.
+	-- 0-based listRows indices: 0 'Set A', 1 P1, 2 P2, 3 'Set B', 4 P3, 5 P4, 6 P5, 7 'Empty',
+	-- 8 'Set C', 9 P6, 10 P7.
+	local rows = {
+		{ label = 'Set A', isPatch = false, setIndex = 0 },
+		{ label = 'P1', isPatch = true, setIndex = 0, patchIndex = 0 },
+		{ label = 'P2', isPatch = true, setIndex = 0, patchIndex = 1 },
+		{ label = 'Set B', isPatch = false, setIndex = 1 },
+		{ label = 'P3', isPatch = true, setIndex = 1, patchIndex = 2 },
+		{ label = 'P4', isPatch = true, setIndex = 1, patchIndex = 3 },
+		{ label = 'P5', isPatch = true, setIndex = 1, patchIndex = 4 },
+		{ label = 'Empty', isPatch = false, setIndex = 2 },
+		{ label = 'Set C', isPatch = false, setIndex = 3 },
+		{ label = 'P6', isPatch = true, setIndex = 3, patchIndex = 5 },
+		{ label = 'P7', isPatch = true, setIndex = 3, patchIndex = 6 },
+	}
+	local function tilt(bid, kind)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, bid, kind, 0xF7)
+	end
+	-- Runs one tilt from a known cursor row and reports what it selected.
+	local function tiltFrom(startIndex, bid, kind)
+		cursorIndex, browsePending = startIndex, false
+		pendingCC, pendingDelta, pendingCCOrder, pendingProgram, pendingBank = {}, {}, {}, nil, nil
+		-- pcall: a crash in the handler (an unclamped index, say) must fail THIS check rather than
+		-- abort the run and hide every check after it.
+		local ok, err = pcall(handle_sl_frame, tilt(bid, kind))
+		if not ok then return 'error: ' .. tostring(err), nil, nil end
+		local row = listRows[cursorIndex + 1]
+		return row and row.label, pendingProgram, pendingBank
+	end
+
+	displayMode, listRows, scrollOffset = 'list', rows, 0
+	activeSetIndex, activePatchIndex = 1, 3 -- P4 playing, mid-concert
+
+	-- UP/DOWN step one patch. P4 is at index 5; the fifth patch is program 4, the third program 2.
+	local label, pc, bank = tiltFrom(5, BID_JOY_DOWN, PRESS_SHORT)
+	check('a DOWN tilt selects the next patch', label == 'P5' and pc == 4 and bank == 0)
+	label, pc = tiltFrom(5, BID_JOY_UP, PRESS_SHORT)
+	check('an UP tilt selects the previous patch', label == 'P3' and pc == 2)
+	check('...and emits no CC', next(pendingCC) == nil and next(pendingDelta) == nil)
+
+	-- Stepping across a header must skip it rather than stopping on it: P2 (index 2) sits directly
+	-- before the 'Set B' header at index 3.
+	label, pc = tiltFrom(2, BID_JOY_DOWN, PRESS_SHORT)
+	check('a tilt steps over a set header', label == 'P3' and pc == 2)
+
+	-- LEFT/RIGHT jump to the first patch of the neighbouring set. From P4 (mid Set B) that is P6 for
+	-- next and P1 for previous - NOT the top of the current set.
+	label, pc = tiltFrom(5, BID_JOY_RIGHT, PRESS_SHORT)
+	check('a RIGHT tilt selects the first patch of the next set', label == 'P6' and pc == 5)
+	label, pc = tiltFrom(5, BID_JOY_LEFT, PRESS_SHORT)
+	check('a LEFT tilt selects the first patch of the previous set', label == 'P1' and pc == 0)
+	check('...never landing on a header', listRows[cursorIndex + 1].isPatch == true)
+
+	-- A set with no patches of its own is not a stop: from P5 (last of Set B) the next set is C, not
+	-- the 'Empty' header between them.
+	label = tiltFrom(6, BID_JOY_RIGHT, PRESS_SHORT)
+	check('an empty set is skipped', label == 'P6')
+
+	-- LONG up/down jump to the ends of the CONCERT, across sets.
+	label, pc = tiltFrom(5, BID_JOY_UP, PRESS_LONG)
+	check('a LONG UP tilt selects the first patch', label == 'P1' and pc == 0)
+	label, pc = tiltFrom(5, BID_JOY_DOWN, PRESS_LONG)
+	check('a LONG DOWN tilt selects the last patch', label == 'P7' and pc == 6)
+
+	-- LONG left/right do what SHORT does rather than being dropped.
+	label, pc = tiltFrom(5, BID_JOY_RIGHT, PRESS_LONG)
+	check('a LONG RIGHT tilt behaves like SHORT', label == 'P6' and pc == 5)
+	label, pc = tiltFrom(5, BID_JOY_LEFT, PRESS_LONG)
+	check('a LONG LEFT tilt behaves like SHORT', label == 'P1' and pc == 0)
+
+	-- At the ends, a tilt is a NO-OP rather than a re-trigger of the patch already playing: re-sending
+	-- the same Program Change would make MainStage reload it.
+	label, pc = tiltFrom(1, BID_JOY_UP, PRESS_SHORT)
+	check('an UP tilt at the first patch injects nothing', label == 'P1' and pc == nil)
+	label, pc = tiltFrom(10, BID_JOY_DOWN, PRESS_SHORT)
+	check('a DOWN tilt at the last patch injects nothing', label == 'P7' and pc == nil)
+	label, pc = tiltFrom(1, BID_JOY_UP, PRESS_LONG)
+	check('a LONG UP tilt already at the first patch injects nothing', label == 'P1' and pc == nil)
+	label, pc = tiltFrom(9, BID_JOY_LEFT, PRESS_SHORT)
+	check('a LEFT tilt at the first patch of the last set still moves', label == 'P3' and pc == 2)
+	label, pc = tiltFrom(1, BID_JOY_LEFT, PRESS_SHORT)
+	check('a LEFT tilt in the first set injects nothing', label == 'P1' and pc == nil)
+	label, pc = tiltFrom(9, BID_JOY_RIGHT, PRESS_SHORT)
+	check('a RIGHT tilt at the top of the last set injects nothing', label == 'P6' and pc == nil)
+	label, pc = tiltFrom(10, BID_JOY_RIGHT, PRESS_SHORT)
+	check('a RIGHT tilt inside the last set goes to its top', label == 'P6' and pc == 5)
+
+	-- A tilt steps from the CURSOR, so two fast tilts advance two patches even if MainStage has not
+	-- answered the first one yet (no controller_select_patch in between).
+	cursorIndex, browsePending = 5, false
+	pendingProgram, pendingBank = nil, nil
+	handle_sl_frame(tilt(BID_JOY_DOWN, PRESS_SHORT))
+	local firstPc = pendingProgram
+	pendingProgram = nil
+	handle_sl_frame(tilt(BID_JOY_DOWN, PRESS_SHORT))
+	check('two fast tilts advance two patches', firstPc == 4 and pendingProgram == 5)
+
+	-- A tilt also commits a browse in progress and clears its pending flag, so the push icon dims.
+	cursorIndex, browsePending, pendingProgram = 4, true, nil
+	handle_sl_frame(tilt(BID_JOY_DOWN, PRESS_SHORT))
+	check('a tilt continues a ring browse from the cursor', pendingProgram == 3)
+	check('...and clears the pending browse', browsePending == false)
 
 	listRows, cursorIndex, scrollOffset = savedRows, savedCursor, savedScroll
 	activeSetIndex, activePatchIndex, displayMode = savedSet, savedPatch, savedMode

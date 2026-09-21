@@ -22,7 +22,7 @@ If the app never appears in the APP list, quit and relaunch MainStage. For diagn
 `defaults write com.apple.mainstage3 LUA_DEBUG -bool true` routes the script's `print()` output to
 MainStage's stdout — turn it back off afterward, since it measurably slows MainStage down.
 
-## Setting up patch switching from the joystick ring
+## Setting up patch switching from the joystick
 
 **Turn the ring to browse the patch list, press the joystick to select.** Browsing moves the cursor only
 — MainStage loads nothing until you press, and an unpressed browse returns to the playing patch after a
@@ -37,8 +37,16 @@ That is the only step verified as necessary (MainStage 4.3.1, 133-patch concert)
 nothing, check **Concert Settings → Attributes**: *Program Changes Device* must admit this device and
 *Program Changes Channel* must admit channel 16 — both plausible gates, neither isolated in testing.
 
-Neither gesture sends a CC any more (48, 49 and 50 are unused from v3.0.0), and there is no popup — the
-list itself is the feedback. Bottom right, the rotate icon says the ring scrolls; the push icon lights
+The joystick tilts select immediately, no press needed:
+
+| Tilt | Short | Long |
+|:--|:--|:--|
+| Up / Down | previous / next patch | first / last patch |
+| Left / Right | previous / next set | same as short |
+
+At the ends of the concert or setlist a tilt does nothing, rather than reloading the patch already
+playing. No joystick gesture sends a CC any more (40–50 are unused from v3.0.0), and there is no popup —
+the list itself is the feedback. Bottom right, the rotate icon says the ring scrolls; the push icon lights
 while a browsed patch is waiting for the press.
 
 ## Versioning
@@ -52,7 +60,7 @@ shows which build MainStage actually has loaded). Semantic versioning:
 - **major** — anything that breaks an existing MainStage MIDI-Learn mapping (the CC map in
   `config.lua`) or changes the install layout
 
-The major bump matters in practice: the 34 CC assignments are MIDI-Learned by hand in MainStage, so
+The major bump matters in practice: the 23 CC assignments are MIDI-Learned by hand in MainStage, so
 renumbering one silently breaks a working rig.
 
 ## Releases
