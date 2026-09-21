@@ -351,6 +351,10 @@ changes, 13 of them in bank 1. Exact - no scaling, no skipped patches, no 128 ce
 
 Per ring step on `CC_CHANNEL` (16): `CC 0` (Bank MSB), `CC 32` (Bank LSB), then the Program Change. Bank is
 `floor((p-1) / 128)`, 0-based on the wire (MainStage displays bank 1 upward); program is `(p-1) % 128`.
+
+**MainStage counts program changes from 1, MIDI counts from 0** — so patch 1 is wire value 0, and every
+`-1` in the arithmetic above is that conversion. MainStage's *Program Change Range* setting (0–127 vs
+1–128) only changes the numbers it displays, not the bytes, so the conversion holds either way.
 Bank must precede the PC. This reaches MainStage's **generic** program-change handling; the `patchselector`
 parser stays unreachable from an injected return (Q1a) and uses no PC anyway.
 
