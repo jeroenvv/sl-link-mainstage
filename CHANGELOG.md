@@ -13,6 +13,7 @@ All notable changes to this project are documented in this file. The format foll
   of them must be redone and has nothing to remap to. The numbers are left unused rather than
   reassigned, so every other mapping is unaffected.
 - Patch selection needs the concert's patches to carry **sequential program numbers** — see the README.
+- The config screen no longer lists the joystick: with no CCs left to show, its four rows are gone.
 
 ### Added
 
@@ -28,6 +29,13 @@ All notable changes to this project are documented in this file. The format foll
 
 - No popup on a ring turn — the patch list is the feedback.
 - The list's context bar stays readable: small and blue, after medium overflowed its box.
+
+### Documentation
+
+- README: how to set MainStage up for patch switching, and which Patch List command to use for a small
+  concert versus a large one.
+- The ceiling MainStage puts on a returned array was quoted as `[78, 87)` in three documents; the
+  measurement it came from tested 96.
 
 ## [2.7.0] - 2026-09-20
 
