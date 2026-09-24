@@ -33,7 +33,9 @@ All notable changes to this project are documented in this file. The format foll
   assigns the B encoder to output volume, the zone encoders to Smart Knob 1-4, bank B's to Smart Knob
   5-8, and the zone selects to patch and set navigation. Long presses are declared last so the automap
   never takes one.
-- `mainstage/README.md`, documenting the full CC map and what a fresh concert automaps to.
+- `mainstage/Demo.concert`, a worked example with every mappable control assigned across two sets and
+  six patches, and `mainstage/README.md` describing the banks, the master-volume mute, short versus long
+  press and the full CC map.
 
 ### Fixed
 

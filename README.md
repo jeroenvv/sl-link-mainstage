@@ -78,12 +78,15 @@ Right-click and choose **Show Package Contents** to look inside from Finder, or 
 normal directory from the terminal. Either way, nothing needs to be unpacked by hand —
 `install-mainstage-script.sh` copies the whole bundle to where MainStage expects it.
 
-## Setting up a concert
+## Example concert
 
-Start from any MainStage template with the SL88 connected and MainStage assigns it automatically — the
-B encoder to a volume control, the zone encoders to Smart Knob 1–8, the zone select buttons to patch and
-set navigation — so it needs no MIDI Learn. [`mainstage/README.md`](mainstage/README.md) has the full CC
-map and the setup steps. An example concert will follow.
+[`mainstage/Demo.concert`](mainstage/) is a worked example with **every mappable control assigned**,
+across two sets and six patches. [`mainstage/README.md`](mainstage/README.md) describes the two encoder
+banks, the master-volume mute, short versus long press, and the full CC map.
+
+Starting from scratch instead? With the SL88 connected MainStage assigns a fresh concert automatically —
+the B encoder to a volume control, the zone encoders to Smart Knob 1–8, the zone selects to patch and set
+navigation — so it needs no MIDI Learn either.
 
 ## Documentation
 
