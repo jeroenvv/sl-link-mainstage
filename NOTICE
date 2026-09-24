@@ -1,2 +1,6 @@
 SL Link for MainStage
 Copyright 2026 Jeroen van Veldhuizen
+
+mainstage/Demo.concert is a MainStage concert created with Apple MainStage. Like any MainStage document
+it embeds Apple's factory channel-strip settings and references Apple's bundled instruments and effects,
+which remain the property of Apple Inc. and are covered by the MainStage software licence agreement.
