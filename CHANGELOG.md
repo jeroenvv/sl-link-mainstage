@@ -8,9 +8,9 @@ All notable changes to this project are documented in this file. The format foll
 
 ### BREAKING
 
-- **Every CC has moved**, and there are now 43 of them rather than 23. The map lands on MainStage's own
-  channel-strip numbers - Send 1-4, Send Mute 1-8, Insert Bypass - so each gesture appears in the
-  assignment list under a name MainStage already knows. Every learned mapping must be redone.
+- **Every CC has moved**, and there are now 43 of them rather than 23, laid out one contiguous block per
+  family: turns 14 and 20-27, selects 36-43, pushes 44-52, long presses 102-118. Every learned mapping
+  must be redone.
 - **The DAW button is no longer free**: it toggles the encoder bank.
 - **The joystick emits no CC at all.** Its tilts, press and ring select patches in the script instead,
   so mappings learned to the old 40-50 have nothing to remap to.

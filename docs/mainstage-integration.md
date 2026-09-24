@@ -322,26 +322,27 @@ The four zone encoders, their pushes and the four zone select buttons exist **tw
 confirmed on hardware 2026-09-24) and shown by its lamp (WLID `0x09`). The B encoder, the B push and the
 joystick do not bank.
 
-| CC | Gesture | MainStage calls it |
-|---:|:--|:--|
-| 3, 9 | Zone 1–2 Select | **Solo**, **Mute** |
-| 14 | B Encoder | — (first among the turns, so it takes any volume control) |
-| 15, 20 | Zone 3–4 Select | — |
-| 28–31 | Zone 1–4 Encoder | **Send 1–4** |
-| 56–59 | Zone 5–8 Encoder | **Insert #1–4 Bypass** |
-| 60–63 | Zone 5–8 Select | **Insert #5–8 Bypass** |
-| 72–79 | Zone 1–8 Push | **Send Mute 1–8** |
-| 80 | B Push | — |
-| 102–118 | the 17 long presses | — |
+| CC | Gesture |
+|---:|:--|
+| 14 | B Encoder |
+| 20–27 | Zone 1–8 Encoder |
+| 36–39 | Zone 1–4 Select |
+| 40–43 | Zone 5–8 Select |
+| 44–51 | Zone 1–8 Push |
+| 52 | B Push |
+| 102–109 | Zone 1–8 Select (long) |
+| 110–117 | Zone 1–8 Push (long) |
+| 118 | B Push (long) |
 
-**The numbers land on MainStage's own table deliberately**, the opposite of the earlier map that avoided
-it. Those parameters belong to a **channel strip**, so they follow the loaded patch — right for the zone
-controls, wrong for anything global, which is why the B encoder is *not* on CC 7 (Volume): it is the
-concert's output fader and must not change meaning with the patch.
+The joystick appears nowhere: tilts, press and ring all select patches in the script instead.
 
-**CC 0 and CC 32 are reserved.** They are the Bank Select MSB/LSB every patch commit sends, so no
-gesture may use one — which is why bank B's encoders take Insert Bypass rather than a run of Sends
-broken by 32. The harness asserts it.
+**One contiguous block per family.** An earlier revision scattered these to land on MainStage's own
+channel-strip names — Send 1–4, Send Mute 1–8, Insert Bypass — on the theory that its baseplate layer
+would then drive those parameters for free. It does not (see below), so the scattering bought nothing but
+a map nobody could read.
+
+**CC 0 and CC 32 are reserved.** They are the Bank Select MSB/LSB every patch commit sends, so no gesture
+may use one. The harness asserts it.
 
 ### The baseplate
 
@@ -353,8 +354,8 @@ MainStage's own CC→channel-strip table lives in `MainStage.app/Contents/Resour
 
 `MainStageCore` consumes them through `MABaseplateParameterMapping` and
 `WsMIDIBaseplateControlsForPort(port, channel, isMIDI)`, so the set is resolved **per port and per
-channel**. Whether it engages for the LINK port is not yet established — see
-`docs/config-lua-history.md` for the hardware result.
+channel**. **It does not engage for the LINK port** — tested on hardware 2026-09-24 with the CC map laid
+directly on those numbers: nothing moved. Do not reason as though it were live.
 
 ### Automap
 
