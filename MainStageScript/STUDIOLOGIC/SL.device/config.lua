@@ -4153,14 +4153,17 @@ function controller_info()
 		-- No joystick items: the whole joystick drives patch selection in-script (see JOYSTICK_NAV),
 		-- so it has nothing for MainStage to learn.
 
-		-- ORDER IS LOAD-BEARING - it decides what a fresh concert automaps to. Listed in ascending CC
-		-- order, which also satisfies both per-type orderings the automap cares about: among Knobs, B
-		-- first (-> Vertical Fader 1) then zones 1-4 (-> Smart Knob 1-4) then zones 5-8 (-> Smart Knob
-		-- 5-8); among Buttons, zones 1-4 Select first (-> Button 1-4) and every long press last.
-		-- See CC_MAP's comment.
+		-- ORDER IS LOAD-BEARING - it decides what a fresh concert automaps to. MainStage fills the
+		-- layout's screen controls from these items PER TYPE, in the order listed, and which control
+		-- comes first differs between layouts - so the only thing we can guarantee is the order WITHIN
+		-- a type. Hence: the eight zone encoders are the only Knobs, in panel order, so zone N lands on
+		-- Smart Knob N; the B encoder is a VFader so it matches the output fader by TYPE rather than
+		-- competing for a Smart Knob (declared as a Knob it took Smart Knob 1 and pushed every zone
+		-- along by one, stranding zone 8 - hardware, 2026-09-24); among Buttons, zones 1-4 Select come
+		-- first and every long press last. See CC_MAP's comment.
 		{name='Zone 1 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,   3, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 2 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,   9, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='B Encoder',             objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  14, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='B Encoder',             objectType='VFader',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  14, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 3 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  15, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 4 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  20, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 1 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  28, MIDI_LSB}, inport='LINK', outport='LINK'},
