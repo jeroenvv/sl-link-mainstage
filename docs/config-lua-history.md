@@ -3032,9 +3032,9 @@ and is flagged in the source; `zset` survives only because set names are usually
 The four tilts lost their CCs (40-47) and now select patches directly, through the same
 `commit_cursor_patch()` the press uses: up/down step one patch, left/right step to the first patch of the
 neighbouring set, long up/down jump to the first/last patch of the concert. Long left/right do what short
-does, the project rule for `LONG_PRESSION`. With the press (48/49) and the ring (50) already converted,
-CC 40-50 are now all unused gaps - renumbering would break every learned mapping after them, so the CC map
-starts at 51 and holds 23 gestures.
+does, the project rule for `LONG_PRESSION`. With the press and the ring already converted, no joystick
+gesture emits a CC at all any more. (The numbering this entry originally quoted was superseded twice
+over; see "One contiguous block per family" below for the map as it stands.)
 
 - They step from the **cursor**, not the playing patch. That is what makes a fast double-tilt advance two
   patches - the second tilt sees the first one's cursor whether or not MainStage has answered yet - and it
