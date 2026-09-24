@@ -977,18 +977,19 @@ do
 		if item.objectType == 'Knob' then knobOrder[#knobOrder + 1] = item.name
 		elseif item.objectType == 'Button' then buttonOrder[#buttonOrder + 1] = item.name end
 	end
-	-- The eight zone encoders come FIRST among the turns, in panel order, so zone N lands on Smart
-	-- Knob N; the B encoder comes LAST so it takes whatever continuous control is left over (the output
-	-- fader in the stock templates). Declared first it took Smart Knob 1 and pushed every zone along by
-	-- one, stranding zone 8 - and giving it objectType VFader did NOT help, because the automap treats
-	-- faders and knobs as one pool (hardware, 2026-09-24).
+	-- The B encoder comes FIRST among the turns, then the eight zones in panel order. A layout that has
+	-- a volume control puts it first among its continuous controls, and that control must be B - with B
+	-- last, zone 1 took the volume instead (hardware, 2026-09-24). The cost is that a layout WITHOUT one
+	-- gives B its first Smart Knob and shifts the zones along; that trade is deliberate, since a
+	-- misplaced volume is worse than a shifted macro. objectType is no help here: declaring B a VFader
+	-- changed nothing, the automap pools faders and knobs together.
 	local zonesInOrder = (#knobOrder == 9)
 	for i = 1, 8 do
-		if knobOrder[i] ~= CC_LABEL['ENC' .. i .. '_TURN'] then zonesInOrder = false end
+		if knobOrder[i + 1] ~= CC_LABEL['ENC' .. i .. '_TURN'] then zonesInOrder = false end
 	end
-	check('the eight zone encoders come first among the turns, in panel order', zonesInOrder)
-	check('...and the B encoder comes last, so it never displaces a zone',
-		knobOrder[#knobOrder] == CC_LABEL['ENCB_TURN'])
+	check('the B encoder comes first among the turns, so it takes any volume control',
+		knobOrder[1] == CC_LABEL['ENCB_TURN'])
+	check('...then the eight zone encoders in panel order', zonesInOrder)
 	check('the four zone selects are the first Buttons, for Button 1-4',
 		buttonOrder[1] == CC_LABEL['SEL1_SHORT'] and buttonOrder[2] == CC_LABEL['SEL2_SHORT']
 			and buttonOrder[3] == CC_LABEL['SEL3_SHORT'] and buttonOrder[4] == CC_LABEL['SEL4_SHORT'])
