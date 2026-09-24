@@ -4788,13 +4788,17 @@ do
 	check('THE REGRESSION: a concert change drops stored parameter feedback',
 		midiOutFeedback[bCc] == nil)
 
-	-- Same patch list, same concert: feedback must SURVIVE, or every patch change would blank the
-	-- popup until MainStage happened to re-report.
+	-- A PATCH change must drop it too. This assertion used to require the opposite - feedback surviving
+	-- a patch change, so the popup would not blank until MainStage re-reported. That reasoning depended
+	-- on an 'Unmapped' report clearing a name, which bounded how stale anything could get. Since a known
+	-- name now survives those reports (see controller_midi_out), keeping it across a patch change made
+	-- the encoders describe the patch you just left - observed on hardware, 2026-09-24. The cost is one
+	-- gesture in LEGACY after a patch change, which the popup's one-way upgrade then corrects.
 	midiOutFeedback[bCc] = { name = 'Master Mute', valueString = 'Off', value = 0 }
 	controller_select_patch(0, 'p3', 's2', 'New Concert', { { IsPatch = true, Label = 'p3',
 		SetIndex = 0, PatchIndex = 1 } }, 0, 1)
-	check('a patch change within the same concert keeps stored feedback',
-		midiOutFeedback[bCc] ~= nil)
+	check('a patch change within the same concert ALSO drops stored feedback',
+		midiOutFeedback[bCc] == nil)
 
 	-- (i) A fresh session must forget what was last sent, so the rings are re-established rather
 	-- than trusting a memo from before the SL88 confirmed us.
