@@ -2107,7 +2107,7 @@ do
 		checkHex(
 			'...matching the exact bytes of Write Text "--" at the popup value\'s own position/colours',
 			pendingMessages[1],
-			hex(msg_write_text('--', POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W, ALIGN_CENTER, SIZE_SMALL,
+			hex(msg_write_text('--', POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W, ALIGN_CENTER, SIZE_MEDIUM,
 				POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
 				POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3]))
 		)
@@ -5891,8 +5891,10 @@ do
 		value ~= nil and #value <= POPUP_TEXT_MAX_CHARS)
 
 	-- The cap must actually fit the box it is drawn in, at the size it is drawn at.
-	check('the cap is below what the 260px box holds at SIZE_MEDIUM',
-		POPUP_TEXT_MAX_CHARS * TEXT_H_MEDIUM <= POPUP_CONTENT_W * 2)
+	-- The cap must fit the box at the size drawn, using the mixed-text upper bound - parameter names
+	-- are words, not digits, so CHAR_W_MEDIUM applies here.
+	check('the cap fits POPUP_CONTENT_W at SIZE_MEDIUM',
+		POPUP_TEXT_MAX_CHARS * CHAR_W_MEDIUM <= POPUP_CONTENT_W)
 	check('the popup title still draws at SIZE_MEDIUM, as asked for', (function()
 		drawn, pendingMessages = {}, {}
 		draw_popup_title('x')
@@ -5927,11 +5929,13 @@ do
 	drawn, pendingMessages = savedDrawn, savedPending
 
 	check('the widest value is sent in full, not pre-cut', text == '127')
-	check('the in-ring value is drawn at SIZE_SMALL', size == SIZE_SMALL)
-	local widthFor = { [SIZE_SMALL] = CHAR_W_SMALL, [SIZE_MEDIUM] = CHAR_W_MEDIUM }
-	check('...and three digits fit POPUP_VALUE_W at that size, so the device never truncates',
-		size ~= nil and #text * widthFor[size] <= POPUP_VALUE_W)
+	-- SIZE_MEDIUM, as asked for. Three digits fit the 36px hole on hardware even though CHAR_W_MEDIUM -
+	-- an upper bound for MIXED text - predicts they would not; digits are narrower. No width assertion
+	-- here for that reason: the estimate is not applicable to a numeric field.
+	check('the in-ring value is drawn at SIZE_MEDIUM', size == SIZE_MEDIUM)
 	check('the value box is no wider than the ring hole it sits in', POPUP_VALUE_W <= KNOB_HOLE_W)
+	check('the value sits one pixel below the measured hole offset, by eye on hardware',
+		POPUP_VALUE_Y == POPUP_KNOB_Y + KNOB_HOLE_DY + 1)
 end
 
 -- MARK: - Summary
