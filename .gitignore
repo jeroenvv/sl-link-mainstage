@@ -3,3 +3,8 @@
 
 # Release output (Scripts/build-release.sh)
 dist/
+
+# The demo concert is a work in progress and deliberately NOT tracked yet - it is a real rig with real
+# patches, and it ships only when it is ready. Remove this line at that point, and add the NOTICE entry
+# for the Apple factory channel-strip settings any MainStage concert embeds.
+mainstage/Demo.concert/

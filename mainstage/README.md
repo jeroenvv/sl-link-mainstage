@@ -1,10 +1,7 @@
-# Demo concert
+# Setting up a concert
 
-`Demo.concert` is an example rig showing how to wire an SL88 MK2 to MainStage through this device
-script. Open it in MainStage with the SL88 connected.
-
-It starts from MainStage's own **Keyboard Minimalist** template, so it carries one patch and a plain
-layout — the point is the mappings, not the sounds.
+How an SL88 MK2 wires itself to MainStage through this device script. Start from any MainStage template
+with the SL88 connected; an example concert will be added here later.
 
 ## What is already set up
 

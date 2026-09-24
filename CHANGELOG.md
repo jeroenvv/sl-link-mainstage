@@ -33,8 +33,7 @@ All notable changes to this project are documented in this file. The format foll
   assigns the B encoder to output volume, the zone encoders to Smart Knob 1-4, bank B's to Smart Knob
   5-8, and the zone selects to patch and set navigation. Long presses are declared last so the automap
   never takes one.
-- `mainstage/Demo.concert`, an example rig on MainStage's Keyboard Minimalist template, needing no
-  MIDI Learn.
+- `mainstage/README.md`, documenting the full CC map and what a fresh concert automaps to.
 
 ### Fixed
 
