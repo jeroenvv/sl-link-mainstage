@@ -3121,3 +3121,19 @@ per-patch strip volume depending on where MainStage was pointing.
 **CC 0 and CC 32 are reserved** for the Bank Select MSB/LSB every patch commit sends. A gesture on either
 would be indistinguishable from a patch change on the wire, which is why bank B's encoders take Insert
 Bypass rather than a run of Sends broken by 32.
+
+### The automap fills per LAYOUT, not to a fixed rule (2026-09-24)
+
+The rule derived from the first observation - "the first `Knob` goes to Vertical Fader 1, the next four
+to Smart Knob 1-4" - does not generalise. That was one concert's layout. On the stock Keyboard
+Minimalist template the Smart Knobs fill first and the fader is never reached, so declaring the B
+encoder as the first `Knob` put it on **Smart Knob 1** and pushed all eight zone encoders along by one,
+stranding zone 8 with nothing (Zone 4's CC 31 landed on Smart Knob 5).
+
+**The fix is to match by TYPE rather than by position.** `VFader` is a real objectType - 452 uses across
+the 98 bundled MainStage scripts - so the B encoder is declared `VFader` and the eight zone encoders are
+the only `Knob`s. Zone N then lands on Smart Knob N in any layout, and the B encoder matches a fader
+wherever one exists.
+
+What can be relied on is only the order **within** a type; which screen control a type fills first is the
+layout's business, not ours.

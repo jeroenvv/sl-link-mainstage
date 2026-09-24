@@ -363,10 +363,14 @@ With the SL88 connected, MainStage **assigns a fresh concert's screen controls b
 
 | Screen control | Gets | Which is |
 |:--|:--|:--|
-| Vertical Fader 1 | the first `Knob` | B Encoder |
-| Smart Knob 1–4 | the next four `Knob`s | Zone 1–4 Encoder |
-| Smart Knob 5–8 | the next four after those | Zone 5–8 Encoder (bank B) |
+| Smart Knob 1–8 | the eight `Knob`s, in order | Zone 1–8 Encoder |
+| Vertical Fader 1 | the one `VFader` | B Encoder |
 | Button 1–4 | the first four `Button`s | Zone 1–4 Select |
+
+**Which screen control a type fills first is the layout's business.** The Keyboard Minimalist template
+fills Smart Knobs before the fader; another concert filled the fader first. So only the order *within* a
+type can be relied on — which is why the B encoder is declared `VFader` rather than being placed first
+among the Knobs. Declared as a Knob it took Smart Knob 1 and shifted every zone encoder by one.
 
 The stock templates wire Button 1–4 to Prev Set, Next Set, Prev Patch, Next Patch, and map Smart Knob
 1–4 to whatever the loaded patch's Smart Controls are — so the assignments are fixed while the parameters
