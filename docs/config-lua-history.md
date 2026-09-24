@@ -3195,11 +3195,15 @@ broken one.
 
 ### A multi-mapped control thrashed the popup (2026-09-24)
 
-**A screen control carrying several parameter mappings makes MainStage call `controller_midi_out` once
-per mapping**, and those reports do not agree: some arrive with a name, others as `Unmapped`. The popup
-recomputed FEEDBACK-vs-LEGACY from whichever arrived last, so the mode flipped on every encoder tick -
-and each flip erases and repaints the whole panel, which is 7 messages at one per tick. The panel never
-finished drawing before the next flip restarted it.
+A control carrying several parameter mappings made the popup's mode flip repeatedly, and each flip
+erases and repaints the whole panel - 7 messages at one per tick - so the panel never finished drawing
+before the next flip restarted it.
+
+**The exact reporting pattern behind the flip was never captured.** The plausible story is that MainStage
+reports such a control once per mapping and the reports disagree, some named and some `Unmapped`; a later
+probe of all eight zone encoders showed only one call per control per polling round, so that mechanism
+is inferred, not observed. What IS established is the behaviour at both ends: the broken popup, and the
+fix.
 
 Isolated cleanly on hardware: an encoder on a multi-mapped Smart Knob drew a broken popup, an **unmapped**
 encoder drew correctly, and **removing the extra mapping fixed it**. So neither LEGACY mode nor Smart
@@ -3216,6 +3220,23 @@ Fixed by **latching the mode** for as long as the popup stays on one encoder, wi
 The latch needs its other half too: a nameless report must not blank the name already being shown, or
 the title goes empty and the panel reads as broken anyway. Every part is mutation-tested.
 
-This also explains the silence in the logs: a report with no name takes `controller_midi_out`'s early
-return, which clears the entry without logging, so CC 20-23 produced no `midi_out` lines at all while
-CC 14, 24 and 25 - single-mapped controls - reported normally.
+This also explains the silence in the logs: an `Unmapped` report takes `controller_midi_out`'s early
+return, which clears the entry without logging, so those CCs produced no `midi_out` lines at all while
+genuinely mapped controls reported normally.
+
+### A mapped Smart Control is invisible unless the SCREEN control is mapped (2026-09-24)
+
+A temporary probe logging every `controller_midi_out` call for CC 20-27, including the ones the early
+returns drop, settled a question the popup work kept running into:
+
+```
+PROBE midi_out cc=20..27  name=[Unmapped]  value=0  valueString=[]  color=yes
+```
+
+All eight zone encoders, every call, `Unmapped` - on a concert where the underlying **Smart Controls were
+mapped** but the screen controls themselves were not. MainStage reports the SCREEN control's mapping;
+whatever the Smart Control drives beneath it is never surfaced to a device script.
+
+So a popup cannot show that parameter's name: there is no name in the data. **Nothing in the script can
+fix it** - the control has to be mapped explicitly in MainStage, or given a *Replace Parameter Label*.
+Treat a report of `Unmapped` as final rather than looking for a way around it.

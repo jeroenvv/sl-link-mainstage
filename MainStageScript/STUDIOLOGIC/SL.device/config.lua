@@ -4024,6 +4024,8 @@ function controller_midi_out(midiEvent, name, valueString, color)
 	if midiEvent == nil or midiEvent[0] ~= CC_STATUS then return nil end
 
 	local cc = midiEvent[1]
+
+
 	local key = CC_NUMBER_TO_KEY[cc]
 	if key == nil then return nil end -- not one of ours
 
