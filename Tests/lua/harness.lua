@@ -4455,14 +4455,27 @@ do
 
 	-- nil name and the literal 'Unmapped' string both mean 'no feedback' - MainStage sends 'Unmapped'
 	-- for a control with no screen control assigned (see Native Instruments/KOMPLETE KONTROL
-	-- S61.device/config.lua:173 in the 4.3.1 bundle). Either must clear an existing entry.
-	midiOutFeedback[cc] = { name = 'Volume', valueString = '+0,0 dB', value = 90 }
+	-- S61.device/config.lua:173 in the 4.3.1 bundle). Either clears an entry that has NO name yet.
+	midiOutFeedback[cc] = { name = nil, valueString = nil, value = 90 }
 	controller_midi_out(frame(CC_STATUS, cc, 90), nil, nil, nil)
-	check('a nil name clears any existing feedback for that CC', midiOutFeedback[cc] == nil)
+	check('a nil name clears a nameless entry for that CC', midiOutFeedback[cc] == nil)
 
+	midiOutFeedback[cc] = { name = nil, valueString = nil, value = 90 }
+	controller_midi_out(frame(CC_STATUS, cc, 90), 'Unmapped', '', nil)
+	check("the literal name 'Unmapped' clears a nameless entry for that CC", midiOutFeedback[cc] == nil)
+
+	-- But it must NOT erase a name already learned. MainStage interleaves 'Unmapped' reports among the
+	-- named ones for a control that is genuinely mapped - measured on hardware, 378 'Low' reports for
+	-- CC 20 with 'Unmapped' mixed in. Erasing on each one dropped the popup back to LEGACY and then
+	-- upgraded it again on the next named report, so the same encoder showed its parameter name on one
+	-- gesture and its CC number on the next.
 	midiOutFeedback[cc] = { name = 'Volume', valueString = '+0,0 dB', value = 90 }
 	controller_midi_out(frame(CC_STATUS, cc, 90), 'Unmapped', '', nil)
-	check("the literal name 'Unmapped' clears any existing feedback for that CC", midiOutFeedback[cc] == nil)
+	check("'Unmapped' does not erase a name already learned",
+		midiOutFeedback[cc] ~= nil and midiOutFeedback[cc].name == 'Volume')
+	controller_midi_out(frame(CC_STATUS, cc, 90), nil, nil, nil)
+	check('...and neither does a nil name',
+		midiOutFeedback[cc] ~= nil and midiOutFeedback[cc].name == 'Volume')
 
 	-- Cache: an unchanged tuple (name/valueString/value all identical) must skip the store - proven by
 	-- reference identity, not just equal fields, so a mutation that always reassigns cannot pass this.

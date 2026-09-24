@@ -4033,6 +4033,18 @@ function controller_midi_out(midiEvent, name, valueString, color)
 	-- Native Instruments/KOMPLETE KONTROL S61.device/config.lua:173 in the 4.3.1 bundle) for a
 	-- control with no screen control assigned, same as nil - either way, no feedback for this CC.
 	if name == nil or name == 'Unmapped' then
+		-- An Unmapped report does NOT erase a name we already have. MainStage INTERLEAVES 'Unmapped'
+		-- reports among the named ones for a control that is genuinely mapped - measured on hardware,
+		-- 378 'Low' reports for CC 20 with 'Unmapped' mixed in - and deleting the entry threw the name
+		-- away each time, so the popup fell back to LEGACY and then upgraded again on the next named
+		-- report. That is what made the same encoder show its parameter name on one gesture and its CC
+		-- number on the next.
+		--
+		-- A control that is genuinely unmapped has no stored name, so it still clears. The whole table
+		-- is cleared when the concert changes, which bounds how long a stale name can survive.
+		-- See docs/config-lua-history.md#an-unmapped-report-must-not-erase-a-known-name-2026-09-24.
+		local prev = midiOutFeedback[cc]
+		if prev ~= nil and prev.name ~= nil then return nil end
 		midiOutFeedback[cc] = nil
 		return nil
 	end
