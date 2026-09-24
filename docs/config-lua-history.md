@@ -3130,10 +3130,14 @@ Minimalist template the Smart Knobs fill first and the fader is never reached, s
 encoder as the first `Knob` put it on **Smart Knob 1** and pushed all eight zone encoders along by one,
 stranding zone 8 with nothing (Zone 4's CC 31 landed on Smart Knob 5).
 
-**The fix is to match by TYPE rather than by position.** `VFader` is a real objectType - 452 uses across
-the 98 bundled MainStage scripts - so the B encoder is declared `VFader` and the eight zone encoders are
-the only `Knob`s. Zone N then lands on Smart Knob N in any layout, and the B encoder matches a fader
-wherever one exists.
+**Matching by TYPE was tried and does not work.** `VFader` is a real objectType - 452 uses across the 98
+bundled MainStage scripts - but declaring the B encoder as one changed nothing on hardware: it still took
+Smart Knob 1. The automap treats faders and knobs as **one pool of continuous controls**, so objectType
+is not a selector.
+
+**Position is the only lever.** The B encoder is therefore declared LAST among the turns (CC 90, after
+the zones' 28-31 and 56-59), so the eight zone encoders take Smart Knob 1-8 in panel order and B gets
+whatever continuous control is left over - the output fader in the stock templates.
 
 What can be relied on is only the order **within** a type; which screen control a type fills first is the
 layout's business, not ours.

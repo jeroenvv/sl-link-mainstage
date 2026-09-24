@@ -198,9 +198,9 @@ CC_STATUS = 0xB0 + CC_CHANNEL -- our CC channel's Control Change status byte - c
 -- sees eight, the popup reads 'ENC 5' and the automap fills Smart Knob 5-8. See encoder_control().
 CC_MAP = {
 	-- turns, in automap order: B -> Vertical Fader 1, zones 1-4 -> Smart Knob 1-4, 5-8 -> Smart Knob 5-8
-	ENCB_TURN = 14,
 	ENC1_TURN = 28, ENC2_TURN = 29, ENC3_TURN = 30, ENC4_TURN = 31, -- Send 1-4
 	ENC5_TURN = 56, ENC6_TURN = 57, ENC7_TURN = 58, ENC8_TURN = 59, -- Insert #1-4 Bypass
+	ENCB_TURN = 90, -- LAST among the turns; see the item list
 
 	-- buttons, in automap order: bank A's four selects -> Button 1-4
 	SEL1_SHORT = 3, SEL2_SHORT = 9, SEL3_SHORT = 15, SEL4_SHORT = 20, -- Solo, Mute, -, -
@@ -4163,7 +4163,6 @@ function controller_info()
 		-- first and every long press last. See CC_MAP's comment.
 		{name='Zone 1 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,   3, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 2 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,   9, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='B Encoder',             objectType='VFader',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  14, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 3 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  15, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 4 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  20, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 1 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  28, MIDI_LSB}, inport='LINK', outport='LINK'},
@@ -4187,6 +4186,7 @@ function controller_info()
 		{name='Zone 7 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  78, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 8 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  79, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='B Push',                objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  80, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='B Encoder',             objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  90, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 1 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 102, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 2 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 103, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 3 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 104, MIDI_LSB}, inport='LINK', outport='LINK'},
