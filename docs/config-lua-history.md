@@ -3264,3 +3264,18 @@ can therefore keep the old name until something re-reports, which is the accepte
 **Method note.** Three diagnoses of this popup were wrong before this one, each a plausible mechanism
 argued from the bytes that were already visible. What settled it was logging the code path that
 deliberately returned in silence. Dump what the host actually sends before theorising about it.
+
+### Stale names after a patch change (2026-09-24)
+
+Direct consequence of the fix above, and observed on hardware the same day: with an `Unmapped` report no
+longer clearing a known name, nothing bounded how long a name survived, and `midiOutFeedback` was dropped
+only on a **concert** change. After switching patches the encoders described the patch you had just left.
+
+`controller_select_patch` now clears the whole table on any patch change, not just a concert change. The
+cost is one gesture in LEGACY - the physical label and CC number - until the new patch reports; the
+popup's one-way upgrade then puts the name up as soon as it arrives.
+
+The harness assertion here previously required the opposite, that feedback SURVIVE a patch change so the
+popup would not blank. That reasoning was sound while `Unmapped` cleared names and became wrong the
+moment it did not. **Two coupled behaviours:** changing either one without the other produces a visible
+fault - stale names if feedback persists, flicker if it is dropped too eagerly.

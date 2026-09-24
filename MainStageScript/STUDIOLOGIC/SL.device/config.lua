@@ -4119,10 +4119,14 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 		return nil
 	end
 
-	-- A new concert invalidates every stored parameter feedback: MainStage never announces that a
-	-- control it used to report is gone, so a mute mapping from the previous concert would keep its
-	-- ring lit forever. Dropping it lets flush_mute_leds dark-assert until the new concert reports.
-	if c ~= currentConcert then midiOutFeedback = {} end
+	-- A new PATCH invalidates every stored parameter feedback. MainStage never announces that a control
+	-- it used to report is gone, and since an 'Unmapped' report no longer clears a known name (see
+	-- controller_midi_out), a name learned in one patch would otherwise persist into the next and the
+	-- encoders would describe the patch you just left. Clearing here is what bounds that: the popup
+	-- falls back to the physical label for one gesture and upgrades as soon as the new patch reports.
+	-- It also lets flush_mute_leds dark-assert a ring whose mute mapping is gone.
+	-- See docs/config-lua-history.md#stale-names-after-a-patch-change-2026-09-24.
+	midiOutFeedback = {}
 
 	patchName, setName, currentConcert = p, s, c
 	activeSetIndex = currentSetIndex or activeSetIndex
