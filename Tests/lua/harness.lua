@@ -4556,6 +4556,7 @@ do
 	drawn, pendingMessages = {}, {}
 	popupActive = true
 	popupModeIsFeedback = false -- as if a legacy popup was showing just before this call
+	popupEid = EID_ZONE2 -- a DIFFERENT control, as this case's comment says: only that may switch mode
 	show_popup(EID_ZONE1) -- now has feedback - mode switches false -> true
 	check('a mode switch re-erases: the erase is the FIRST message queued',
 		#pendingMessages >= 1 and pendingMessages[1].regionId == 'popupErase')
@@ -4566,6 +4567,7 @@ do
 	drawn, pendingMessages = {}, {}
 	popupActive = true
 	popupModeIsFeedback = true -- as if a feedback popup was showing just before this call
+	popupEid = EID_ZONE2
 	show_popup(EID_ZONE1) -- no feedback now - mode switches true -> false
 	check('the converse switch (feedback -> legacy) also re-erases',
 		#pendingMessages >= 1 and pendingMessages[1].regionId == 'popupErase')
@@ -4580,6 +4582,35 @@ do
 	show_popup(EID_ZONE1) -- still no feedback - mode unchanged
 	check('no mode change means no re-erase',
 		#pendingMessages == 0 or pendingMessages[1].regionId ~= 'popupErase')
+
+	-- (f) THE MULTI-MAPPING THRASH. A screen control carrying several parameter mappings makes
+	-- MainStage call controller_midi_out once per mapping, so reports for the SAME encoder alternate
+	-- between named and nameless. Recomputing the mode from each one flipped it every tick, and every
+	-- flip erases and repaints the whole panel - 7 messages at one per tick, so the panel never
+	-- finished. The mode is therefore latched while the popup stays on one encoder.
+	local function erasePending()
+		for i = 1, #pendingMessages do
+			if pendingMessages[i].regionId == 'popupErase' then return true end
+		end
+		return false
+	end
+	popupActive, popupEid, popupModeIsFeedback = true, EID_ZONE1, true
+	midiOutFeedback[ccWithFeedback] = { name = 'Threshold', valueString = '-12 dB', value = 40 }
+	show_popup(EID_ZONE1)
+	midiOutFeedback[ccWithFeedback] = nil -- the next mapping reports as Unmapped
+	drawn, pendingMessages = {}, {}
+	show_popup(EID_ZONE1)
+	check('a nameless report for the SAME encoder does not flip the mode', popupModeIsFeedback == true)
+	-- Latching the mode is only half of it: a latched FEEDBACK popup must keep the last name it was
+	-- given, or the nameless report blanks the title and the panel reads as broken anyway.
+	check('...and keeps the name from the report that had one', popupFeedbackName == 'Threshold')
+	check('...and queues no erase, so the panel is never restarted mid-draw',
+		not erasePending())
+	midiOutFeedback[ccWithFeedback] = { name = 'Ratio', valueString = '4:1', value = 60 }
+	drawn, pendingMessages = {}, {}
+	show_popup(EID_ZONE1)
+	check('...and a named report right after it does not flip it back either',
+		popupModeIsFeedback == true and not erasePending())
 
 	drawn, pendingMessages, popupEid, popupFeedbackActive, popupFeedbackName, popupValueString,
 		popupValue, popupControlName, popupCcNumber, popupModeIsFeedback, popupActive, midiOutFeedback =

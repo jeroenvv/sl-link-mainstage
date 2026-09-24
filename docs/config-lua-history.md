@@ -3190,11 +3190,23 @@ value was never affected because it is drawn in the 260px box below the ring ins
 
 It surfaced only now because LEGACY became permanent for four encoders at once - see below.
 
-### MainStage reports no feedback for the Smart Controls (2026-09-24)
+### A multi-mapped control thrashed the popup (2026-09-24)
 
-`controller_midi_out` never fired for CC 20-23, the four zone encoders the automap put on Smart Knob 1-4,
-while CC 14 (a volume control) and CC 24/25 (Bus sends) reported normally. With no name reported the
-popup correctly falls back to LEGACY - the physical encoder's label and CC number.
+**A screen control carrying several parameter mappings makes MainStage call `controller_midi_out` once
+per mapping**, and those reports do not agree: some arrive with a name, others as `Unmapped`. The popup
+recomputed FEEDBACK-vs-LEGACY from whichever arrived last, so the mode flipped on every encoder tick -
+and each flip erases and repaints the whole panel, which is 7 messages at one per tick. The panel never
+finished drawing before the next flip restarted it.
 
-Whether the distinction is *Smart* Controls specifically, or screen controls carrying several parameter
-mappings at once, is **not yet established**: both were true of the controls that stayed silent.
+Isolated cleanly on hardware: an encoder on a multi-mapped Smart Knob drew a broken popup, an **unmapped**
+encoder drew correctly, and **removing the extra mapping fixed it**. So neither LEGACY mode nor Smart
+Controls as such were at fault - it is specifically the several-mappings case.
+
+Fixed by **latching the mode** for as long as the popup stays on one encoder: only moving to a different
+encoder may change it. The latch needs its other half too - a nameless report must not blank the name
+already being shown, or the title goes empty and the panel reads as broken anyway. Both halves are
+mutation-tested.
+
+This also explains the silence in the logs: a report with no name takes `controller_midi_out`'s early
+return, which clears the entry without logging, so CC 20-23 produced no `midi_out` lines at all while
+CC 14, 24 and 25 - single-mapped controls - reported normally.
