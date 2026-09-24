@@ -917,12 +917,9 @@ do
 	local allTurnsAreKnobs = true
 	for control in pairs(CC_TURN) do
 		local item = byName[CC_LABEL[control]]
-		-- The B encoder is a VFader, not a Knob: it must match the output fader by TYPE rather than
-		-- compete with the zone encoders for a Smart Knob. Every other turn is a Knob.
-		local wanted = (control == 'ENCB_TURN') and 'VFader' or 'Knob'
-		if item == nil or item.objectType ~= wanted then allTurnsAreKnobs = false end
+		if item == nil or item.objectType ~= 'Knob' then allTurnsAreKnobs = false end
 	end
-	check('every turn is a Knob, except the B encoder which is a VFader', allTurnsAreKnobs)
+	check('all CC_TURN gestures generate objectType Knob', allTurnsAreKnobs)
 
 	-- CC_TURN gestures are also the only ones declared Relative2C (Change 1, 2026-09-05) - see
 	-- docs/mainstage-integration.md's "Encoders send relative deltas" section.
@@ -980,20 +977,18 @@ do
 		if item.objectType == 'Knob' then knobOrder[#knobOrder + 1] = item.name
 		elseif item.objectType == 'Button' then buttonOrder[#buttonOrder + 1] = item.name end
 	end
-	-- The eight zone encoders are the ONLY Knobs, in panel order, so zone N lands on Smart Knob N.
-	-- The B encoder must not appear among them: declared as a Knob it took Smart Knob 1 and pushed
-	-- every zone along by one, stranding zone 8 (hardware, 2026-09-24).
-	local zonesInOrder = (#knobOrder == 8)
+	-- The eight zone encoders come FIRST among the turns, in panel order, so zone N lands on Smart
+	-- Knob N; the B encoder comes LAST so it takes whatever continuous control is left over (the output
+	-- fader in the stock templates). Declared first it took Smart Knob 1 and pushed every zone along by
+	-- one, stranding zone 8 - and giving it objectType VFader did NOT help, because the automap treats
+	-- faders and knobs as one pool (hardware, 2026-09-24).
+	local zonesInOrder = (#knobOrder == 9)
 	for i = 1, 8 do
 		if knobOrder[i] ~= CC_LABEL['ENC' .. i .. '_TURN'] then zonesInOrder = false end
 	end
-	check('the eight zone encoders are the only Knobs, in panel order', zonesInOrder)
-	local faders = {}
-	for _, item in ipairs(generated) do
-		if item.objectType == 'VFader' then faders[#faders + 1] = item.name end
-	end
-	check('the B encoder is the only VFader, so it matches the output fader by type',
-		#faders == 1 and faders[1] == CC_LABEL['ENCB_TURN'])
+	check('the eight zone encoders come first among the turns, in panel order', zonesInOrder)
+	check('...and the B encoder comes last, so it never displaces a zone',
+		knobOrder[#knobOrder] == CC_LABEL['ENCB_TURN'])
 	check('the four zone selects are the first Buttons, for Button 1-4',
 		buttonOrder[1] == CC_LABEL['SEL1_SHORT'] and buttonOrder[2] == CC_LABEL['SEL2_SHORT']
 			and buttonOrder[3] == CC_LABEL['SEL3_SHORT'] and buttonOrder[4] == CC_LABEL['SEL4_SHORT'])
