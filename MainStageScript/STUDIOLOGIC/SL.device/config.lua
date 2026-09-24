@@ -183,34 +183,33 @@ CC_STATUS = 0xB0 + CC_CHANNEL -- our CC channel's Control Change status byte - c
 -- zone SELECT buttons first among the buttons, then the pushes, and every LONG press last so the automap
 -- never consumes one. Before this ordering a long press of Zone 1's encoder did 'Next Set'.
 --
--- The numbers deliberately LAND ON MainStage's own channel-strip controller table
--- (BaseplateMIDIControllers.plist: Solo 3, Mute 9, Send 1-8 at 28-35, Insert #1-16 Bypass 56-71,
--- Send Mute 1-8 at 72-79), so a gesture carries MainStage's own meaning wherever one fits. Those
--- parameters belong to a CHANNEL STRIP and therefore follow the loaded patch - right for the zone
--- controls, wrong for anything global, which is why the B encoder is deliberately NOT on CC 7
--- (Volume): it is the concert's output fader and must not change meaning with the patch.
+-- ONE BLOCK PER FAMILY, contiguous. An earlier revision scattered the numbers to land on MainStage's
+-- own channel-strip names (Send 1-4, Send Mute 1-8, Insert Bypass in BaseplateMIDIControllers.plist) in
+-- the hope its baseplate layer would drive those parameters for free. It does not - confirmed on
+-- hardware, nothing moved - so the scattering bought only a nicer-looking assignment list at the cost of
+-- a map nobody could read. See docs/config-lua-history.md#the-baseplate-does-not-act-on-our-port.
 --
 -- CC 0 and CC 32 are RESERVED - they are the Bank Select MSB/LSB every patch commit sends (see
--- queue_program). No gesture may use them, which is why bank B's turns take Insert Bypass rather than
--- a run of Sends broken by 32.
+-- queue_program). No gesture may use them; the harness asserts it.
 --
 -- Bank B is named zones 5-8 rather than '1-4 bank B': the same four physical encoders, but MainStage
 -- sees eight, the popup reads 'ENC 5' and the automap fills Smart Knob 5-8. See encoder_control().
 CC_MAP = {
-	-- turns, in automap order: B -> Vertical Fader 1, zones 1-4 -> Smart Knob 1-4, 5-8 -> Smart Knob 5-8
-	ENCB_TURN = 14, -- FIRST among the turns; see the item list
-	ENC1_TURN = 28, ENC2_TURN = 29, ENC3_TURN = 30, ENC4_TURN = 31, -- Send 1-4
-	ENC5_TURN = 56, ENC6_TURN = 57, ENC7_TURN = 58, ENC8_TURN = 59, -- Insert #1-4 Bypass
+	-- turns: B first, so a layout with a volume control gives it to B; then zones 1-8 in panel order,
+	-- filling Smart Knob 1-8
+	ENCB_TURN = 14,
+	ENC1_TURN = 20, ENC2_TURN = 21, ENC3_TURN = 22, ENC4_TURN = 23,
+	ENC5_TURN = 24, ENC6_TURN = 25, ENC7_TURN = 26, ENC8_TURN = 27,
 
-	-- buttons, in automap order: bank A's four selects -> Button 1-4
-	SEL1_SHORT = 3, SEL2_SHORT = 9, SEL3_SHORT = 15, SEL4_SHORT = 20, -- Solo, Mute, -, -
-	SEL5_SHORT = 60, SEL6_SHORT = 61, SEL7_SHORT = 62, SEL8_SHORT = 63, -- Insert #5-8 Bypass
+	-- buttons: bank A's four selects first, so they take Button 1-4
+	SEL1_SHORT = 36, SEL2_SHORT = 37, SEL3_SHORT = 38, SEL4_SHORT = 39,
+	SEL5_SHORT = 40, SEL6_SHORT = 41, SEL7_SHORT = 42, SEL8_SHORT = 43,
 
-	ENC1_PRESS_SHORT = 72, ENC2_PRESS_SHORT = 73, -- Send Mute 1-4
-	ENC3_PRESS_SHORT = 74, ENC4_PRESS_SHORT = 75,
-	ENC5_PRESS_SHORT = 76, ENC6_PRESS_SHORT = 77, -- Send Mute 5-8
-	ENC7_PRESS_SHORT = 78, ENC8_PRESS_SHORT = 79,
-	ENCB_PRESS_SHORT = 80,
+	ENC1_PRESS_SHORT = 44, ENC2_PRESS_SHORT = 45,
+	ENC3_PRESS_SHORT = 46, ENC4_PRESS_SHORT = 47,
+	ENC5_PRESS_SHORT = 48, ENC6_PRESS_SHORT = 49,
+	ENC7_PRESS_SHORT = 50, ENC8_PRESS_SHORT = 51,
+	ENCB_PRESS_SHORT = 52,
 
 	-- every LONG press after every short one, so none is ever auto-assigned
 	SEL1_LONG = 102, SEL2_LONG = 103, SEL3_LONG = 104, SEL4_LONG = 105,
@@ -4160,32 +4159,32 @@ function controller_info()
 		-- Hence: B FIRST among the turns, so a layout that has a volume control gives it to B; then the
 		-- eight zones in panel order. Among Buttons, zones 1-4 Select first and every long press last.
 		-- See docs/config-lua-history.md#the-automap-fills-per-layout-not-to-a-fixed-rule-2026-09-24.
-		{name='Zone 1 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,   3, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 2 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,   9, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='B Encoder',             objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  14, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 3 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  15, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 4 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  20, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 1 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  28, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 2 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  29, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 3 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  30, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 4 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  31, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 5 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  56, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 6 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  57, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 7 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  58, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 8 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  59, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 5 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  60, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 6 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  61, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 7 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  62, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 8 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  63, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 1 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  72, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 2 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  73, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 3 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  74, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 4 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  75, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 5 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  76, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 6 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  77, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 7 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  78, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 8 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  79, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='B Push',                objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  80, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 1 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  20, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  21, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  22, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  23, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 5 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  24, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 6 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  25, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 7 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  26, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 8 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  27, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 1 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  36, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  37, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  38, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  39, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 5 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  40, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 6 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  41, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 7 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  42, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 8 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  43, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 1 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  44, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  45, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  46, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  47, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 5 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  48, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 6 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  49, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 7 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  50, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 8 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  51, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='B Push',                objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  52, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 1 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 102, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 2 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 103, MIDI_LSB}, inport='LINK', outport='LINK'},
 		{name='Zone 3 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 104, MIDI_LSB}, inport='LINK', outport='LINK'},

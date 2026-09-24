@@ -3109,18 +3109,18 @@ popup would name the wrong control, the RGB rings would show the other bank's co
 would jump on a bank switch because both banks shared one value. The harness mutation-tests each of
 those four separately.
 
-### The numbers now land ON MainStage's table, not around it
+### One contiguous block per family
 
-The previous map was chosen to avoid `BaseplateMIDIControllers.plist`; this one aims at it, so a gesture
-carries MainStage's own meaning where one fits - Send 1-4, Send Mute 1-8, Insert Bypass. Those are
-**channel-strip** parameters, resolved per port and channel, so they follow the loaded patch. That is
-right for the zone controls and wrong for anything global, which is why the B encoder is deliberately NOT
-on CC 7 (Volume): it is the concert's output fader, and on CC 7 the same knob would mean the output or a
-per-patch strip volume depending on where MainStage was pointing.
+The map was briefly laid directly ON `BaseplateMIDIControllers.plist`'s numbers - Send 1-4, Send Mute
+1-8, Insert Bypass - so that each gesture would carry MainStage's own meaning. That was worth trying and
+did not pay off (see below): the baseplate does not act, so the only thing the scattering bought was an
+assignment list with nicer names, at the cost of a map nobody could read and a dodge around CC 32.
+
+The numbering is therefore one contiguous block per family: turns 14 and 20-27, selects 36-43, pushes
+44-52, long presses 102-118.
 
 **CC 0 and CC 32 are reserved** for the Bank Select MSB/LSB every patch commit sends. A gesture on either
-would be indistinguishable from a patch change on the wire, which is why bank B's encoders take Insert
-Bypass rather than a run of Sends broken by 32.
+would be indistinguishable from a patch change on the wire.
 
 ### The automap fills per LAYOUT, not to a fixed rule (2026-09-24)
 

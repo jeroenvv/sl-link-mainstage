@@ -5040,9 +5040,9 @@ do
 
 	-- A turn-only control keeps its number in the SHORT column rather than drifting right.
 	check('a paired row shows both CCs',
-		config_cc_text({ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' }) == ' 72  110')
+		config_cc_text({ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' }) == ' 44  110')
 	-- Both columns pad to three characters, so a two-digit turn lines up under a three-digit press.
-	check('a turn-only row pads the LONG column', config_cc_text({ 'ENC1_TURN' }) == ' 28    -')
+	check('a turn-only row pads the LONG column', config_cc_text({ 'ENC1_TURN' }) == ' 20    -')
 	check('...and both rows are the same width',
 		#config_cc_text({ 'ENC1_TURN' }) == #config_cc_text({ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' }))
 
@@ -5363,12 +5363,10 @@ do
 	handle_sl_frame(press(PRESS_LONG))
 	check('a LONG press commits too', pendingProgram == 0)
 
-	-- The press CC is gone: 48 and 49 unused, and the button carries no mapping.
+	-- The press carries no CC at all. There is no reserved gap to check any more - the whole map was
+	-- renumbered in 3.0.0, so no old number needs preserving; what matters is that no JOY_* key exists.
 	check('the joystick press has no CC mapping', button_cc(BID_JOY_MAIN) == nil)
 	check('...and JOY_PRESS_SHORT is gone from CC_MAP', CC_MAP['JOY_PRESS_SHORT'] == nil)
-	local used = {}
-	for _, n in pairs(CC_MAP) do used[n] = true end
-	check('CC 48 and 49 are left unused', used[48] == nil and used[49] == nil)
 
 	-- REVERT: an uncommitted browse goes back to the playing patch after BROWSE_IDLE_TICKS.
 	activeSetIndex, activePatchIndex = 0, 0 -- P1 is playing

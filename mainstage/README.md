@@ -40,20 +40,19 @@ carry **sequential program numbers**: select them in the Patch List, then
 
 Everything the SL88 sends, on **channel 16**. Anything the automap did not claim is yours to MIDI Learn.
 
-| CC | Control | MainStage calls it |
-|---:|:--|:--|
-| 3, 9 | Zone 1–2 Select | Solo, Mute |
-| 14 | B Encoder | — |
-| 15, 20 | Zone 3–4 Select | — |
-| 28–31 | Zone 1–4 Encoder | Send 1–4 |
-| 56–59 | Zone 5–8 Encoder | Insert #1–4 Bypass |
-| 60–63 | Zone 5–8 Select | Insert #5–8 Bypass |
-| 72–79 | Zone 1–8 Push | Send Mute 1–8 |
-| 80 | B Push | — |
-| 102–118 | the 17 long presses | — |
+| CC | Control |
+|---:|:--|
+| 14 | B Encoder |
+| 20–27 | Zone 1–8 Encoder |
+| 36–39 | Zone 1–4 Select |
+| 40–43 | Zone 5–8 Select |
+| 44–51 | Zone 1–8 Push |
+| 52 | B Push |
+| 102–109 | Zone 1–8 Select (long) |
+| 110–117 | Zone 1–8 Push (long) |
+| 118 | B Push (long) |
 
-These numbers deliberately land on MainStage's own channel-strip names, so a gesture carries its meaning
-where one fits. CC 0 and 32 are never used — they are the Bank Select pair patch selection sends.
+CC 0 and 32 are never used — they are the Bank Select pair patch selection sends.
 
 Two attributes on a mapped control drive what the SL88 shows in its popup:
 
