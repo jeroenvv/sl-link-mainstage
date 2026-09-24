@@ -119,6 +119,8 @@ BID_GLOBAL = 0x09 -- spec's Global Button, confirmed on hardware 2026-09-20; tog
 	-- docs/implementing-sl-link.md section 6.
 	-- MUST stay out of BUTTON_CC: it is the script's own UI button, not a mappable control (the
 	-- harness asserts this). See docs/config-lua-history.md#the-config-screen-2026-09-20
+BID_DAW = 0x0A -- spec's DAW Button; confirmed on hardware 2026-09-24 - it reports as (03 <instance>)
+	-- 01 0A 01 and the session survives the press, unlike Apply. Toggles the encoder bank.
 BID_JOY_UP = 0x11
 BID_JOY_LEFT = 0x12
 BID_JOY_DOWN = 0x13
@@ -142,6 +144,8 @@ BID_A_ENC = 0x0B -- SLButtonID.aEncoderButton; toggles Master Volume mute (handl
 -- joystick have none.
 WLID_HOME = 0x07 -- Home button lamp (panel: ZOOM); see docs/implementing-sl-link.md section 6
 WLID_GLOBAL = 0x08 -- Global button lamp (panel: SETTINGS); lit only while the config screen shows
+WLID_DAW = 0x09 -- DAW button lamp; lit in encoder bank B. Id from the spec's LED table, see
+	-- docs/implementing-sl-link.md section 6
 WLID_A_ENC = 0x0A
 WLID_B_ENC = 0x0B
 
@@ -179,85 +183,161 @@ CC_STATUS = 0xB0 + CC_CHANNEL -- our CC channel's Control Change status byte - c
 -- zone SELECT buttons first among the buttons, then the pushes, and every LONG press last so the automap
 -- never consumes one. Before this ordering a long press of Zone 1's encoder did 'Next Set'.
 --
--- The numbers avoid MainStage's own channel-strip controller table (Insert Bypass 56-71, Send Mute
--- 72-79 in BaseplateMIDIControllers.plist) and the MIDI spec's defined controllers. 85-90 and 102-119
--- are free in both.
+-- The numbers deliberately LAND ON MainStage's own channel-strip controller table
+-- (BaseplateMIDIControllers.plist: Solo 3, Mute 9, Send 1-8 at 28-35, Insert #1-16 Bypass 56-71,
+-- Send Mute 1-8 at 72-79), so a gesture carries MainStage's own meaning wherever one fits. Those
+-- parameters belong to a CHANNEL STRIP and therefore follow the loaded patch - right for the zone
+-- controls, wrong for anything global, which is why the B encoder is deliberately NOT on CC 7
+-- (Volume): it is the concert's output fader and must not change meaning with the patch.
+--
+-- CC 0 and CC 32 are RESERVED - they are the Bank Select MSB/LSB every patch commit sends (see
+-- queue_program). No gesture may use them, which is why bank B's turns take Insert Bypass rather than
+-- a run of Sends broken by 32.
+--
+-- Bank B is named zones 5-8 rather than '1-4 bank B': the same four physical encoders, but MainStage
+-- sees eight, the popup reads 'ENC 5' and the automap fills Smart Knob 5-8. See encoder_control().
 CC_MAP = {
-	-- turns, in automap order: B -> Vertical Fader 1, zones 1-4 -> Smart Knob 1-4
-	ENCB_TURN = 85,
-	ENC1_TURN = 86, ENC2_TURN = 87, ENC3_TURN = 88, ENC4_TURN = 89,
+	-- turns, in automap order: B -> Vertical Fader 1, zones 1-4 -> Smart Knob 1-4, 5-8 -> Smart Knob 5-8
+	ENCB_TURN = 14,
+	ENC1_TURN = 28, ENC2_TURN = 29, ENC3_TURN = 30, ENC4_TURN = 31, -- Send 1-4
+	ENC5_TURN = 56, ENC6_TURN = 57, ENC7_TURN = 58, ENC8_TURN = 59, -- Insert #1-4 Bypass
 
-	-- buttons, in automap order: the four selects -> Button 1-4
-	SEL1_SHORT = 102, SEL2_SHORT = 103, SEL3_SHORT = 104, SEL4_SHORT = 105,
-	ENC1_PRESS_SHORT = 106, ENC2_PRESS_SHORT = 107,
-	ENC3_PRESS_SHORT = 108, ENC4_PRESS_SHORT = 109,
-	ENCB_PRESS_SHORT = 110,
+	-- buttons, in automap order: bank A's four selects -> Button 1-4
+	SEL1_SHORT = 3, SEL2_SHORT = 9, SEL3_SHORT = 15, SEL4_SHORT = 20, -- Solo, Mute, -, -
+	SEL5_SHORT = 60, SEL6_SHORT = 61, SEL7_SHORT = 62, SEL8_SHORT = 63, -- Insert #5-8 Bypass
+
+	ENC1_PRESS_SHORT = 72, ENC2_PRESS_SHORT = 73, -- Send Mute 1-4
+	ENC3_PRESS_SHORT = 74, ENC4_PRESS_SHORT = 75,
+	ENC5_PRESS_SHORT = 76, ENC6_PRESS_SHORT = 77, -- Send Mute 5-8
+	ENC7_PRESS_SHORT = 78, ENC8_PRESS_SHORT = 79,
+	ENCB_PRESS_SHORT = 80,
 
 	-- every LONG press after every short one, so none is ever auto-assigned
-	SEL1_LONG = 111, SEL2_LONG = 112, SEL3_LONG = 113, SEL4_LONG = 114,
-	ENC1_PRESS_LONG = 115, ENC2_PRESS_LONG = 116,
-	ENC3_PRESS_LONG = 117, ENC4_PRESS_LONG = 118,
-	ENCB_PRESS_LONG = 119,
+	SEL1_LONG = 102, SEL2_LONG = 103, SEL3_LONG = 104, SEL4_LONG = 105,
+	SEL5_LONG = 106, SEL6_LONG = 107, SEL7_LONG = 108, SEL8_LONG = 109,
+	ENC1_PRESS_LONG = 110, ENC2_PRESS_LONG = 111,
+	ENC3_PRESS_LONG = 112, ENC4_PRESS_LONG = 113,
+	ENC5_PRESS_LONG = 114, ENC6_PRESS_LONG = 115,
+	ENC7_PRESS_LONG = 116, ENC8_PRESS_LONG = 117,
+	ENCB_PRESS_LONG = 118,
 }
 
 -- Human-readable name per CC_MAP key, for the controller_info() items generated below - shown in
 -- MainStage's Layout mode. One entry per CC_MAP key, no more, no less (asserted by the harness).
 CC_LABEL = {
+	ENC1_TURN = 'Zone 1 Encoder', ENC2_TURN = 'Zone 2 Encoder',
+	ENC3_TURN = 'Zone 3 Encoder', ENC4_TURN = 'Zone 4 Encoder',
+	ENC5_TURN = 'Zone 5 Encoder', ENC6_TURN = 'Zone 6 Encoder',
+	ENC7_TURN = 'Zone 7 Encoder', ENC8_TURN = 'Zone 8 Encoder',
+
+	ENCB_TURN = 'B Encoder',
+	ENCB_PRESS_SHORT = 'B Push', ENCB_PRESS_LONG = 'B Push (long)',
+
 	ENC1_PRESS_SHORT = 'Zone 1 Push', ENC1_PRESS_LONG = 'Zone 1 Push (long)',
 	ENC2_PRESS_SHORT = 'Zone 2 Push', ENC2_PRESS_LONG = 'Zone 2 Push (long)',
 	ENC3_PRESS_SHORT = 'Zone 3 Push', ENC3_PRESS_LONG = 'Zone 3 Push (long)',
 	ENC4_PRESS_SHORT = 'Zone 4 Push', ENC4_PRESS_LONG = 'Zone 4 Push (long)',
-
-	ENC1_TURN = 'Zone 1 Encoder', ENC2_TURN = 'Zone 2 Encoder',
-	ENC3_TURN = 'Zone 3 Encoder', ENC4_TURN = 'Zone 4 Encoder',
-
-	ENCB_TURN = 'B Encoder',
-	ENCB_PRESS_SHORT = 'B Push', ENCB_PRESS_LONG = 'B Push (long)',
+	ENC5_PRESS_SHORT = 'Zone 5 Push', ENC5_PRESS_LONG = 'Zone 5 Push (long)',
+	ENC6_PRESS_SHORT = 'Zone 6 Push', ENC6_PRESS_LONG = 'Zone 6 Push (long)',
+	ENC7_PRESS_SHORT = 'Zone 7 Push', ENC7_PRESS_LONG = 'Zone 7 Push (long)',
+	ENC8_PRESS_SHORT = 'Zone 8 Push', ENC8_PRESS_LONG = 'Zone 8 Push (long)',
 
 	SEL1_SHORT = 'Zone 1 Select', SEL1_LONG = 'Zone 1 Select (long)',
 	SEL2_SHORT = 'Zone 2 Select', SEL2_LONG = 'Zone 2 Select (long)',
 	SEL3_SHORT = 'Zone 3 Select', SEL3_LONG = 'Zone 3 Select (long)',
 	SEL4_SHORT = 'Zone 4 Select', SEL4_LONG = 'Zone 4 Select (long)',
+	SEL5_SHORT = 'Zone 5 Select', SEL5_LONG = 'Zone 5 Select (long)',
+	SEL6_SHORT = 'Zone 6 Select', SEL6_LONG = 'Zone 6 Select (long)',
+	SEL7_SHORT = 'Zone 7 Select', SEL7_LONG = 'Zone 7 Select (long)',
+	SEL8_SHORT = 'Zone 8 Select', SEL8_LONG = 'Zone 8 Select (long)',
 }
 
 -- The continuous (Knob) gestures; every other CC_MAP key is a momentary Button.
 CC_TURN = {
-	ENC1_TURN = true, ENC2_TURN = true, ENC3_TURN = true, ENC4_TURN = true, ENCB_TURN = true,
+	ENC1_TURN = true, ENC2_TURN = true, ENC3_TURN = true, ENC4_TURN = true,
+	ENC5_TURN = true, ENC6_TURN = true, ENC7_TURN = true, ENC8_TURN = true,
+	ENCB_TURN = true,
 }
 
--- BID -> { short, long } CC_MAP keys, for every button wired to a CC. The joystick is deliberately
--- absent: its tilts and press select patches directly (see JOYSTICK_NAV).
-BUTTON_CC = {
-	[BID_ZONE1_SEL] = { short = 'SEL1_SHORT', long = 'SEL1_LONG' },
-	[BID_ZONE2_SEL] = { short = 'SEL2_SHORT', long = 'SEL2_LONG' },
-	[BID_ZONE3_SEL] = { short = 'SEL3_SHORT', long = 'SEL3_LONG' },
-	[BID_ZONE4_SEL] = { short = 'SEL4_SHORT', long = 'SEL4_LONG' },
-	[BID_ZONE1_ENC] = { short = 'ENC1_PRESS_SHORT', long = 'ENC1_PRESS_LONG' },
-	[BID_ZONE2_ENC] = { short = 'ENC2_PRESS_SHORT', long = 'ENC2_PRESS_LONG' },
-	[BID_ZONE3_ENC] = { short = 'ENC3_PRESS_SHORT', long = 'ENC3_PRESS_LONG' },
-	[BID_ZONE4_ENC] = { short = 'ENC4_PRESS_SHORT', long = 'ENC4_PRESS_LONG' },
-	[BID_B_ENC]     = { short = 'ENCB_PRESS_SHORT', long = 'ENCB_PRESS_LONG' },
+-- BID -> { short, long } CC_MAP keys, per BANK, for every button wired to a CC. The joystick is
+-- deliberately absent: its tilts and press select patches directly (see JOYSTICK_NAV). The B push is
+-- the same in both banks - only the zone controls bank. Read through button_cc(), never directly.
+BUTTON_CC_BANK = {
+	a = {
+		[BID_ZONE1_SEL] = { short = 'SEL1_SHORT', long = 'SEL1_LONG' },
+		[BID_ZONE2_SEL] = { short = 'SEL2_SHORT', long = 'SEL2_LONG' },
+		[BID_ZONE3_SEL] = { short = 'SEL3_SHORT', long = 'SEL3_LONG' },
+		[BID_ZONE4_SEL] = { short = 'SEL4_SHORT', long = 'SEL4_LONG' },
+		[BID_ZONE1_ENC] = { short = 'ENC1_PRESS_SHORT', long = 'ENC1_PRESS_LONG' },
+		[BID_ZONE2_ENC] = { short = 'ENC2_PRESS_SHORT', long = 'ENC2_PRESS_LONG' },
+		[BID_ZONE3_ENC] = { short = 'ENC3_PRESS_SHORT', long = 'ENC3_PRESS_LONG' },
+		[BID_ZONE4_ENC] = { short = 'ENC4_PRESS_SHORT', long = 'ENC4_PRESS_LONG' },
+		[BID_B_ENC]     = { short = 'ENCB_PRESS_SHORT', long = 'ENCB_PRESS_LONG' },
+	},
+	b = {
+		[BID_ZONE1_SEL] = { short = 'SEL5_SHORT', long = 'SEL5_LONG' },
+		[BID_ZONE2_SEL] = { short = 'SEL6_SHORT', long = 'SEL6_LONG' },
+		[BID_ZONE3_SEL] = { short = 'SEL7_SHORT', long = 'SEL7_LONG' },
+		[BID_ZONE4_SEL] = { short = 'SEL8_SHORT', long = 'SEL8_LONG' },
+		[BID_ZONE1_ENC] = { short = 'ENC5_PRESS_SHORT', long = 'ENC5_PRESS_LONG' },
+		[BID_ZONE2_ENC] = { short = 'ENC6_PRESS_SHORT', long = 'ENC6_PRESS_LONG' },
+		[BID_ZONE3_ENC] = { short = 'ENC7_PRESS_SHORT', long = 'ENC7_PRESS_LONG' },
+		[BID_ZONE4_ENC] = { short = 'ENC8_PRESS_SHORT', long = 'ENC8_PRESS_LONG' },
+		[BID_B_ENC]     = { short = 'ENCB_PRESS_SHORT', long = 'ENCB_PRESS_LONG' },
+	},
 }
 
 -- EID -> CC_MAP key, for every encoder wired to a CC. A is deliberately absent (see EID_A's comment
 -- above).
-ENCODER_CC = {
-	[EID_ZONE1] = 'ENC1_TURN',
-	[EID_ZONE2] = 'ENC2_TURN',
-	[EID_ZONE3] = 'ENC3_TURN',
-	[EID_ZONE4] = 'ENC4_TURN',
-	[EID_B] = 'ENCB_TURN',
+ENCODER_CC_BANK = {
+	a = {
+		[EID_ZONE1] = 'ENC1_TURN',
+		[EID_ZONE2] = 'ENC2_TURN',
+		[EID_ZONE3] = 'ENC3_TURN',
+		[EID_ZONE4] = 'ENC4_TURN',
+		[EID_B] = 'ENCB_TURN',
+	},
+	b = {
+		[EID_ZONE1] = 'ENC5_TURN',
+		[EID_ZONE2] = 'ENC6_TURN',
+		[EID_ZONE3] = 'ENC7_TURN',
+		[EID_ZONE4] = 'ENC8_TURN',
+		[EID_B] = 'ENCB_TURN', -- the B encoder is the output fader in both banks
+	},
 }
 
 -- EID -> short display name, for the encoder value popup's label (see "MARK: - Encoder value
 -- popup"). Same key set as ENCODER_CC, since only encoders wired to a CC ever show a popup.
-ENCODER_NAME = {
-	[EID_ZONE1] = 'ENC 1',
-	[EID_ZONE2] = 'ENC 2',
-	[EID_ZONE3] = 'ENC 3',
-	[EID_ZONE4] = 'ENC 4',
-	[EID_B] = 'ENC B',
+ENCODER_NAME_BANK = {
+	a = {
+		[EID_ZONE1] = 'ENC 1',
+		[EID_ZONE2] = 'ENC 2',
+		[EID_ZONE3] = 'ENC 3',
+		[EID_ZONE4] = 'ENC 4',
+		[EID_B] = 'ENC B',
+	},
+	b = {
+		[EID_ZONE1] = 'ENC 5',
+		[EID_ZONE2] = 'ENC 6',
+		[EID_ZONE3] = 'ENC 7',
+		[EID_ZONE4] = 'ENC 8',
+		[EID_B] = 'ENC B',
+	},
 }
+
+-- MARK: - Encoder bank
+--
+-- The four zone encoders, their pushes and the four zone select buttons exist TWICE: bank 'a' is zones
+-- 1-4, bank 'b' is zones 5-8, toggled by the DAW button (see handle_daw_button). Everything keyed by
+-- encoder or zone button must read through the three accessors below rather than indexing a table
+-- directly, or the popup and the RGB rings end up describing the bank you are not in.
+encoderBank = 'a'
+
+function encoder_control(eid) return ENCODER_CC_BANK[encoderBank][eid] end
+function encoder_name(eid) return ENCODER_NAME_BANK[encoderBank][eid] end
+function button_cc(bid) return BUTTON_CC_BANK[encoderBank][bid] end
+function encoder_value(eid) return encoderValueBank[encoderBank][eid] end
+function set_encoder_value(eid, v) encoderValueBank[encoderBank][eid] = v end
 
 -- Batch cap for one controller_midi_in return: 16 CCs (48 bytes, 3 bytes each) - well under
 -- MainStage's measured ~78-byte injection ceiling, where an oversized array is discarded WHOLE
@@ -436,9 +516,15 @@ pendingDelta = {} -- control name -> accumulated SIGNED relative delta, for CC_T
 pendingCCOrder = {} -- insertion order of pendingCC's/pendingDelta's keys, for a deterministic batch
 pendingReleases = {} -- controls whose 127 press already went out; queue their 0 release the NEXT
 	-- round (see queue_momentary_cc())
-encoderValue = { -- absolute 0-127 tracked value per encoder wired to a CC
-	[EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
-	[EID_JOYSTICK] = 64, [EID_B] = 64,
+-- Absolute 0-127 tracked value per encoder wired to a CC, PER BANK: zone 1 in bank 'a' and zone 5 in
+-- bank 'b' are the same knob but different parameters, so they must not share a gauge - switching bank
+-- would make the popup's ring jump to the other bank's position. Read through encoder_value(), which
+-- resolves the active bank. See the Encoder bank section.
+encoderValueBank = {
+	a = { [EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
+		[EID_JOYSTICK] = 64, [EID_B] = 64 },
+	b = { [EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
+		[EID_JOYSTICK] = 64, [EID_B] = 64 },
 }
 
 -- Safe mid-scale starting point for masterVolume: not 0, and not 100 where a single click could
@@ -1803,7 +1889,7 @@ encoderRingSent = {}
 -- screen-control-2026-09-17.
 function encoder_mute_state(eid)
 	local bid = eid and ENCODER_MUTE_BUTTON[eid]
-	local buttonCc = bid and BUTTON_CC[bid]
+	local buttonCc = bid and button_cc(bid)
 	local cc = buttonCc and CC_MAP[buttonCc.short]
 	local fb = cc and midiOutFeedback[cc]
 	if fb == nil or fb.name == nil or not fb.name:lower():find('mute', 1, true) then
@@ -1877,6 +1963,13 @@ function flush_mode_led()
 		globalLedSent = configOn
 		queue_message(msg_white_led(WLID_GLOBAL, configOn))
 	end
+	-- DAW lamp: lit in encoder bank B. The bank is otherwise invisible - the same four knobs move
+	-- either way - so this lamp is the only thing telling you which set you are turning.
+	local bankOn = (encoderBank == 'b')
+	if dawLedSent ~= bankOn then
+		dawLedSent = bankOn
+		queue_message(msg_white_led(WLID_DAW, bankOn))
+	end
 end
 
 function flush_mute_leds()
@@ -1919,7 +2012,7 @@ end
 function flush_encoder_rings()
 	if state ~= STATE_ACTIVE then return end
 	for eid, lid in pairs(ENCODER_RGB_LID) do
-		local cc = CC_MAP[ENCODER_CC[eid]]
+		local cc = CC_MAP[encoder_control(eid)]
 		local fb = cc and midiOutFeedback[cc]
 		local _, muted = encoder_mute_state(eid)
 		local r, g, b, bright = 0, 0, 0, 0
@@ -1971,16 +2064,16 @@ function show_popup(eid)
 	-- Belt and braces for the ring: its own branch in handle_sl_frame never reaches here, but the patch
 	-- list is its feedback and a popup would cover the very screen showing the selection.
 	if eid == EID_JOYSTICK then return end
-	local control = ENCODER_CC[eid]
+	local control = encoder_control(eid)
 	if control == nil then return end
 
 	local cc = CC_MAP[control]
 	local fb = midiOutFeedback[cc]
 
 	popupEid = eid
-	popupControlName = ENCODER_NAME[eid]
+	popupControlName = encoder_name(eid)
 	popupCcNumber = cc
-	popupValue = fb and fb.value or encoderValue[eid]
+	popupValue = fb and fb.value or encoder_value(eid)
 	popupMax = 127
 	-- FEEDBACK mode exists to show MainStage's own name, so a nameless entry (see controller_midi_out's
 	-- empty-name filter) falls back to LEGACY: the physical encoder's label and CC number. The ring still
@@ -2478,14 +2571,26 @@ CONFIG_ROWS = {
 	{ 'ENC2_TURN' },
 	{ 'ENC3_TURN' },
 	{ 'ENC4_TURN' },
+	{ 'ENC5_TURN' },
+	{ 'ENC6_TURN' },
+	{ 'ENC7_TURN' },
+	{ 'ENC8_TURN' },
 	{ 'SEL1_SHORT', 'SEL1_LONG' },
 	{ 'SEL2_SHORT', 'SEL2_LONG' },
 	{ 'SEL3_SHORT', 'SEL3_LONG' },
 	{ 'SEL4_SHORT', 'SEL4_LONG' },
+	{ 'SEL5_SHORT', 'SEL5_LONG' },
+	{ 'SEL6_SHORT', 'SEL6_LONG' },
+	{ 'SEL7_SHORT', 'SEL7_LONG' },
+	{ 'SEL8_SHORT', 'SEL8_LONG' },
 	{ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' },
 	{ 'ENC2_PRESS_SHORT', 'ENC2_PRESS_LONG' },
 	{ 'ENC3_PRESS_SHORT', 'ENC3_PRESS_LONG' },
 	{ 'ENC4_PRESS_SHORT', 'ENC4_PRESS_LONG' },
+	{ 'ENC5_PRESS_SHORT', 'ENC5_PRESS_LONG' },
+	{ 'ENC6_PRESS_SHORT', 'ENC6_PRESS_LONG' },
+	{ 'ENC7_PRESS_SHORT', 'ENC7_PRESS_LONG' },
+	{ 'ENC8_PRESS_SHORT', 'ENC8_PRESS_LONG' },
 	{ 'ENCB_PRESS_SHORT', 'ENCB_PRESS_LONG' },
 }
 
@@ -2919,7 +3024,7 @@ function enter_active_session()
 	-- Forget what the mute rings were last sent, so the next tick re-establishes them for this
 	-- session rather than trusting a memo from before the SL88 confirmed us - same reasoning as
 	-- invalidate_all() for the display. See docs/config-lua-history.md#startup-led-discarded-before-login-confirmation-2026-09-16.
-	encoderMuteLedSent, encoderRingSent, homeLedSent, globalLedSent = {}, {}, nil, nil
+	encoderMuteLedSent, encoderRingSent, homeLedSent, globalLedSent, dawLedSent = {}, {}, nil, nil, nil
 	return true
 end
 
@@ -2940,7 +3045,7 @@ function handle_login()
 	end
 	-- And the mute rings, for the same reason: enter_active_session's own clear does not run when we
 	-- were already ACTIVE, so a ring set before this confirmation was discarded and never re-sent.
-	encoderMuteLedSent, encoderRingSent, homeLedSent, globalLedSent = {}, {}, nil, nil
+	encoderMuteLedSent, encoderRingSent, homeLedSent, globalLedSent, dawLedSent = {}, {}, nil, nil, nil
 end
 
 function handle_standby()
@@ -3114,11 +3219,13 @@ function handle_sl_frame(e)
 	elseif itemType == IT_BUTTON then
 		local bid = func
 		local pressKind = e[9]
-		local ccButton = BUTTON_CC[bid]
+		local ccButton = button_cc(bid)
 		if bid == BID_HOME then
 			handle_home_button(pressKind)
 		elseif bid == BID_GLOBAL then
 			handle_global_button(pressKind)
+		elseif bid == BID_DAW then
+			handle_daw_button(pressKind)
 		elseif bid == BID_JOY_MAIN then
 			handle_joystick_press(pressKind)
 		elseif JOYSTICK_NAV[bid] ~= nil and (pressKind == PRESS_SHORT or pressKind == PRESS_LONG) then
@@ -3192,11 +3299,11 @@ function handle_sl_frame(e)
 			request_quick_rearm()
 			slog('<- RING browse -> cursor=' .. cursorIndex .. ' (patch ' .. cursor_patch_ordinal() .. ')')
 		else
-			local control = ENCODER_CC[eid]
+			local control = encoder_control(eid)
 			if control ~= nil then
-				local newValue = encoderValue[eid] + delta
+				local newValue = encoder_value(eid) + delta
 				if newValue < 0 then newValue = 0 elseif newValue > 127 then newValue = 127 end
-				encoderValue[eid] = newValue -- still tracked for show_popup's ring gauge, not for what's emitted below
+				set_encoder_value(eid, newValue) -- still tracked for show_popup's ring gauge, not for what's emitted below
 				if delta ~= 0 then
 					-- Relative2C two's complement; wire encoding confirmed on hardware 2026-09-05, see
 					-- docs/mainstage-integration.md. queue_relative_cc accumulates the raw signed delta;
@@ -3328,6 +3435,20 @@ function handle_joystick_direction(bid, pressKind)
 	request_quick_rearm()
 end
 
+-- The DAW button toggles the encoder bank: the four zone encoders, their pushes and the four zone
+-- select buttons all switch between zones 1-4 and zones 5-8. Latched, not momentary, so both hands stay
+-- free while turning; its own lamp carries the state (see flush_mode_led). LONG runs the same action as
+-- SHORT, the project rule for LONG_PRESSION (see handle_home_button).
+--
+-- Repaint afterwards: the config screen lists the bank's CCs, and a popup showing an encoder's name
+-- would otherwise keep describing the bank you just left.
+function handle_daw_button(pressKind)
+	encoderBank = (encoderBank == 'a') and 'b' or 'a'
+	slog('<- BUTTON daw - encoder bank -> ' .. encoderBank)
+	update_screen()
+	request_quick_rearm()
+end
+
 -- The Global button (panel: SETTINGS) toggles the config screen, restoring whatever it covered. LONG runs the same action as
 -- SHORT rather than being dropped - the project rule for LONG_PRESSION (see handle_home_button's
 -- comment); a second effect on a screen-toggle button would only surprise.
@@ -3371,10 +3492,13 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	pendingDelta = {}
 	pendingCCOrder = {}
 	pendingReleases = {}
-	encoderValue = {
-		[EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
-		[EID_JOYSTICK] = 64, [EID_B] = 64,
+	encoderValueBank = {
+		a = { [EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
+			[EID_JOYSTICK] = 64, [EID_B] = 64 },
+		b = { [EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
+			[EID_JOYSTICK] = 64, [EID_B] = 64 },
 	}
+	encoderBank = 'a'
 	displayMode = 'zoom' -- see the displayMode declaration above for why
 	patchName, setName, currentConcert = '', '', ''
 	activeSetIndex, activePatchIndex = 0, 0
@@ -4029,38 +4153,54 @@ function controller_info()
 		-- No joystick items: the whole joystick drives patch selection in-script (see JOYSTICK_NAV),
 		-- so it has nothing for MainStage to learn.
 
-		-- ORDER IS LOAD-BEARING - it decides what a fresh concert automaps to. See CC_MAP's comment.
-
-		-- turns: B first, so it lands on Vertical Fader 1; zones 1-4 then fill Smart Knob 1-4
-		{name='B Encoder',       objectType='Knob',  midiType='Relative2C',  midi={0xB0 + CC_CHANNEL,  85, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 1 Encoder',  objectType='Knob',  midiType='Relative2C',  midi={0xB0 + CC_CHANNEL,  86, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 2 Encoder',  objectType='Knob',  midiType='Relative2C',  midi={0xB0 + CC_CHANNEL,  87, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 3 Encoder',  objectType='Knob',  midiType='Relative2C',  midi={0xB0 + CC_CHANNEL,  88, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 4 Encoder',  objectType='Knob',  midiType='Relative2C',  midi={0xB0 + CC_CHANNEL,  89, MIDI_LSB}, inport='LINK', outport='LINK'},
-
-		-- zone selects: first among the buttons, so they fill Button 1-4 (Prev/Next Set, Prev/Next Patch)
-		{name='Zone 1 Select',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 102, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 2 Select',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 103, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 3 Select',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 104, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 4 Select',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 105, MIDI_LSB}, inport='LINK', outport='LINK'},
-
-		-- encoder pushes
-		{name='Zone 1 Push',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 106, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 2 Push',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 107, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 3 Push',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 108, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 4 Push',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 109, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='B Push',       objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 110, MIDI_LSB}, inport='LINK', outport='LINK'},
-
-		-- LONG presses last, so the automap never consumes one
-		{name='Zone 1 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 111, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 2 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 112, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 3 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 113, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 4 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 114, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 1 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 115, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 2 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 116, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 3 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 117, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='Zone 4 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 118, MIDI_LSB}, inport='LINK', outport='LINK'},
-		{name='B Push (long)',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 119, MIDI_LSB}, inport='LINK', outport='LINK'},
+		-- ORDER IS LOAD-BEARING - it decides what a fresh concert automaps to. Listed in ascending CC
+		-- order, which also satisfies both per-type orderings the automap cares about: among Knobs, B
+		-- first (-> Vertical Fader 1) then zones 1-4 (-> Smart Knob 1-4) then zones 5-8 (-> Smart Knob
+		-- 5-8); among Buttons, zones 1-4 Select first (-> Button 1-4) and every long press last.
+		-- See CC_MAP's comment.
+		{name='Zone 1 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,   3, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,   9, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='B Encoder',             objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  14, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  15, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  20, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 1 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  28, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  29, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  30, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  31, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 5 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  56, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 6 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  57, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 7 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  58, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 8 Encoder',        objectType='Knob',    midiType='Relative2C',    midi={0xB0 + CC_CHANNEL,  59, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 5 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  60, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 6 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  61, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 7 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  62, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 8 Select',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  63, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 1 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  72, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  73, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  74, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  75, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 5 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  76, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 6 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  77, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 7 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  78, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 8 Push',           objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  79, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='B Push',                objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL,  80, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 1 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 102, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 103, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 104, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 105, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 5 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 106, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 6 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 107, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 7 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 108, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 8 Select (long)',  objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 109, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 1 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 110, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 2 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 111, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 3 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 112, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 4 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 113, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 5 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 114, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 6 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 115, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 7 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 116, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='Zone 8 Push (long)',    objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 117, MIDI_LSB}, inport='LINK', outport='LINK'},
+		{name='B Push (long)',         objectType='Button',  midiType='Momentary',  midi={0xB0 + CC_CHANNEL, 118, MIDI_LSB}, inport='LINK', outport='LINK'},
 	}
 
 	return {
