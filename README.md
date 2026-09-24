@@ -61,7 +61,7 @@ shows which build MainStage actually has loaded). Semantic versioning:
 - **major** — anything that breaks an existing MainStage MIDI-Learn mapping (the CC map in
   `config.lua`) or changes the install layout
 
-The major bump matters in practice: the 23 CC assignments are MIDI-Learned by hand in MainStage, so
+The major bump matters in practice: the 43 CC assignments are MIDI-Learned by hand in MainStage, so
 renumbering one silently breaks a working rig.
 
 ## Releases
