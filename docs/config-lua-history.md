@@ -3135,9 +3135,22 @@ bundled MainStage scripts - but declaring the B encoder as one changed nothing o
 Smart Knob 1. The automap treats faders and knobs as **one pool of continuous controls**, so objectType
 is not a selector.
 
-**Position is the only lever.** The B encoder is therefore declared LAST among the turns (CC 90, after
-the zones' 28-31 and 56-59), so the eight zone encoders take Smart Knob 1-8 in panel order and B gets
-whatever continuous control is left over - the output fader in the stock templates.
+**Position is the only lever, and there is no ordering that suits every layout.** With B last, the
+Keyboard template - which does have a volume control on screen - gave that volume to *zone 1*, which is
+worse than a shifted macro: volume is the one control that must be B. So B is declared FIRST (CC 14).
+The accepted cost is that a layout without a volume control, such as Keyboard Minimalist, gives B its
+first Smart Knob and shifts the zones along by one, stranding zone 8.
 
 What can be relied on is only the order **within** a type; which screen control a type fills first is the
 layout's business, not ours.
+
+### The baseplate does not act on our port (2026-09-24)
+
+The whole point of moving the CC map onto MainStage's own numbers - Send 1-4, Send Mute 1-8, Insert
+Bypass - was the possibility that MainStage's baseplate layer would then drive those channel-strip
+parameters with no mapping at all. **It does not.** On a fresh concert with nothing assigned by hand,
+turning a zone encoder moved no send and pressing a zone select soloed nothing.
+
+What the numbering still buys is that each gesture shows up in MainStage's assignment list under a name
+it already knows, which makes a hand-mapped rig easier to read. That is worth keeping, but it is a
+cosmetic benefit, not a functional one - do not reason as though the baseplate were live.

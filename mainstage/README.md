@@ -43,13 +43,13 @@ Everything the SL88 sends, on **channel 16**. Anything the automap did not claim
 | CC | Control | MainStage calls it |
 |---:|:--|:--|
 | 3, 9 | Zone 1–2 Select | Solo, Mute |
+| 14 | B Encoder | — |
 | 15, 20 | Zone 3–4 Select | — |
 | 28–31 | Zone 1–4 Encoder | Send 1–4 |
 | 56–59 | Zone 5–8 Encoder | Insert #1–4 Bypass |
 | 60–63 | Zone 5–8 Select | Insert #5–8 Bypass |
 | 72–79 | Zone 1–8 Push | Send Mute 1–8 |
 | 80 | B Push | — |
-| 90 | B Encoder | — |
 | 102–118 | the 17 long presses | — |
 
 These numbers deliberately land on MainStage's own channel-strip names, so a gesture carries its meaning

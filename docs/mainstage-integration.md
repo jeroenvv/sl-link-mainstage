@@ -325,13 +325,13 @@ joystick do not bank.
 | CC | Gesture | MainStage calls it |
 |---:|:--|:--|
 | 3, 9 | Zone 1–2 Select | **Solo**, **Mute** |
+| 14 | B Encoder | — (first among the turns, so it takes any volume control) |
 | 15, 20 | Zone 3–4 Select | — |
 | 28–31 | Zone 1–4 Encoder | **Send 1–4** |
 | 56–59 | Zone 5–8 Encoder | **Insert #1–4 Bypass** |
 | 60–63 | Zone 5–8 Select | **Insert #5–8 Bypass** |
 | 72–79 | Zone 1–8 Push | **Send Mute 1–8** |
 | 80 | B Push | — |
-| 90 | B Encoder | — (last among the turns, so it never displaces a zone) |
 | 102–118 | the 17 long presses | — |
 
 **The numbers land on MainStage's own table deliberately**, the opposite of the earlier map that avoided
@@ -363,8 +363,8 @@ With the SL88 connected, MainStage **assigns a fresh concert's screen controls b
 
 | Screen control | Gets | Which is |
 |:--|:--|:--|
-| Smart Knob 1–8 | the first eight continuous items | Zone 1–8 Encoder |
-| Vertical Fader 1 | the ninth | B Encoder |
+| the first continuous control | the first turn | B Encoder |
+| the next eight | in panel order | Zone 1–8 Encoder |
 | Button 1–4 | the first four `Button`s | Zone 1–4 Select |
 
 **Which screen control a type fills first is the layout's business.** Keyboard Minimalist fills Smart
@@ -372,9 +372,10 @@ Knobs before the fader; another concert filled the fader first. Only the order *
 relied on.
 
 **`objectType` is not a selector.** Declaring the B encoder as `VFader` rather than `Knob` changed
-nothing — the automap treats faders and knobs as one pool of continuous controls. So the B encoder is
-placed **last** among the turns instead, leaving the eight zone encoders to take Smart Knob 1–8 in panel
-order. Placed first it took Smart Knob 1 and shifted every zone encoder by one, stranding zone 8.
+nothing — the automap treats faders and knobs as one pool. So position is the only lever, and no single
+order suits every layout: B **first** gives a layout's volume control to B (right), at the cost of
+taking Smart Knob 1 and shifting the zones in a layout that has no volume control. Volume being on the
+wrong knob is the worse failure, so B goes first.
 
 The stock templates wire Button 1–4 to Prev Set, Next Set, Prev Patch, Next Patch, and map Smart Knob
 1–4 to whatever the loaded patch's Smart Controls are — so the assignments are fixed while the parameters
