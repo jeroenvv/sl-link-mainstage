@@ -767,8 +767,8 @@ end
 do
 	drawn = {}
 	pendingMessages = {}
-	local name = ENCODER_NAME[EID_ZONE1]
-	local ccNumber = CC_MAP[ENCODER_CC[EID_ZONE1]]
+	local name = encoder_name(EID_ZONE1)
+	local ccNumber = CC_MAP[encoder_control(EID_ZONE1)]
 
 	draw_popup_label(name, ccNumber)
 
@@ -937,7 +937,7 @@ do
 	check('the ring has no CC mapping', CC_MAP['JOY_ROTATE'] == nil)
 	check('...and no label', CC_LABEL['JOY_ROTATE'] == nil)
 	check('...and is not a CC_TURN gesture', CC_TURN['JOY_ROTATE'] == nil)
-	check('...and no encoder is wired to it', ENCODER_CC[EID_JOYSTICK] == nil)
+	check('...and no encoder is wired to it', encoder_control(EID_JOYSTICK) == nil)
 	local anyJoyKey = false
 	for key in pairs(CC_MAP) do
 		if key:find('^JOY_') then anyJoyKey = true end
@@ -948,22 +948,25 @@ do
 	check('no JOY_* gesture is left in CC_MAP or CC_LABEL', anyJoyKey == false)
 	-- The count is stated in CC_MAP's own comment, controller_info()'s comment, the README and
 	-- docs/mainstage-integration.md's table. It had already drifted (34 vs 31) before this pinned it.
-	check('CC_MAP has 23 gestures (update those four places if this changes)', ccMapCount == 23)
-	-- The map must stay clear of MainStage's OWN channel-strip controller table (Insert Bypass 56-71,
-	-- Send Mute 72-79 in BaseplateMIDIControllers.plist) and of the MIDI spec's defined controllers.
-	-- 85-90 and 102-119 are free in both; nothing may drift back out of them.
-	local function inFreeSpace(n) return (n >= 85 and n <= 90) or (n >= 102 and n <= 119) end
-	local strayCc = nil
+	check('CC_MAP has 43 gestures (update those four places if this changes)', ccMapCount == 43)
+	-- The map deliberately LANDS ON MainStage's own channel-strip numbers now (Send 1-8 at 28-35,
+	-- Insert Bypass 56-71, Send Mute 72-79) so a gesture carries MainStage's meaning. Two numbers are
+	-- nonetheless off limits: CC 0 and CC 32 are the Bank Select MSB/LSB every patch commit sends, so a
+	-- gesture using one would be indistinguishable from a patch change on the wire.
+	local reserved = nil
 	for key, n in pairs(CC_MAP) do
-		if not inFreeSpace(n) then strayCc = key .. '=' .. n end
+		if n == 0 or n == 32 then reserved = key .. '=' .. n end
 	end
-	check('every CC sits in free space (85-90, 102-119) (' .. tostring(strayCc) .. ')', strayCc == nil)
-	local strayItem = nil
+	check('no gesture uses the reserved Bank Select CCs 0 and 32 (' .. tostring(reserved) .. ')',
+		reserved == nil)
+	local reservedItem = nil
 	for _, item in ipairs(generated) do
-		if not inFreeSpace(item.midi[2]) then strayItem = item.name .. '=' .. item.midi[2] end
+		local n = item.midi[2]
+		-- 120-127 are Channel Mode messages (all notes off, reset controllers); never a gesture.
+		if n == 0 or n == 32 or n >= 120 then reservedItem = item.name .. '=' .. n end
 	end
-	check('controller_info() declares nothing outside free space (' .. tostring(strayItem) .. ')',
-		strayItem == nil)
+	check('controller_info() declares nothing on a reserved or channel-mode CC ('
+		.. tostring(reservedItem) .. ')', reservedItem == nil)
 
 	-- AUTOMAP ORDER. With the SL88 connected MainStage fills a fresh concert's screen controls from
 	-- these items in declaration order, per type: first Knob -> Vertical Fader 1, next four -> Smart
@@ -995,7 +998,7 @@ do
 		lateShort == nil)
 	local tiltsWired = true
 	for _, bid in ipairs({ BID_JOY_UP, BID_JOY_DOWN, BID_JOY_LEFT, BID_JOY_RIGHT }) do
-		if BUTTON_CC[bid] ~= nil or JOYSTICK_NAV[bid] == nil then tiltsWired = false end
+		if button_cc(bid) ~= nil or JOYSTICK_NAV[bid] == nil then tiltsWired = false end
 	end
 	check('every joystick tilt is in JOYSTICK_NAV and absent from BUTTON_CC', tiltsWired)
 
@@ -1035,13 +1038,13 @@ local function cc_value_in(bytes, ccNumber)
 end
 
 do
-	local savedEncoderValue = encoderValue[EID_ZONE1]
+	local savedEncoderValue = encoder_value(EID_ZONE1)
 	local ENC1_CC = CC_MAP['ENC1_TURN']
 
 	-- One tick, one flush: wire-encodes to the Relative2C byte for that raw delta.
 	local function tick(delta)
 		pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
-		encoderValue[EID_ZONE1] = 64
+		set_encoder_value(EID_ZONE1, 64)
 		handle_sl_frame(encoder_frame(EID_ZONE1, 0x40 + delta))
 		local out = flush_pending_cc()
 		-- nil is the "nothing emitted" return (a net-zero delta) - not an empty table, which would
@@ -1059,7 +1062,7 @@ do
 	-- THE REGRESSION: a net-zero batch must return nil, never { midi = {} } - an empty table swallows
 	-- the inbound event and costs the round its SL flush for no MIDI at all.
 	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
-	encoderValue[EID_ZONE1] = 64
+	set_encoder_value(EID_ZONE1, 64)
 	handle_sl_frame(encoder_frame(EID_ZONE1, 0x40 + 1))
 	handle_sl_frame(encoder_frame(EID_ZONE1, 0x40 - 1))
 	check('THE REGRESSION: a net-zero CC batch returns nil, not an event-swallowing empty table',
@@ -1086,16 +1089,16 @@ do
 	end
 
 	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
-	encoderValue[EID_ZONE1] = 125
+	set_encoder_value(EID_ZONE1, 125)
 	handle_sl_frame(encoder_frame(EID_ZONE1, 0x40 + 5))
-	check('encoderValue still accumulates and clamps to 127', encoderValue[EID_ZONE1] == 127)
+	check('encoderValue still accumulates and clamps to 127', encoder_value(EID_ZONE1) == 127)
 
 	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
-	encoderValue[EID_ZONE1] = 2
+	set_encoder_value(EID_ZONE1, 2)
 	handle_sl_frame(encoder_frame(EID_ZONE1, 0x40 - 5))
-	check('encoderValue still accumulates and clamps to 0', encoderValue[EID_ZONE1] == 0)
+	check('encoderValue still accumulates and clamps to 0', encoder_value(EID_ZONE1) == 0)
 
-	encoderValue[EID_ZONE1] = savedEncoderValue
+	set_encoder_value(EID_ZONE1, savedEncoderValue)
 end
 
 -- MARK: - 25. Relative CC coalescing: accumulate, don't replace (fix 2026-09-05)
@@ -4524,8 +4527,8 @@ do
 	-- popupFeedbackActive branch itself, not just paint_popup_legacy() in isolation.
 	drawn, pendingMessages = {}, {}
 	popupFeedbackActive = false
-	popupControlName = ENCODER_NAME[EID_ZONE1]
-	popupCcNumber = CC_MAP[ENCODER_CC[EID_ZONE1]]
+	popupControlName = encoder_name(EID_ZONE1)
+	popupCcNumber = CC_MAP[encoder_control(EID_ZONE1)]
 	popupValue = 90
 	paint_popup_screen()
 	check('legacy mode (dispatched via paint_popup_screen) queues the same 8-message shape',
@@ -4880,8 +4883,8 @@ do
 	check('CONFIG_ROWS covers every CC_MAP key (' .. tostring(missing) .. ')', missing == nil)
 
 	-- 'Unmappable for MIDI' is exactly this: no BUTTON_CC entry, so no CC and no controller_info item.
-	check('GLOBAL is absent from BUTTON_CC', BUTTON_CC[BID_GLOBAL] == nil)
-	check('HOME is absent from BUTTON_CC', BUTTON_CC[BID_HOME] == nil)
+	check('GLOBAL is absent from BUTTON_CC', button_cc(BID_GLOBAL) == nil)
+	check('HOME is absent from BUTTON_CC', button_cc(BID_HOME) == nil)
 
 	-- Scroll clamps at both ends; the last page is a full window, never a short one.
 	displayMode = 'config'
@@ -5029,9 +5032,9 @@ do
 
 	-- A turn-only control keeps its number in the SHORT column rather than drifting right.
 	check('a paired row shows both CCs',
-		config_cc_text({ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' }) == '106  115')
+		config_cc_text({ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' }) == ' 72  110')
 	-- Both columns pad to three characters, so a two-digit turn lines up under a three-digit press.
-	check('a turn-only row pads the LONG column', config_cc_text({ 'ENC1_TURN' }) == ' 86    -')
+	check('a turn-only row pads the LONG column', config_cc_text({ 'ENC1_TURN' }) == ' 28    -')
 	check('...and both rows are the same width',
 		#config_cc_text({ 'ENC1_TURN' }) == #config_cc_text({ 'ENC1_PRESS_SHORT', 'ENC1_PRESS_LONG' }))
 
@@ -5074,8 +5077,8 @@ do
 		end
 		return nil
 	end
-	local zone1Cc = CC_MAP[ENCODER_CC[EID_ZONE1]]
-	local zone1Push = CC_MAP[BUTTON_CC[ENCODER_MUTE_BUTTON[EID_ZONE1]].short]
+	local zone1Cc = CC_MAP[encoder_control(EID_ZONE1)]
+	local zone1Push = CC_MAP[button_cc(ENCODER_MUTE_BUTTON[EID_ZONE1]).short]
 	local lid = ENCODER_RGB_LID[EID_ZONE1]
 
 	-- A mapped, unmuted knob lights its ring in MainStage's colour.
@@ -5248,7 +5251,7 @@ do
 	do
 		local savedFb, savedMode, savedActive = midiOutFeedback, displayMode, popupActive
 		midiOutFeedback, displayMode, popupActive = {}, 'list', false
-		local zoneCc = CC_MAP[ENCODER_CC[EID_ZONE1]]
+		local zoneCc = CC_MAP[encoder_control(EID_ZONE1)]
 		local ev = { [0] = CC_STATUS, [1] = zoneCc, [2] = 91 }
 
 		controller_midi_out(ev, '   ', '0,0', { r = 1.0, g = 0.5, b = 0.0 })
@@ -5259,7 +5262,7 @@ do
 
 		show_popup(EID_ZONE1)
 		check('a nameless control falls back to the legacy popup title', popupFeedbackActive == false)
-		check('...and that title names the physical encoder', popupControlName == ENCODER_NAME[EID_ZONE1])
+		check('...and that title names the physical encoder', popupControlName == encoder_name(EID_ZONE1))
 
 		-- A real name still selects feedback mode.
 		popupActive = false
@@ -5353,7 +5356,7 @@ do
 	check('a LONG press commits too', pendingProgram == 0)
 
 	-- The press CC is gone: 48 and 49 unused, and the button carries no mapping.
-	check('the joystick press has no CC mapping', BUTTON_CC[BID_JOY_MAIN] == nil)
+	check('the joystick press has no CC mapping', button_cc(BID_JOY_MAIN) == nil)
 	check('...and JOY_PRESS_SHORT is gone from CC_MAP', CC_MAP['JOY_PRESS_SHORT'] == nil)
 	local used = {}
 	for _, n in pairs(CC_MAP) do used[n] = true end
@@ -5676,6 +5679,135 @@ do
 	pendingCC, pendingDelta, pendingCCOrder = savedCC, savedDelta, savedOrder
 	pendingProgram, pendingBank = savedProgram, savedBank
 	browsePending, browseLastActivityIdleTick = savedBrowse, savedBrowseTick
+end
+
+-- MARK: - 89. The encoder bank: DAW toggles it, and everything keyed by encoder follows
+--
+-- The four zone encoders, their pushes and the four zone selects exist twice - zones 1-4 and zones 5-8 -
+-- on one set of physical controls. Anything that reads a table by eid or bid must go through the bank
+-- accessors, or it describes the bank you are not in. See docs/config-lua-history.md#encoder-bank.
+do
+	local savedBank, savedMode, savedState = encoderBank, displayMode, state
+	local savedCC, savedDelta, savedOrder = pendingCC, pendingDelta, pendingCCOrder
+	local savedPending, savedDrawn = pendingMessages, drawn
+	local savedFeedback, savedLed = midiOutFeedback, dawLedSent
+
+	local function daw(kind)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, BID_DAW,
+			kind, 0xF7)
+	end
+	local function turn(eid, delta)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, eid,
+			0x40 + delta, 0xF7)
+	end
+	local function press(bid, kind)
+		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, bid, kind, 0xF7)
+	end
+	local function emitted()
+		local out = {}
+		for control in pairs(pendingCC) do out[#out + 1] = control end
+		for control in pairs(pendingDelta) do out[#out + 1] = control end
+		return out[1]
+	end
+	local function reset()
+		pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	end
+
+	displayMode, state = 'list', STATE_ACTIVE
+
+	-- THE SWITCH
+	encoderBank = 'a'
+	handle_sl_frame(daw(PRESS_SHORT))
+	check('the DAW button switches to bank b', encoderBank == 'b')
+	handle_sl_frame(daw(PRESS_SHORT))
+	check('...and back to bank a', encoderBank == 'a')
+	handle_sl_frame(daw(PRESS_LONG))
+	check('a LONG DAW press switches too', encoderBank == 'b')
+	encoderBank = 'a'
+
+	-- TURNS follow the bank.
+	reset(); handle_sl_frame(turn(EID_ZONE1, 1))
+	check('zone 1 turns emit ENC1_TURN in bank a', emitted() == 'ENC1_TURN')
+	encoderBank = 'b'
+	reset(); handle_sl_frame(turn(EID_ZONE1, 1))
+	check('...and ENC5_TURN in bank b', emitted() == 'ENC5_TURN')
+	-- The B encoder is the output fader in BOTH banks, so it must not move.
+	reset(); handle_sl_frame(turn(EID_B, 1))
+	check('the B encoder is unbanked', emitted() == 'ENCB_TURN')
+
+	-- PUSHES and SELECTS follow the bank.
+	encoderBank = 'a'
+	reset(); handle_sl_frame(press(BID_ZONE1_ENC, PRESS_SHORT))
+	check('zone 1 push emits ENC1_PRESS_SHORT in bank a', emitted() == 'ENC1_PRESS_SHORT')
+	reset(); handle_sl_frame(press(BID_ZONE1_SEL, PRESS_SHORT))
+	check('zone 1 select emits SEL1_SHORT in bank a', emitted() == 'SEL1_SHORT')
+	encoderBank = 'b'
+	reset(); handle_sl_frame(press(BID_ZONE1_ENC, PRESS_SHORT))
+	check('...ENC5_PRESS_SHORT in bank b', emitted() == 'ENC5_PRESS_SHORT')
+	reset(); handle_sl_frame(press(BID_ZONE1_SEL, PRESS_SHORT))
+	check('...and SEL5_SHORT in bank b', emitted() == 'SEL5_SHORT')
+	reset(); handle_sl_frame(press(BID_B_ENC, PRESS_SHORT))
+	check('the B push is unbanked', emitted() == 'ENCB_PRESS_SHORT')
+
+	-- THE POPUP names the active bank's control, not the physical encoder's position.
+	encoderBank = 'a'
+	show_popup(EID_ZONE1)
+	check('the popup names ENC 1 in bank a', popupControlName == 'ENC 1')
+	check('...at bank a\'s CC', popupCcNumber == CC_MAP['ENC1_TURN'])
+	encoderBank = 'b'
+	show_popup(EID_ZONE1)
+	check('the popup names ENC 5 in bank b', popupControlName == 'ENC 5')
+	check('...at bank b\'s CC', popupCcNumber == CC_MAP['ENC5_TURN'])
+
+	-- THE GAUGE is per bank: turning in one bank must not move the other's.
+	encoderBank = 'a'
+	set_encoder_value(EID_ZONE1, 10)
+	encoderBank = 'b'
+	set_encoder_value(EID_ZONE1, 100)
+	encoderBank = 'a'
+	check('each bank keeps its own encoder value', encoder_value(EID_ZONE1) == 10)
+	encoderBank = 'b'
+	check('...and the other bank is untouched', encoder_value(EID_ZONE1) == 100)
+
+	-- THE RING reads the active bank's feedback entry, so each ring shows ITS parameter's colour.
+	midiOutFeedback = {}
+	midiOutFeedback[CC_MAP['ENC1_TURN']] = { value = 1, name = 'A', color = { r = 1, g = 0, b = 0 } }
+	midiOutFeedback[CC_MAP['ENC5_TURN']] = { value = 1, name = 'B', color = { r = 0, g = 0, b = 1 } }
+	local function ringBytes()
+		pendingMessages, encoderRingSent = {}, {}
+		flush_encoder_rings()
+		for _, m in ipairs(pendingMessages) do
+			if m.regionId == 'ring' .. ENCODER_RGB_LID[EID_ZONE1] then return hex(m) end
+		end
+		return nil
+	end
+	encoderBank = 'a'
+	local ringA = ringBytes()
+	encoderBank = 'b'
+	local ringB = ringBytes()
+	check('the ring is drawn in both banks', ringA ~= nil and ringB ~= nil)
+	check('...and follows the active bank\'s parameter colour', ringA ~= ringB)
+
+	-- THE LAMP is the only indication of the bank, since the knobs look identical either way.
+	local function lampState()
+		pendingMessages = {}
+		flush_mode_led()
+		for _, m in ipairs(pendingMessages) do
+			if m[8] == IT_LED and m[9] == WLID_DAW then return m[10] end
+		end
+		return nil
+	end
+	encoderBank, dawLedSent = 'b', nil
+	local litValue = lampState()
+	encoderBank, dawLedSent = 'a', nil
+	local darkValue = lampState()
+	check('the DAW lamp is written in both banks', litValue ~= nil and darkValue ~= nil)
+	check('...lit in bank b and dark in bank a', litValue ~= darkValue)
+
+	encoderBank, displayMode, state = savedBank, savedMode, savedState
+	pendingCC, pendingDelta, pendingCCOrder = savedCC, savedDelta, savedOrder
+	pendingMessages, drawn = savedPending, savedDrawn
+	midiOutFeedback, dawLedSent = savedFeedback, savedLed
 end
 
 -- MARK: - Summary
