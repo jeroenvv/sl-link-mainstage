@@ -315,38 +315,58 @@ to map. This is the same pattern Novation's Launchkey script uses ("Round 5" abo
 recognisable MIDI event and let the user assign it in Layout mode, rather than trying to reach a
 parser the script has no legitimate route into.
 
-### CC map (23 gestures, CC 85–89 and 102–119)
+### CC map (43 gestures, two encoder banks)
 
-Copied from `CC_MAP` in `config.lua`:
+The four zone encoders, their pushes and the four zone select buttons exist **twice** — bank A is zones
+1–4, bank B is zones 5–8 — on one set of physical controls, toggled by the **DAW button** (BID `0x0A`,
+confirmed on hardware 2026-09-24) and shown by its lamp (WLID `0x09`). The B encoder, the B push and the
+joystick do not bank.
 
-| CC | Gesture | Type |
+| CC | Gesture | MainStage calls it |
 |---:|:--|:--|
-| 85 | `B Encoder` | Knob |
-| 86–89 | `Zone 1–4 Encoder` | Knob |
-| 102–105 | `Zone 1–4 Select` | Button |
-| 106–109 | `Zone 1–4 Push` | Button |
-| 110 | `B Push` | Button |
-| 111–114 | `Zone 1–4 Select (long)` | Button |
-| 115–118 | `Zone 1–4 Push (long)` | Button |
-| 119 | `B Push (long)` | Button |
+| 3, 9 | Zone 1–2 Select | **Solo**, **Mute** |
+| 14 | B Encoder | — |
+| 15, 20 | Zone 3–4 Select | — |
+| 28–31 | Zone 1–4 Encoder | **Send 1–4** |
+| 56–59 | Zone 5–8 Encoder | **Insert #1–4 Bypass** |
+| 60–63 | Zone 5–8 Select | **Insert #5–8 Bypass** |
+| 72–79 | Zone 1–8 Push | **Send Mute 1–8** |
+| 80 | B Push | — |
+| 102–118 | the 17 long presses | — |
 
-The joystick appears nowhere: tilts, press and ring all select patches in the script instead.
+**The numbers land on MainStage's own table deliberately**, the opposite of the earlier map that avoided
+it. Those parameters belong to a **channel strip**, so they follow the loaded patch — right for the zone
+controls, wrong for anything global, which is why the B encoder is *not* on CC 7 (Volume): it is the
+concert's output fader and must not change meaning with the patch.
 
-**Why these numbers.** They dodge two things. MainStage keeps its own channel-strip controller table in
-`BaseplateMIDIControllers.plist` — Volume 7, Pan 10, Sends 28–35, **Insert #1–16 Bypass 56–71, Send Mute
-1–8 72–79** — and the MIDI spec defines 64–79 as switches and sound controllers. 85–90 and 102–119 are
-free in both. The earlier 51–74 map sat squarely on the Insert Bypass block.
+**CC 0 and CC 32 are reserved.** They are the Bank Select MSB/LSB every patch commit sends, so no
+gesture may use one — which is why bank B's encoders take Insert Bypass rather than a run of Sends
+broken by 32. The harness asserts it.
+
+### The baseplate
+
+MainStage's own CC→channel-strip table lives in `MainStage.app/Contents/Resources/`:
+
+- `BaseplateMIDIControllers.plist` — Solo 3, Volume 7, Balance 8, Mute 9, Pan 10, Expression 11,
+  Send 1–8 at 28–35, Insert #1–16 Bypass at 56–71, Send Mute 1–8 at 72–79.
+- `BaseplateMIDIControllersMIDI.plist` — the MIDI-strip variant, only Insert Bypass 56–71.
+
+`MainStageCore` consumes them through `MABaseplateParameterMapping` and
+`WsMIDIBaseplateControlsForPort(port, channel, isMIDI)`, so the set is resolved **per port and per
+channel**. Whether it engages for the LINK port is not yet established — see
+`docs/config-lua-history.md` for the hardware result.
 
 ### Automap
 
 With the SL88 connected, MainStage **assigns a fresh concert's screen controls by itself** from the items
 `controller_info()` declares. It takes them per type, in declaration order:
 
-| Screen control | Gets |
-|:--|:--|
-| Vertical Fader 1 | the first `Knob` |
-| Smart Knob 1–4 | the next four `Knob`s |
-| Button 1–4 | the first four `Button`s |
+| Screen control | Gets | Which is |
+|:--|:--|:--|
+| Vertical Fader 1 | the first `Knob` | B Encoder |
+| Smart Knob 1–4 | the next four `Knob`s | Zone 1–4 Encoder |
+| Smart Knob 5–8 | the next four after those | Zone 5–8 Encoder (bank B) |
+| Button 1–4 | the first four `Button`s | Zone 1–4 Select |
 
 The stock templates wire Button 1–4 to Prev Set, Next Set, Prev Patch, Next Patch, and map Smart Knob
 1–4 to whatever the loaded patch's Smart Controls are — so the assignments are fixed while the parameters
