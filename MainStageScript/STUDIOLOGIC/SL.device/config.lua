@@ -1611,6 +1611,13 @@ POPUP_PAD = 10 -- inset for the label/value text, so neither touches the panel's
 -- reaches the SL88; see draw_popup_title.
 POPUP_TEXT_MAX_CHARS = 22
 
+-- Conservative UPPER bounds on glyph width, for asserting that text fits the box it is drawn in.
+-- Derived from measurements, not the font: 43 characters fill a 304px box at SIZE_SMALL (7.07px each)
+-- and roughly 26 at SIZE_MEDIUM (11.7px each), so these round up. Used by the harness - a box that only
+-- just fits is the failure mode here, since the device MANGLES rather than trims when it overflows.
+CHAR_W_SMALL = 8
+CHAR_W_MEDIUM = 13
+
 POPUP_CONTENT_X = POPUP_X + POPUP_PAD
 POPUP_CONTENT_W = POPUP_W - 2 * POPUP_PAD
 
@@ -1765,8 +1772,11 @@ function draw_popup_title(name)
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
--- Same SIZE_MEDIUM/non-zero-maxWidth safety as draw_popup_label above - a 1-3 digit value is even
--- shorter than the label, so truncation is not in play here either.
+-- SIZE_SMALL, not medium. This box is only KNOB_HOLE_W (36px) wide - it has to fit inside the ring's
+-- hole - and a three-digit value at SIZE_MEDIUM needs about 39px. It therefore overflowed, and Max Width
+-- truncation MANGLES rather than trims at medium, rendering garbage inside the ring. At SIZE_SMALL three
+-- digits need about 24px and fit with room to spare. The harness asserts it against CHAR_W_*.
+-- See docs/config-lua-history.md#the-in-ring-value-overflowed-its-hole-2026-09-24.
 -- value may be nil - shown as '--', never as a number (defensive; no current caller passes nil
 -- since MVOL_SEED_DEFAULT replaced the placeholder - see
 -- docs/config-lua-history.md#seed-master-volume-at-60-instead-of-refusing-to-write-2026-09-12).
@@ -1775,7 +1785,7 @@ end
 function draw_popup_value(value)
 	local text = value and tostring(value) or '--'
 	return draw_text('popupValue', text, POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W,
-		ALIGN_CENTER, SIZE_MEDIUM, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
+		ALIGN_CENTER, SIZE_SMALL, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 

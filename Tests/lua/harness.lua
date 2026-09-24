@@ -2107,7 +2107,7 @@ do
 		checkHex(
 			'...matching the exact bytes of Write Text "--" at the popup value\'s own position/colours',
 			pendingMessages[1],
-			hex(msg_write_text('--', POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W, ALIGN_CENTER, SIZE_MEDIUM,
+			hex(msg_write_text('--', POPUP_VALUE_X, POPUP_VALUE_Y, POPUP_VALUE_W, ALIGN_CENTER, SIZE_SMALL,
 				POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
 				POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3]))
 		)
@@ -5872,6 +5872,35 @@ do
 	end)())
 
 	drawn, pendingMessages = savedDrawn, savedPending
+end
+
+-- MARK: - 91. The in-ring value must fit the knob's hole at the size it is drawn
+--
+-- POPUP_VALUE_W is the ring's hole (KNOB_HOLE_W). The device MANGLES rather than trims when text
+-- overflows at SIZE_MEDIUM, so a value that only just fits renders as garbage inside the ring - which is
+-- what a three-digit value at medium did. See docs/config-lua-history.md#the-in-ring-value-overflowed-
+-- its-hole-2026-09-24.
+do
+	local savedDrawn, savedPending = drawn, pendingMessages
+	drawn, pendingMessages = {}, {}
+	draw_popup_value(127) -- the widest value an encoder can report
+	local size, text = nil, nil
+	for _, m in ipairs(pendingMessages) do
+		if m.regionId == 'popupValue' then
+			size = m[17]
+			local out, i = {}, 24
+			while m[i] ~= nil and m[i] ~= 0x00 do out[#out + 1] = string.char(m[i]); i = i + 1 end
+			text = table.concat(out)
+		end
+	end
+	drawn, pendingMessages = savedDrawn, savedPending
+
+	check('the widest value is sent in full, not pre-cut', text == '127')
+	check('the in-ring value is drawn at SIZE_SMALL', size == SIZE_SMALL)
+	local widthFor = { [SIZE_SMALL] = CHAR_W_SMALL, [SIZE_MEDIUM] = CHAR_W_MEDIUM }
+	check('...and three digits fit POPUP_VALUE_W at that size, so the device never truncates',
+		size ~= nil and #text * widthFor[size] <= POPUP_VALUE_W)
+	check('the value box is no wider than the ring hole it sits in', POPUP_VALUE_W <= KNOB_HOLE_W)
 end
 
 -- MARK: - Summary
