@@ -52,7 +52,7 @@ browsed patch waits), and the zoom screen carries ⇕ ⇔ beside its counter.
 
 ## Versioning
 
-Current version: **2.7.0** (see the repo-root `VERSION` file; also stamped into
+Current version: **3.0.0** (see the repo-root `VERSION` file; also stamped into
 `config.lua`'s `SCRIPT_VERSION` and printed on every `controller_initialize`, so `/tmp/lua.log`
 shows which build MainStage actually has loaded). Semantic versioning:
 

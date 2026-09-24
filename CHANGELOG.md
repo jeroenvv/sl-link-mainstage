@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-24
+
 ### BREAKING
 
 - **Every CC has moved**, and there are now 43 of them rather than 23, laid out one contiguous block per
