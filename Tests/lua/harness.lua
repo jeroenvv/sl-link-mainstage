@@ -4612,6 +4612,22 @@ do
 	check('...and a named report right after it does not flip it back either',
 		popupModeIsFeedback == true and not erasePending())
 
+	-- (g) THE UPGRADE. A multi-mapped control reports once per mapping and the NAMELESS one often
+	-- lands first, so a popup that opened in LEGACY must still be able to move up when the name
+	-- arrives - otherwise the parameter name never shows at all. One-way: it never drops back.
+	popupActive, popupEid, popupModeIsFeedback = true, EID_ZONE1, false
+	midiOutFeedback[ccWithFeedback] = { name = 'Bell Volume', valueString = '7,5', value = 95 }
+	drawn, pendingMessages = {}, {}
+	show_popup(EID_ZONE1)
+	check('a name arriving for the SAME encoder upgrades LEGACY -> FEEDBACK',
+		popupModeIsFeedback == true)
+	check('...erasing once, so the panel is repainted in the new layout', erasePending())
+	check('...and the name is the one MainStage reported', popupFeedbackName == 'Bell Volume')
+	-- And the upgrade is not repeated: a second named report must not erase again.
+	drawn, pendingMessages = {}, {}
+	show_popup(EID_ZONE1)
+	check('...but the upgrade happens only once', not erasePending())
+
 	drawn, pendingMessages, popupEid, popupFeedbackActive, popupFeedbackName, popupValueString,
 		popupValue, popupControlName, popupCcNumber, popupModeIsFeedback, popupActive, midiOutFeedback =
 		savedDrawn, savedPending, savedEid, savedFeedbackActive, savedFeedbackName, savedValueString,

@@ -2129,10 +2129,20 @@ function show_popup(eid)
 		popupFeedbackActive = reported
 		enter_popup_mode()
 	else
-		-- Only a DIFFERENT encoder may change the mode; that genuinely is a different control.
-		if previousEid ~= eid and popupModeIsFeedback ~= reported then
+		if previousEid ~= eid then
+			-- A different encoder genuinely is a different control: take its mode as reported.
+			if popupModeIsFeedback ~= reported then
+				draw_popup_erase()
+				popupModeIsFeedback = reported
+			end
+		elseif reported and not popupModeIsFeedback then
+			-- SAME encoder, and a name has finally arrived: upgrade ONCE. A multi-mapped control
+			-- reports once per mapping and the nameless one often lands first, which would otherwise
+			-- freeze the popup in LEGACY and never show the parameter name the popup exists for. The
+			-- upgrade is one-way - dropping back to LEGACY is what made the panel thrash - so this
+			-- costs at most a single erase per popup session.
 			draw_popup_erase()
-			popupModeIsFeedback = reported
+			popupModeIsFeedback = true
 		end
 		popupFeedbackActive = popupModeIsFeedback
 		paint_popup_screen()

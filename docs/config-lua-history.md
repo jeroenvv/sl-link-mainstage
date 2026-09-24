@@ -3205,10 +3205,16 @@ Isolated cleanly on hardware: an encoder on a multi-mapped Smart Knob drew a bro
 encoder drew correctly, and **removing the extra mapping fixed it**. So neither LEGACY mode nor Smart
 Controls as such were at fault - it is specifically the several-mappings case.
 
-Fixed by **latching the mode** for as long as the popup stays on one encoder: only moving to a different
-encoder may change it. The latch needs its other half too - a nameless report must not blank the name
-already being shown, or the title goes empty and the panel reads as broken anyway. Both halves are
-mutation-tested.
+Fixed by **latching the mode** for as long as the popup stays on one encoder, with a **one-way upgrade**:
+
+- A different encoder takes its mode as reported - that genuinely is a different control.
+- For the same encoder the mode never drops back to LEGACY. That flapping is the thrash.
+- But it may move UP to FEEDBACK once, when a name finally arrives. The nameless report often lands
+  first for a multi-mapped control, and without this the popup froze in LEGACY and never showed the
+  parameter name it exists to show. One erase per popup session, not per tick.
+
+The latch needs its other half too: a nameless report must not blank the name already being shown, or
+the title goes empty and the panel reads as broken anyway. Every part is mutation-tested.
 
 This also explains the silence in the logs: a report with no name takes `controller_midi_out`'s early
 return, which clears the entry without logging, so CC 20-23 produced no `midi_out` lines at all while
