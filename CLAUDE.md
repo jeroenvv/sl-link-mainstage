@@ -213,8 +213,9 @@ confirmation; the concert/set/patch screen painting correctly (coordinates, alig
 Max Width truncation and centring at both text sizes); all mapped encoders and buttons emitting CCs
 MainStage can learn, including A and the joystick encoder with speed-sensitive multi-step ticks;
 SHORT and LONG button presses; logout in both directions; force logout followed by re-identify;
-standby -> restart with a full repaint; and Plot Bitmap, including the Knob group's 13-step fill gauge
-used by the encoder value popup.
+standby -> restart with a full repaint; Plot Bitmap, including the Knob group's 13-step fill gauge
+used by the encoder value popup; and the two encoder banks on the DAW button, with MainStage's automap
+placing the B encoder on a volume control and zones 1-8 on Smart Knob 1-8.
 
 Not yet exercised, so treat as unproven: USB unplug/replug mid-session; the Identification Rejected
 retry path beyond ordinary re-init collisions, which needs a deliberate DeviceID collision; and Login

@@ -3094,6 +3094,10 @@ The four zone encoders, their pushes and the four zone selects now exist twice -
 bank B is zones 5-8 - on one set of physical controls. The **DAW button** toggles them, latched, and its
 lamp is the only indication of which bank is live, since the knobs look identical either way.
 
+Verified on hardware 2026-09-24: the automap places the B encoder on a volume control and zones 1-8 on
+Smart Knob 1-8, the DAW button toggles the bank and lights its lamp, and the popup follows the bank
+(`ENC 1` / `ENC 5`). 239 ticks, 0 Lua errors, 0 STANDBY.
+
 **The DAW button is usable, unlike Apply.** Confirmed on hardware: it arrives as
 `F0 00 20 1A 16 03 <instance> 01 0A 01 F7` - our own id pair, BID `0x0A` - and the session survives the
 press. Apply (`0x0E`) forwards its frame too but *also* exits the app locally, which is why it could not
