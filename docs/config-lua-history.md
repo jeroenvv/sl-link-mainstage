@@ -3240,3 +3240,27 @@ whatever the Smart Control drives beneath it is never surfaced to a device scrip
 So a popup cannot show that parameter's name: there is no name in the data. **Nothing in the script can
 fix it** - the control has to be mapped explicitly in MainStage, or given a *Replace Parameter Label*.
 Treat a report of `Unmapped` as final rather than looking for a way around it.
+
+### An 'Unmapped' report must not erase a known name (2026-09-24)
+
+**MainStage interleaves `Unmapped` reports among the named ones for a control that is genuinely mapped.**
+Measured with a temporary probe on the `Unmapped` branch, which until then returned without logging:
+
+```
+cc=20  name=Low                             378 reports
+cc=20  reported Unmapped, DISCARDING "Low"   12 logged (capped at 12)
+```
+
+`controller_midi_out` deleted the stored entry on every one of those, so the popup lost the name, fell
+back to LEGACY, and upgraded again on the next named report - the same encoder showing its parameter
+name on one gesture and its CC number on the next.
+
+Now an `Unmapped` or nil report is **ignored when a name is already stored**. A control that is genuinely
+unmapped has no stored name and still clears, so the KOMPLETE KONTROL precedent the original behaviour
+came from still holds for the case it was written for. The table is cleared wholesale on a concert
+change, which bounds how long a stale name could survive; a control mapped in one patch and not the next
+can therefore keep the old name until something re-reports, which is the accepted cost.
+
+**Method note.** Three diagnoses of this popup were wrong before this one, each a plausible mechanism
+argued from the bytes that were already visible. What settled it was logging the code path that
+deliberately returned in silence. Dump what the host actually sends before theorising about it.
