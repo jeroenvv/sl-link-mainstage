@@ -37,6 +37,14 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Fixed
 
+- The encoder popup no longer alternates between the parameter name and the CC number. MainStage
+  interleaves `Unmapped` reports among the named ones for a control that is mapped, and each one was
+  discarding the name.
+- A screen control carrying several parameter mappings no longer breaks the popup panel: its mode is
+  latched per encoder, and may only upgrade once when a name arrives.
+- The popup's name and value lines are truncated in Lua, since the device mangles rather than trims when
+  text overflows at medium size.
+- The value inside the ring sits one pixel lower.
 - No popup on a ring turn — the patch list is the feedback.
 - The list's context bar stays readable: small and blue, after medium overflowed its box.
 
@@ -46,6 +54,10 @@ All notable changes to this project are documented in this file. The format foll
   concert versus a large one.
 - The ceiling MainStage puts on a returned array was quoted as `[78, 87)` in three documents; the
   measurement it came from tested 96.
+- A Smart Control's mapping is invisible to a device script unless the **screen control** itself is
+  mapped — MainStage reports `Unmapped` otherwise, so no popup can show that parameter's name.
+- MainStage's automap fills a fresh concert per control type in declaration order, and which control a
+  type fills first differs between layouts; `objectType` is not a selector.
 
 ## [2.7.0] - 2026-09-20
 
