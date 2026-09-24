@@ -3087,3 +3087,37 @@ The numbers moved with it, to 85-89 and 102-119. The old 51-74 map sat on MainSt
 controller table (`BaseplateMIDIControllers.plist`: Insert #1-16 Bypass 56-71, Send Mute 1-8 72-79) and
 on the MIDI spec's switch and sound controllers. 85-90 and 102-119 are free in both. Whether the automap
 walks declaration order or ascending CC number was never established - the two agree here, deliberately.
+
+## The encoder bank, and mapping onto MainStage's own names (2026-09-24)
+
+The four zone encoders, their pushes and the four zone selects now exist twice - bank A is zones 1-4,
+bank B is zones 5-8 - on one set of physical controls. The **DAW button** toggles them, latched, and its
+lamp is the only indication of which bank is live, since the knobs look identical either way.
+
+**The DAW button is usable, unlike Apply.** Confirmed on hardware: it arrives as
+`F0 00 20 1A 16 03 <instance> 01 0A 01 F7` - our own id pair, BID `0x0A` - and the session survives the
+press. Apply (`0x0E`) forwards its frame too but *also* exits the app locally, which is why it could not
+be used. The lamp id `0x09` is from the spec's LED table.
+
+Bank B is named **zones 5-8** rather than "1-4, bank B". MainStage then sees eight encoders, the SL88's
+popup reads `ENC 5` in bank B, and the automap fills Smart Knob 5-8 - so the bank is legible everywhere
+without a special case.
+
+Everything keyed by encoder or zone button reads through `encoder_control()`, `encoder_name()`,
+`button_cc()` and `encoder_value()`. Indexing those tables directly is the bug this design invites: the
+popup would name the wrong control, the RGB rings would show the other bank's colours, and the ring gauge
+would jump on a bank switch because both banks shared one value. The harness mutation-tests each of
+those four separately.
+
+### The numbers now land ON MainStage's table, not around it
+
+The previous map was chosen to avoid `BaseplateMIDIControllers.plist`; this one aims at it, so a gesture
+carries MainStage's own meaning where one fits - Send 1-4, Send Mute 1-8, Insert Bypass. Those are
+**channel-strip** parameters, resolved per port and channel, so they follow the loaded patch. That is
+right for the zone controls and wrong for anything global, which is why the B encoder is deliberately NOT
+on CC 7 (Volume): it is the concert's output fader, and on CC 7 the same knob would mean the output or a
+per-patch strip volume depending on where MainStage was pointing.
+
+**CC 0 and CC 32 are reserved** for the Bank Select MSB/LSB every patch commit sends. A gesture on either
+would be indistinguishable from a patch change on the wire, which is why bank B's encoders take Insert
+Bypass rather than a run of Sends broken by 32.

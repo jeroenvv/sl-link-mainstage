@@ -15,8 +15,12 @@ produce a working rig:
 | SL88 control | Screen control | What it does |
 |:--|:--|:--|
 | B Encoder | Vertical Fader 1 | Output volume |
-| Zone 1–4 Encoders | Smart Knob 1–4 | The loaded patch's Smart Controls |
+| Zone 1–4 Encoders, bank A | Smart Knob 1–4 | The loaded patch's Smart Controls |
+| Zone 1–4 Encoders, bank B | Smart Knob 5–8 | Four more of them |
 | Zone 1–4 Select | Button 1–4 | Prev Set, Next Set, Prev Patch, Next Patch |
+
+**The DAW button toggles the encoder bank**, and its lamp shows which is live. The four encoders, their
+pushes and the four select buttons all switch; the B encoder and the joystick do not.
 
 The mappings behind Smart Knob 1–4 follow the patch — Compressor Threshold in one, E-Piano Tremolo in
 another — while the assignment stays put. Long presses are deliberately declared last so the automap
@@ -36,19 +40,20 @@ carry **sequential program numbers**: select them in the Patch List, then
 
 Everything the SL88 sends, on **channel 16**. Anything the automap did not claim is yours to MIDI Learn.
 
-| CC | Control | Type |
+| CC | Control | MainStage calls it |
 |---:|:--|:--|
-| 85 | B Encoder | Knob |
-| 86–89 | Zone 1–4 Encoder | Knob |
-| 102–105 | Zone 1–4 Select | Button |
-| 106–109 | Zone 1–4 Push | Button |
-| 110 | B Push | Button |
-| 111–114 | Zone 1–4 Select (long) | Button |
-| 115–118 | Zone 1–4 Push (long) | Button |
-| 119 | B Push (long) | Button |
+| 3, 9 | Zone 1–2 Select | Solo, Mute |
+| 14 | B Encoder | — |
+| 15, 20 | Zone 3–4 Select | — |
+| 28–31 | Zone 1–4 Encoder | Send 1–4 |
+| 56–59 | Zone 5–8 Encoder | Insert #1–4 Bypass |
+| 60–63 | Zone 5–8 Select | Insert #5–8 Bypass |
+| 72–79 | Zone 1–8 Push | Send Mute 1–8 |
+| 80 | B Push | — |
+| 102–118 | the 17 long presses | — |
 
-These numbers avoid MainStage's own channel-strip controllers (Insert Bypass 56–71, Send Mute 72–79) and
-the MIDI spec's defined range, so nothing else claims them.
+These numbers deliberately land on MainStage's own channel-strip names, so a gesture carries its meaning
+where one fits. CC 0 and 32 are never used — they are the Bank Select pair patch selection sends.
 
 Two attributes on a mapped control drive what the SL88 shows in its popup:
 

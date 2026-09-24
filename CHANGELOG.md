@@ -8,9 +8,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ### BREAKING
 
-- **Every CC has moved.** The map is now 85-89 and 102-119, chosen to avoid MainStage's own
-  channel-strip controllers (Insert Bypass 56-71, Send Mute 72-79) and the MIDI spec's defined range.
-  Every learned mapping must be redone.
+- **Every CC has moved**, and there are now 43 of them rather than 23. The map deliberately lands ON
+  MainStage's own channel-strip numbers - Send 1-4, Send Mute 1-8, Insert Bypass - so a gesture carries
+  MainStage's meaning. Every learned mapping must be redone.
+- **The DAW button is no longer free**: it toggles the encoder bank.
 - **The joystick emits no CC at all.** Its tilts, press and ring select patches in the script instead,
   so mappings learned to the old 40-50 have nothing to remap to.
 - Patch selection needs the concert's patches to carry **sequential program numbers** — see the README.
@@ -25,9 +26,13 @@ All notable changes to this project are documented in this file. The format foll
   patch of the concert. At either end a tilt does nothing rather than reloading the playing patch.
 - Navigation icons on both patch screens, white, with the press icon lit while a browse waits.
 - `FLUSH_BUDGET` 72 → 78, so text lines carry 43 characters instead of 37. Hardware-verified.
+- **A second encoder bank on the DAW button.** The four zone encoders, their pushes and the four zone
+  selects exist twice - zones 1-4 and zones 5-8 - with the DAW lamp showing which is live. The B
+  encoder, the B push and the joystick do not bank.
 - The declared item order now produces a working rig automatically: with the SL88 connected MainStage
-  assigns the B encoder to output volume, the zone encoders to Smart Knob 1-4 and the zone selects to
-  patch and set navigation. Long presses are declared last so the automap never takes one.
+  assigns the B encoder to output volume, the zone encoders to Smart Knob 1-4, bank B's to Smart Knob
+  5-8, and the zone selects to patch and set navigation. Long presses are declared last so the automap
+  never takes one.
 - `mainstage/Demo.concert`, an example rig on MainStage's Keyboard Minimalist template, needing no
   MIDI Learn.
 
