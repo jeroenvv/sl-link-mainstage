@@ -3158,3 +3158,20 @@ turning a zone encoder moved no send and pressing a zone select soloed nothing.
 What the numbering still buys is that each gesture shows up in MainStage's assignment list under a name
 it already knows, which makes a hand-mapped rig easier to read. That is worth keeping, but it is a
 cosmetic benefit, not a functional one - do not reason as though the baseplate were live.
+
+### The popup title must be pre-truncated (2026-09-24)
+
+The FEEDBACK popup draws MainStage's own parameter name at SIZE_MEDIUM across `POPUP_CONTENT_W` (260px)
+and handed the string straight to the device. Max Width truncation is unreliable at that size - the same
+defect that rendered a 35-character context bar as `Jose..` in a 304px box - so any name past the box
+came back garbled rather than trimmed.
+
+It surfaced only once the encoder bank landed, because that is when eight Smart Knobs became mapped at
+once and long names went from rare to routine: `Compressor Threshold`, `Distortion Drive 3`,
+`Auto Voice Split`.
+
+Fixed by truncating in Lua first, the same belt-and-braces `zname`/`zset` already use, capped at
+`POPUP_TEXT_MAX_CHARS` (22, scaled from the context bar's measured limit). **Not** fixed by shrinking the
+font: the title is SIZE_MEDIUM at Jeroen's explicit request, and the code comment claiming SIZE_SMALL was
+a stale leftover that has been corrected. The value line shares the same box and size and got the same
+guard.
