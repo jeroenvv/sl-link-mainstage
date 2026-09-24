@@ -2092,29 +2092,44 @@ function show_popup(eid)
 	local cc = CC_MAP[control]
 	local fb = midiOutFeedback[cc]
 
+	local previousEid = popupEid
+	-- FEEDBACK mode exists to show MainStage's own name, so a nameless entry (see controller_midi_out's
+	-- empty-name filter) means LEGACY: the physical encoder's label and CC number. The ring still uses
+	-- that entry's colour either way.
+	local reported = fb ~= nil and fb.name ~= nil
+
 	popupEid = eid
 	popupControlName = encoder_name(eid)
 	popupCcNumber = cc
 	popupValue = fb and fb.value or encoder_value(eid)
 	popupMax = 127
-	-- FEEDBACK mode exists to show MainStage's own name, so a nameless entry (see controller_midi_out's
-	-- empty-name filter) falls back to LEGACY: the physical encoder's label and CC number. The ring still
-	-- uses that entry's colour either way.
-	popupFeedbackActive = fb ~= nil and fb.name ~= nil
-	popupFeedbackName = fb and fb.name
-	popupValueString = fb and fb.valueString
+	-- Kept from the last report that HAD them, not blanked when one arrives without: see the latch below.
+	if reported then
+		popupFeedbackName = fb.name
+		popupValueString = fb.valueString
+	end
 	popupLastActivityIdleTick = idleTicks
 
+	-- MODE IS LATCHED for as long as the popup shows the SAME encoder. A screen control carrying several
+	-- parameter mappings makes MainStage call controller_midi_out once PER MAPPING, and some of those
+	-- arrive named while others arrive 'Unmapped' - so recomputing the mode per report flipped it on
+	-- every tick. Each flip erases and repaints the whole panel, which is 7 messages at one per tick, so
+	-- the panel never finished drawing before the next flip restarted it. Confirmed on hardware: an
+	-- encoder on a multi-mapped control drew a broken popup, and removing the extra mapping fixed it.
+	-- See docs/config-lua-history.md#a-multi-mapped-control-thrashed-the-popup-2026-09-24.
 	if not popupActive then
 		popupPreviousMode = displayMode
 		popupActive = true
-		popupModeIsFeedback = popupFeedbackActive
+		popupModeIsFeedback = reported
+		popupFeedbackActive = reported
 		enter_popup_mode()
 	else
-		if popupModeIsFeedback ~= popupFeedbackActive then
+		-- Only a DIFFERENT encoder may change the mode; that genuinely is a different control.
+		if previousEid ~= eid and popupModeIsFeedback ~= reported then
 			draw_popup_erase()
-			popupModeIsFeedback = popupFeedbackActive
+			popupModeIsFeedback = reported
 		end
+		popupFeedbackActive = popupModeIsFeedback
 		paint_popup_screen()
 		request_quick_rearm()
 	end
