@@ -3176,19 +3176,22 @@ font: the title is SIZE_MEDIUM at Jeroen's explicit request, and the code commen
 a stale leftover that has been corrected. The value line shares the same box and size and got the same
 guard.
 
-### The in-ring value overflowed its hole (2026-09-24)
+### The in-ring value was never the problem (2026-09-24)
 
-LEGACY mode draws the value INSIDE the knob bitmap's hole - a box of `KNOB_HOLE_W`, **36px** - and drew
-it at `SIZE_MEDIUM`. Three digits need roughly 39px there, so `127` overflowed, and Max Width truncation
-MANGLES rather than trims at medium (the same defect behind the `Jose..` context bar). The result was
-garbage rendered inside the ring, which reads as a distorted background and a ring that looks broken
-while turning.
+A wrong turn worth recording, because the reasoning looked sound. LEGACY draws the value inside the knob
+bitmap's hole, a box of `KNOB_HOLE_W` = **36px**, at `SIZE_MEDIUM`. `CHAR_W_MEDIUM` - an upper bound
+derived from mixed text - predicts three digits need ~39px, so `127` would overflow, and Max Width
+truncation mangles rather than trims at medium. That explained the garbled ring perfectly, and it was
+wrong: the real cause was the multi-mapping thrash below, and **three digits do fit** because digits are
+narrower than the mixed text that bound was measured from.
 
-Fixed by drawing that one box at **SIZE_SMALL**, where three digits need about 24px and fit with room to
-spare. Only the in-ring value changed; the popup title stays SIZE_MEDIUM as asked, and FEEDBACK mode's
-value was never affected because it is drawn in the 260px box below the ring instead.
+The value is drawn at `SIZE_MEDIUM`, nudged one pixel below the measured hole offset by eye
+(`POPUP_VALUE_NUDGE_Y`; `KNOB_HOLE_DY` stays the measurement it is). No width assertion guards it - the
+mixed-text bound does not apply to a numeric field, and asserting it would re-create this mistake.
 
-It surfaced only now because LEGACY became permanent for four encoders at once - see below.
+**The lesson:** a plausible arithmetic explanation is not a diagnosis. The thing that actually isolated
+the bug was Jeroen's experiment - an unmapped encoder drew fine, and removing the extra mapping fixed the
+broken one.
 
 ### A multi-mapped control thrashed the popup (2026-09-24)
 
