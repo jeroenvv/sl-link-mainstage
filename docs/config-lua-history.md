@@ -3175,3 +3175,26 @@ Fixed by truncating in Lua first, the same belt-and-braces `zname`/`zset` alread
 font: the title is SIZE_MEDIUM at Jeroen's explicit request, and the code comment claiming SIZE_SMALL was
 a stale leftover that has been corrected. The value line shares the same box and size and got the same
 guard.
+
+### The in-ring value overflowed its hole (2026-09-24)
+
+LEGACY mode draws the value INSIDE the knob bitmap's hole - a box of `KNOB_HOLE_W`, **36px** - and drew
+it at `SIZE_MEDIUM`. Three digits need roughly 39px there, so `127` overflowed, and Max Width truncation
+MANGLES rather than trims at medium (the same defect behind the `Jose..` context bar). The result was
+garbage rendered inside the ring, which reads as a distorted background and a ring that looks broken
+while turning.
+
+Fixed by drawing that one box at **SIZE_SMALL**, where three digits need about 24px and fit with room to
+spare. Only the in-ring value changed; the popup title stays SIZE_MEDIUM as asked, and FEEDBACK mode's
+value was never affected because it is drawn in the 260px box below the ring instead.
+
+It surfaced only now because LEGACY became permanent for four encoders at once - see below.
+
+### MainStage reports no feedback for the Smart Controls (2026-09-24)
+
+`controller_midi_out` never fired for CC 20-23, the four zone encoders the automap put on Smart Knob 1-4,
+while CC 14 (a volume control) and CC 24/25 (Bus sends) reported normally. With no name reported the
+popup correctly falls back to LEGACY - the physical encoder's label and CC number.
+
+Whether the distinction is *Smart* Controls specifically, or screen controls carrying several parameter
+mappings at once, is **not yet established**: both were true of the controls that stayed silent.
