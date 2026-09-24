@@ -1605,6 +1605,12 @@ POPUP_X = math.floor((SCREEN_WIDTH - POPUP_W) / 2)
 POPUP_Y = math.floor((SCREEN_HEIGHT - POPUP_H) / 2)
 POPUP_PAD = 10 -- inset for the label/value text, so neither touches the panel's side edges
 
+-- Character cap for the SIZE_MEDIUM lines drawn across POPUP_CONTENT_W (260px). Scaled from the
+-- context bar's measured limit - 35 characters overflowed a 304px box at medium and the device mangled
+-- the line rather than trimming it - so 260px holds roughly 22. Text is truncated in Lua before it ever
+-- reaches the SL88; see draw_popup_title.
+POPUP_TEXT_MAX_CHARS = 22
+
 POPUP_CONTENT_X = POPUP_X + POPUP_PAD
 POPUP_CONTENT_W = POPUP_W - 2 * POPUP_PAD
 
@@ -1745,10 +1751,16 @@ function draw_popup_label(name, ccNumber)
 		POPUP_LABEL_FG[3], POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
 
--- FEEDBACK mode only: the MainStage screen control's own name, above the ring (see the layout
--- table). SIZE_SMALL, unlike popupLabel's SIZE_MEDIUM - it is a secondary line here, not the star.
+-- FEEDBACK mode only: the MainStage screen control's own name, above the ring (see the layout table).
+-- SIZE_MEDIUM at Jeroen's request - it is the line you read, not a caption.
+--
+-- PRE-TRUNCATED in Lua, like zname/zset: Max Width truncation is unreliable at SIZE_MEDIUM, mangling
+-- the line instead of trimming it (hardware - see docs/config-lua-history.md#the-popup-title-must-be-
+-- pre-truncated-2026-09-24). MainStage's own parameter names routinely run past this box -
+-- 'Compressor Threshold', 'Distortion Drive 3' - so the device must never be given the chance.
 function draw_popup_title(name)
-	draw_text('popupTitle', name or '', POPUP_CONTENT_X, POPUP_TITLE_Y, POPUP_CONTENT_W,
+	draw_text('popupTitle', truncate_text(name or '', POPUP_TEXT_MAX_CHARS),
+		POPUP_CONTENT_X, POPUP_TITLE_Y, POPUP_CONTENT_W,
 		ALIGN_CENTER, SIZE_MEDIUM, POPUP_LABEL_FG[1], POPUP_LABEL_FG[2], POPUP_LABEL_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end
@@ -1771,7 +1783,8 @@ end
 -- (a real string like '+0,0 dB' does not fit POPUP_VALUE_W's narrow ring-hole box) - full content
 -- width, same idiom as draw_popup_label.
 function draw_popup_feedback_value(text)
-	return draw_text('popupValue', text or '', POPUP_CONTENT_X, POPUP_FB_VALUE_Y, POPUP_CONTENT_W,
+	return draw_text('popupValue', truncate_text(text or '', POPUP_TEXT_MAX_CHARS),
+		POPUP_CONTENT_X, POPUP_FB_VALUE_Y, POPUP_CONTENT_W,
 		ALIGN_CENTER, SIZE_MEDIUM, POPUP_VALUE_FG[1], POPUP_VALUE_FG[2], POPUP_VALUE_FG[3],
 		POPUP_BG_COLOR[1], POPUP_BG_COLOR[2], POPUP_BG_COLOR[3])
 end

@@ -5816,6 +5816,64 @@ do
 	midiOutFeedback, dawLedSent = savedFeedback, savedLed
 end
 
+-- MARK: - 90. The popup pre-truncates, so the device never truncates at SIZE_MEDIUM
+--
+-- Max Width truncation MANGLES rather than trims at SIZE_MEDIUM (hardware: a 35-character context bar
+-- in a 304px box rendered as 'Jose..'). The popup's FEEDBACK title carries MainStage's own parameter
+-- names, which routinely run past its 260px box, so it must be cut in Lua first.
+do
+	local savedDrawn, savedPending = drawn, pendingMessages
+	-- Text of a queued Write Text: everything after the 23-byte fixed prefix, up to the terminator.
+	local function textOf(regionId)
+		for _, m in ipairs(pendingMessages) do
+			if m.regionId == regionId then
+				local out = {}
+				local i = 24
+				while m[i] ~= nil and m[i] ~= 0x00 do
+					out[#out + 1] = string.char(m[i])
+					i = i + 1
+				end
+				return table.concat(out)
+			end
+		end
+		return nil
+	end
+
+	drawn, pendingMessages = {}, {}
+	draw_popup_title('Compressor Threshold Makeup Gain')
+	local title = textOf('popupTitle')
+	check('a long feedback title is queued', title ~= nil)
+	check('...cut to POPUP_TEXT_MAX_CHARS in Lua, not left to the device',
+		title ~= nil and #title <= POPUP_TEXT_MAX_CHARS)
+	check('...with truncate_text\'s own ellipsis, so it reads as cut rather than mangled',
+		title ~= nil and title:sub(-3) == '...')
+
+	drawn, pendingMessages = {}, {}
+	draw_popup_title('Bell Volume')
+	check('a short title is passed through untouched', textOf('popupTitle') == 'Bell Volume')
+
+	-- The value line shares the same box and size, so it needs the same guard.
+	drawn, pendingMessages = {}, {}
+	draw_popup_feedback_value('a very long formatted value string indeed')
+	local value = textOf('popupValue')
+	check('a long feedback value is cut too',
+		value ~= nil and #value <= POPUP_TEXT_MAX_CHARS)
+
+	-- The cap must actually fit the box it is drawn in, at the size it is drawn at.
+	check('the cap is below what the 260px box holds at SIZE_MEDIUM',
+		POPUP_TEXT_MAX_CHARS * TEXT_H_MEDIUM <= POPUP_CONTENT_W * 2)
+	check('the popup title still draws at SIZE_MEDIUM, as asked for', (function()
+		drawn, pendingMessages = {}, {}
+		draw_popup_title('x')
+		for _, m in ipairs(pendingMessages) do
+			if m.regionId == 'popupTitle' then return m[17] == SIZE_MEDIUM end
+		end
+		return false
+	end)())
+
+	drawn, pendingMessages = savedDrawn, savedPending
+end
+
 -- MARK: - Summary
 
 realPrint('')
