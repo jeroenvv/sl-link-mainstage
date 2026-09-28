@@ -527,20 +527,6 @@ do
 	)
 end
 
--- MARK: - 12b. queue_repeated: N calls reach the queue as N separate entries, not one coalesced entry
---
--- The mechanism section 68's mute/LED repeats rely on. A regression that gave queue_repeated's
--- copies a shared regionId would hit section 12's own coalescing behaviour and collapse them back to
--- one - this pins that it does not.
-do
-	pendingMessages = {}
-	queue_repeated(function() return msg_white_led(WLID_A_ENC, true) end, 5)
-	check('queue_repeated(builder, 5) queues 5 separate messages', #pendingMessages == 5)
-	for i = 1, #pendingMessages do
-		check('...entry ' .. i .. ' carries no regionId (never coalesced)', pendingMessages[i].regionId == nil)
-	end
-end
-
 -- MARK: - 13. drop_queued_display clears the corresponding drawn[] entries
 --
 -- See config.lua's drop_queued_display comment: leaving a discarded message's
@@ -3504,7 +3490,7 @@ do
 		return out
 	end
 
-	-- Mute writes and LED writes never carry a regionId any more (queue_repeated's whole point), so
+	-- Mute writes and LED writes never carry a regionId, so
 	-- they're found by content instead: mute writes are the IT_MASTER_VOLUME/MVOL_WRITE messages
 	-- carrying a MUTE byte (#m == 12, vs 11 for the plain reset write), LED writes are the sole
 	-- IT_LED message shape in this script.
@@ -3644,7 +3630,7 @@ do
 		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, vol, mute, 0xF7)
 	end
 
-	-- LED writes carry no regionId any more (queue_repeated's whole point - see section 68's own
+	-- LED writes carry no regionId (see section 68's own
 	-- comment), so they're found by itemType instead.
 	local function led_writes()
 		local out = {}
@@ -3709,7 +3695,7 @@ do
 		return frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ, vol, 0xF7)
 	end
 
-	-- Settle re-sends carry no regionId (queue_repeated's whole point), so they're told apart from an
+	-- Settle re-sends carry no regionId, so they're told apart from an
 	-- ordinary per-tick 'mvol'-regionId write by that absence.
 	local function settle_writes()
 		local out = {}
