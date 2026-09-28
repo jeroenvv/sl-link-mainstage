@@ -622,15 +622,33 @@ do
 	check('controller_finalize still sets state to STATE_IDLE', state == STATE_IDLE)
 end
 
--- MARK: - 16. append_text clamps bytes outside 0x20-0x80 to a space
+-- MARK: - 16. append_text clamps bytes outside 0x20-0x7F to a space
 do
 	local msg = {}
 	-- 0x01 (control char, below range), 0x41 ('A', in range), 0x90 (above range, non-ASCII)
 	append_text(msg, string.char(0x01, 0x41, 0x90), 10)
 	check('append_text clamps a byte below 0x20 to 0x20', msg[1] == 0x20)
-	check('append_text passes a byte within 0x20-0x80 through unchanged', msg[2] == 0x41)
-	check('append_text clamps a byte above 0x80 to 0x20', msg[3] == 0x20)
+	check('append_text passes a byte within 0x20-0x7F through unchanged', msg[2] == 0x41)
+	check('append_text clamps a byte above 0x7F to 0x20', msg[3] == 0x20)
 	check('append_text 0x00-terminates', msg[4] == 0x00)
+
+	-- THE BOUNDARY, 0x80 ITSELF. It has its MSB set, so it is illegal in a MIDI data byte and the
+	-- SL88 drops the whole message - and it reaches append_text from any ordinary patch name with a
+	-- UTF-8 dash, curly quote or ellipsis (E2 80 xx). The clamp used to be `b > 0x80`, which let it
+	-- through. Asserted on every byte of a realistic name, not on 0x80 alone, so the whole wire
+	-- string is proved legal rather than one index of it.
+	local dashMsg = {}
+	append_text(dashMsg, 'Lead \xE2\x80\x93 Bright', 43) -- U+2013 EN DASH
+	local msbSet = nil
+	for i = 1, #dashMsg do
+		if dashMsg[i] > 0x7F then msbSet = i end
+	end
+	check('append_text emits no byte with the MSB set for a name containing an en dash', msbSet == nil)
+	check('append_text clamps 0x80 itself to 0x20', (function()
+		local m = {}
+		append_text(m, string.char(0x80), 10)
+		return m[1] == 0x20
+	end)())
 
 	-- nil-text path: the `if text ~= nil then` guard skips the whole loop -
 	-- must still terminate rather than erroring on string.byte(nil, ...) or
@@ -4498,10 +4516,17 @@ end
 -- valueString is locale-formatted and can contain non-ASCII - a hardware capture showed '+0,0 ㏈',
 -- where ㏈ (U+33C8, 3 UTF-8 bytes E3 8F 88) would render as three blanks under append_text's own
 -- per-byte clamp. sanitize_value_string substitutes known units and drops anything else outside
--- 0x20-0x80, rather than letting append_text turn it into a run of spaces.
+-- 0x20-0x7F, rather than letting append_text turn it into a run of spaces.
 do
 	check("sanitize_value_string substitutes U+33C8 (dB) with 'dB'",
 		sanitize_value_string('+0,0 \xE3\x8F\x88') == '+0,0 dB')
+	-- The boundary, same bug as section 16's: the filter used to be `b <= 0x80`, which kept 0x80 - an
+	-- illegal MIDI data byte that drops the whole message. A dash/quote/ellipsis valueString is
+	-- E2 80 xx, so it arrives here from MainStage's own formatting.
+	check('sanitize_value_string drops 0x80 itself',
+		sanitize_value_string('A\x80B') == 'AB')
+	check('sanitize_value_string drops every byte of an en dash',
+		sanitize_value_string('-6,0 \xE2\x80\x93 inf') == '-6,0  inf')
 	check('sanitize_value_string DROPS a stray non-ASCII byte rather than replacing it with a space',
 		sanitize_value_string('A\xC3\xA9B') == 'AB') -- Ã© (2 UTF-8 bytes, no substitution rule) - dropped, not spaced
 	check('sanitize_value_string is nil-safe', sanitize_value_string(nil) == nil)

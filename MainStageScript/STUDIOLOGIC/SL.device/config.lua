@@ -1124,12 +1124,15 @@ function sl_header()
 end
 
 -- ASCII-clamps to the SLMK2 font range and 0x00-terminates, per the spec's text field encoding.
+-- The upper bound is 0x7F, not 0x80: 0x80 has its MSB set, which is illegal in a MIDI data byte and
+-- drops the whole message. A UTF-8 dash, curly quote or ellipsis is E2 80 xx, so the byte does reach
+-- here from an ordinary patch name - see docs/config-lua-history.md#the-0x80-passthrough-2026-09-28.
 function append_text(msg, text, maxLength)
 	if text ~= nil then
 		local limit = math.min(#text, maxLength or 32)
 		for i = 1, limit do
 			local b = string.byte(text, i)
-			if b < 0x20 or b > 0x80 then b = 0x20 end
+			if b < 0x20 or b >= 0x80 then b = 0x20 end
 			table.insert(msg, b)
 		end
 	end
@@ -1140,8 +1143,9 @@ end
 -- the ASCII strip below runs - see docs/config-lua-history.md#controller_midi_out-reports-real-parameter-values-with-a-screen-control-2026-09-17.
 UNIT_SUBSTITUTIONS = { ['\xE3\x8F\x88'] = 'dB' } -- U+33C8 SQUARE DB, 3 UTF-8 bytes
 
--- Substitutes known unit glyphs, then DROPS any remaining byte outside 0x20-0x80 (rather than
--- letting append_text's own per-byte clamp turn a multi-byte glyph into a run of spaces).
+-- Substitutes known unit glyphs, then DROPS any remaining byte outside 0x20-0x7F (rather than
+-- letting append_text's own per-byte clamp turn a multi-byte glyph into a run of spaces). Same upper
+-- bound as append_text, and for the same reason - see there.
 function sanitize_value_string(s)
 	if s == nil then return nil end
 	for glyph, ascii in pairs(UNIT_SUBSTITUTIONS) do
@@ -1150,7 +1154,7 @@ function sanitize_value_string(s)
 	local out = {}
 	for i = 1, #s do
 		local b = string.byte(s, i)
-		if b >= 0x20 and b <= 0x80 then out[#out + 1] = string.char(b) end
+		if b >= 0x20 and b < 0x80 then out[#out + 1] = string.char(b) end
 	end
 	return table.concat(out)
 end
@@ -1753,7 +1757,7 @@ end
 -- broken-at-size_big), and 'ENC 1 - CC 59'-shaped strings are far shorter than POPUP_CONTENT_W, so
 -- truncation never triggers. A non-zero maxWidth also means Write Text's own background box makes
 -- this self-clearing (see MARK: - Per-region memoization's non-overlap rule above) - no erase rect
--- needed. Plain ASCII ' - ' separator, not a middle dot/en dash: the SLMK2 font only covers 0x20-0x80
+-- needed. Plain ASCII ' - ' separator, not a middle dot/en dash: the SLMK2 font only covers 0x20-0x7F
 -- (see append_text's clamp). Below the ring now, not above it - see docs/config-lua-history.md#value-
 -- moved-inside-the-ring-2026-09-14.
 function draw_popup_label(name, ccNumber)
@@ -2428,7 +2432,7 @@ function cursor_set_label()
 end
 
 -- 'concert - set': the context bar's content. A plain ASCII hyphen, NOT a middle dot - the SLMK2
--- font only covers 0x20-0x80 (see append_text), so a middle dot would render as two spaces. See
+-- font only covers 0x20-0x7F (see append_text), so a middle dot would render as two spaces. See
 -- docs/config-lua-history.md#typography-substitutions-non-ascii-glyphs.
 function ctx_text()
 	return currentConcert .. ' - ' .. cursor_set_label()
@@ -2489,7 +2493,7 @@ function paint_list_screen()
 end
 
 -- Truncates `text` to at most `maxChars` characters, cutting to maxChars - 3 and appending '...'
--- (plain ASCII full stops - the SLMK2 font only covers 0x20-0x80, see append_text) when it doesn't
+-- (plain ASCII full stops - the SLMK2 font only covers 0x20-0x7F, see append_text) when it doesn't
 -- fit. Used instead of the SL88's own Max Width truncation, which is confirmed broken at SIZE_BIG
 -- (see BIG_MAX_CHARS's comment above) - both the patch name and the set name are truncated here in
 -- the script and drawn with maxWidth=0.
@@ -2515,7 +2519,7 @@ function next_line_text()
 			return word .. '  ' .. row.label
 		end
 	end
-	-- End of the concert: no next patch. NOT an em dash - the SLMK2 font range is 0x20-0x80 (see
+	-- End of the concert: no next patch. NOT an em dash - the SLMK2 font range is 0x20-0x7F (see
 	-- append_text) - a plain ASCII substitute instead. See
 	-- docs/config-lua-history.md#typography-substitutions-non-ascii-glyphs.
 	return 'NEXT  --'
