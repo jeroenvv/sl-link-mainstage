@@ -80,6 +80,67 @@ When trimming such a comment, relocate its content rather than dropping it.
 or flush logic.** It holds the hardware findings and rejected approaches behind the constraints
 `config.lua`'s own comments only state tersely and cite by anchor.
 
+## Style
+
+Write concise code. Write short comments. Write both in Simplified Technical English (STE).
+
+### Code
+
+**One purpose per function.** Split a function that does two things. Name it after what it does.
+
+**Write each rule once.** Do not repeat a block of logic at several call sites. Put it in one
+function and call it. A comment that says "every caller MUST do this" marks logic that belongs in a
+function.
+
+**Return early.** Use a guard clause instead of a nested `if`. Keep the main path at one indent
+level.
+
+**Reuse the helper that exists.** Search for one before you write a new one.
+
+**Delete code that has no caller.** A constant, table or function with no reader is dead. Delete it,
+and delete the test that only tests it.
+
+**Do not shadow a module-level name.** A local with the same name as a global hides the global and
+misleads the reader.
+
+**Guard wire input, not impossible cases.** A byte from the SL88 can be absent or out of range, so
+check it. Do not add a branch for a state the code cannot reach.
+
+**Write declaration tables out in full, one entry per line.** Do not generate them in a loop. A
+reader must be able to compare an entry against the spec by eye.
+
+### Comments and prose
+
+**Say what the code does, and why, in one or two lines.** The rule a future edit could break belongs
+next to the code. Everything longer goes in `docs/` behind a
+`-- see docs/config-lua-history.md#anchor` pointer. See "Keep forensic narrative out of production
+code" above for the full split.
+
+**Put the comment next to the code it describes.** A comment that names a function must sit
+immediately above that function.
+
+**Keep a comment true.** Update a count, a range or a name in the same edit that changes it. A stale
+comment is worse than no comment.
+
+### Simplified Technical English (STE)
+
+STE is ASD-STE100, the controlled English used for technical documentation. It applies to comments,
+commit messages, PR bodies, `docs/` and log messages. It does not apply to quoted hardware output,
+captured bytes or spec text - copy those exactly.
+
+The rules this project uses:
+
+- One idea per sentence. One instruction per sentence.
+- Maximum 20 words in an instruction. Maximum 25 in a description.
+- Active voice. Imperative mood for an instruction: "Send the query", not "the query is sent".
+- Present tense. Avoid "would", "could" and "should" for anything the code does today.
+- One word, one meaning. Use the same term for the same thing everywhere. See
+  [[spec-names-win-over-panel-labels]]: the spec's name wins.
+- Simple words. No slang, no metaphor, no joke, no filler ("basically", "simply", "of course").
+- Keep the article: "the flush budget", not "flush budget".
+- Maximum six sentences per paragraph.
+- Name the subject. Do not open a sentence with "it" or "this" when the referent is a guess.
+
 ## Lua tests
 
 `config.lua`'s only test suite, and the primary gate for changes to it:
