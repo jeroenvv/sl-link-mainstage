@@ -6,6 +6,22 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Fixed
+
+- A patch or set name with typographic punctuation now reaches the screen. A UTF-8 dash, curly quote or
+  ellipsis put the byte `0x80` on the wire, which is illegal in a MIDI data byte, and the SL88 dropped
+  the whole message - the line stayed blank until the next full repaint.
+- A fast double-tap of a mapped button now registers as two presses. The second press overwrote the
+  first one's release, so MainStage saw one held button and a momentary action fired once.
+- A truncated SL frame is ignored and logged instead of raising a Lua error. The error aborted
+  `controller_midi_in` before it could re-arm the one-shot timer, so a malformed frame cost the session
+  clock a tick.
+
+### Documentation
+
+- `CLAUDE.md` gains a Style section: concise code, short comments, and Simplified Technical English
+  (ASD-STE100) for comments, commit messages and `docs/`.
+
 ## [3.0.0] - 2026-09-24
 
 ### BREAKING
