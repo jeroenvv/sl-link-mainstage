@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Fixed
+
+- A MainStage-driven re-initialise now returns every per-session value to its default. It reset only
+  some of them, so state could survive into the next incarnation - a stale popup flag left the script
+  believing a panel was on screen, and stale parameter feedback described the previous concert. The
+  volume, mute and tick counters are deliberately left alone.
+
 ## [3.1.0] - 2026-09-28
 
 ### Added
