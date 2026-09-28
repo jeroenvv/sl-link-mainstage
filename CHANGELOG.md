@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- Accented and typographic characters in a patch, set or concert name now appear as their closest ASCII
+  form instead of as blanks: `Café` reads as `Cafe`, `één` as `een`, `§1` as `S1`, and a curly quote or
+  en dash as its straight equivalent. The SL Link wire format is 7-bit, so the real glyph can never be
+  sent - previously every byte of such a character became a separate space.
+
 ### Fixed
 
 - A patch or set name with typographic punctuation now reaches the screen. A UTF-8 dash, curly quote or
