@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-09-28
+
 ### Added
 
 - Accented and typographic characters in a patch, set or concert name now appear as their closest ASCII
