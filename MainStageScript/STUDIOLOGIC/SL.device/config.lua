@@ -3212,9 +3212,19 @@ function is_our_sl_frame(e)
 		and e[5] == SL_HOST_ID and e[6] == instanceID
 end
 
+-- A frame that passed is_our_sl_frame() is addressed to us, but its payload can still be short: the
+-- header ends at e[6], so e[7] onwards may be absent. An arithmetic or comparison against a missing
+-- byte raises a Lua error, and that error aborts controller_midi_in BEFORE rearm_timer() - the one
+-- call that keeps the session clock running (see the SESSION CLOCK note above rearm_timer). So every
+-- branch below reads its payload only after a guard has proved it is there.
 function handle_sl_frame(e)
 	local itemType = e[7]
 	local func = e[8]
+
+	if itemType == nil then
+		slog('<- SL frame with no item type - ignored frame=' .. dump_event(e))
+		return
+	end
 
 	if itemType == IT_IDENTIFICATION then
 		if func == ID_APPROVED then
@@ -3272,6 +3282,10 @@ function handle_sl_frame(e)
 		-- e[9] is VOL; a trailing MUTE byte may or may not follow (docs/implementing-sl-link.md §7 -
 		-- trailing bytes are optional more often than the spec documents).
 		local vol = e[9]
+		if vol == nil then
+			slog('<- MASTER VOLUME frame with no VOL byte - ignored frame=' .. dump_event(e))
+			return
+		end
 		if vol < 0 then vol = 0 elseif vol > 100 then vol = 100 end
 		if func == MVOL_READ then
 			-- vol is diagnostic/logging only - never feeds masterVolume. See
@@ -3333,6 +3347,10 @@ function handle_sl_frame(e)
 		end
 	elseif itemType == IT_ENCODER then
 		local eid = func
+		if e[9] == nil then
+			slog('<- ENCODER frame with no tick byte - ignored frame=' .. dump_event(e))
+			return
+		end
 		local delta = e[9] - 0x40
 		if eid == EID_A then
 			-- Marks a gesture in progress - check_mvol_settle() clears this once quiet for
