@@ -3332,3 +3332,29 @@ deferred.
 
 Found by review. It needs two presses of one button within about one inbound-frame round, which is a
 fast double-tap - rare enough that no capture shows it.
+
+## A truncated frame stalled the session clock (2026-09-28)
+
+`is_our_sl_frame()` proves only that the header, `e[0]` to `e[6]`, is addressed to us. The payload can
+still be short. Two branches of `handle_sl_frame` read it without a guard:
+
+```
+encoder: local delta = e[9] - 0x40   -> attempt to perform arithmetic on a nil value
+mvol:    if vol < 0 then             -> attempt to compare nil with number
+```
+
+The `IT_BUTTON` branch survived the same frame, which is why this never looked like a whole-file
+problem.
+
+The cost is larger than one lost event. The error propagates out of `controller_midi_in` and aborts it
+before `rearm_timer()`, and that reply is the only thing that re-arms the one-shot timer (rule 6). A
+malformed frame therefore cost a tick, not just its own payload. The frame-count watchdog recovers, but
+much later.
+
+`handle_sl_frame` now returns early on a missing item type, a missing encoder tick byte and a missing
+VOL byte, and logs the frame in each case. The harness drives these through `controller_midi_in` rather
+than `handle_sl_frame`, so it asserts that the callback completes AND re-arms; removing any one of the
+three guards fails exactly its own pair of checks.
+
+Found by review. No hardware capture shows a short frame from a healthy SL88, so treat this as
+defence, not as a fix for an observed fault.

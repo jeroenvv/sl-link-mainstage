@@ -6044,6 +6044,53 @@ do
 	pendingReleases, pendingPresses = savedReleases, savedPresses
 end
 
+-- MARK: - 93. A truncated frame is ignored, and the session clock survives it
+--
+-- is_our_sl_frame() only proves the header (e[0]-e[6]) is ours; the payload can still be short. The
+-- encoder branch did `e[9] - 0x40` and the Master Volume branch compared `e[9] < 0` with no guard, so a
+-- short frame raised a Lua error. That error aborts controller_midi_in BEFORE rearm_timer(), and the
+-- query reply that re-arms the one-shot is the only thing keeping the session clock running (rule 6) -
+-- so the cost of a malformed frame was a stalled clock, not just a lost event. See
+-- docs/config-lua-history.md#a-truncated-frame-stalled-the-session-clock-2026-09-28.
+--
+-- Driven through controller_midi_in, not handle_sl_frame: the point is that the WHOLE callback
+-- completes and re-arms, which a direct handle_sl_frame call cannot show.
+do
+	local savedState, savedArmed, savedPending = state, armed, timerPending
+
+	-- Header only, then header plus each item type that reads a payload byte. 0x42 is an item type
+	-- nothing handles - it must reach the log, not the error handler.
+	local truncated = {
+		{ 'no item type', frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID) },
+		{ 'encoder, no tick byte', frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_ZONE1) },
+		{ 'master volume, no VOL byte', frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_MASTER_VOLUME, MVOL_READ) },
+		{ 'button, no press byte', frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_BUTTON, BID_ZONE1_SEL) },
+		{ 'unknown item type', frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, 0x42, 0x00) },
+	}
+	for _, case in ipairs(truncated) do
+		state = STATE_ACTIVE
+		timerPending = false
+		armed = nil
+		local ok = pcall(controller_midi_in, case[2], 'LINK')
+		check('a truncated frame (' .. case[1] .. ') does not raise', ok)
+		-- The whole callback ran: rearm_timer() is its last statement on this path.
+		check('a truncated frame (' .. case[1] .. ') still re-arms the session clock',
+			ok and armed ~= nil and timerPending == true)
+	end
+
+	-- A WELL-FORMED encoder frame must still be acted on - a guard that swallowed everything would
+	-- pass every check above. Asserted on what the callback RETURNS, since controller_midi_in flushes
+	-- the CC batch itself and leaves pendingDelta empty behind it.
+	state = STATE_ACTIVE
+	local cc = CC_MAP[encoder_control(EID_ZONE1)]
+	local ok, out = pcall(controller_midi_in,
+		frame(0xF0, 0x00, 0x20, 0x1A, 0x16, SL_HOST_ID, instanceID, IT_ENCODER, EID_ZONE1, 0x40 + 3, 0xF7), 'LINK')
+	check('a complete encoder frame is still handled',
+		ok and out ~= nil and out.midi ~= nil and out.midi[1] == CC_STATUS and out.midi[2] == cc and out.midi[3] == 3)
+
+	state, armed, timerPending = savedState, savedArmed, savedPending
+end
+
 -- MARK: - Summary
 
 realPrint('')
