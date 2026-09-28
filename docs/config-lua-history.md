@@ -3279,3 +3279,28 @@ The harness assertion here previously required the opposite, that feedback SURVI
 popup would not blank. That reasoning was sound while `Unmapped` cleared names and became wrong the
 moment it did not. **Two coupled behaviours:** changing either one without the other produces a visible
 fault - stale names if feedback persists, flicker if it is dropped too eagerly.
+
+## The 0x80 passthrough (2026-09-28)
+
+`append_text`'s clamp was `if b < 0x20 or b > 0x80 then b = 0x20 end`, and
+`sanitize_value_string`'s filter was `b >= 0x20 and b <= 0x80`. Both kept `0x80` itself. That byte has
+its MSB set, so it is illegal in a MIDI data byte and the SL88 drops the whole message.
+
+The byte is not exotic. A UTF-8 dash, curly quote or ellipsis is `E2 80 xx`, so any patch or set name
+with typographic punctuation produced it:
+
+```
+"Lead – Bright" -> 4C 65 61 64 20 20 80 20 20 42 72 69 67 68 74 00
+                                     ^^ illegal
+```
+
+The failure is silent twice over. The keyboard drops the message, and `drawn[id]` still records the
+region as painted - the memo-vs-screen divergence `drop_queued_display` documents. The line stays blank
+until the next `invalidate_all()`.
+
+Both bounds are now exclusive (`>= 0x80`, `< 0x80`). The harness asserts that no byte of a realistic
+name reaches the wire with its MSB set; before the fix that assertion failed, together with three
+others, and nothing else did.
+
+Found by review, not on hardware. No capture shows it, because a name with a plain ASCII hyphen never
+triggers it.
