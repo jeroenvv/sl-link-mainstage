@@ -5996,6 +5996,54 @@ do
 		POPUP_VALUE_Y == POPUP_KNOB_Y + KNOB_HOLE_DY + 1)
 end
 
+-- MARK: - 92. A repeated press stays a repeated press: 127, 0, 127, 0
+--
+-- queue_cc coalesces per control, so a press queued on top of an unflushed release used to REPLACE it.
+-- Two presses of one button in consecutive rounds emitted 127, 127, 0 - MainStage saw one held button,
+-- so a momentary-mapped action fired once instead of twice. queue_momentary_cc now defers such a press
+-- and drain_momentary_queue() re-offers it a round later. See
+-- docs/config-lua-history.md#a-repeated-press-overwrote-its-own-release-2026-09-28.
+--
+-- Asserted on the WIRE VALUES in order, not on the bookkeeping tables: what matters is the sequence
+-- MainStage receives, and an implementation that tracked the lists correctly while still emitting the
+-- wrong bytes must fail this.
+do
+	local savedCC, savedOrder = pendingCC, pendingCCOrder
+	local savedReleases, savedPresses = pendingReleases, pendingPresses
+	pendingCC, pendingCCOrder, pendingReleases, pendingPresses = {}, {}, {}, {}
+	local cc = CC_MAP['SEL1_SHORT']
+
+	-- One round of controller_midi_in's CC path: drain what is owed, handle this frame's press (if
+	-- any), emit the batch. Returns the value sent for cc this round, or nil if nothing was.
+	local function round(pressed)
+		drain_momentary_queue()
+		if pressed then queue_momentary_cc('SEL1_SHORT') end
+		local out = flush_pending_cc()
+		if out == nil then return nil end
+		for i = 1, #out.midi, 3 do
+			if out.midi[i + 1] == cc then return out.midi[i + 2] end
+		end
+		return nil
+	end
+
+	local r1, r2, r3, r4, r5 = round(true), round(true), round(false), round(false), round(false)
+	check('the first press sends 127', r1 == 127)
+	check('a press in the very next round does NOT overwrite the pending release', r2 == 0)
+	check('the deferred second press is then sent in full', r3 == 127)
+	check('the second press gets its own release', r4 == 0)
+	check('and the queue drains empty afterwards', r5 == nil)
+	check('no press is left stranded in pendingPresses', #pendingPresses == 0)
+	check('no release is left stranded in pendingReleases', #pendingReleases == 0)
+
+	-- The ordinary case must not have gained a round: one press, with a quiet round after it, still
+	-- goes out as 127 then 0.
+	local s1, s2, s3 = round(true), round(false), round(false)
+	check('a single press is still 127 then 0, with no extra round', s1 == 127 and s2 == 0 and s3 == nil)
+
+	pendingCC, pendingCCOrder = savedCC, savedOrder
+	pendingReleases, pendingPresses = savedReleases, savedPresses
+end
+
 -- MARK: - Summary
 
 realPrint('')

@@ -3304,3 +3304,31 @@ others, and nothing else did.
 
 Found by review, not on hardware. No capture shows it, because a name with a plain ASCII hyphen never
 triggers it.
+
+## A repeated press overwrote its own release (2026-09-28)
+
+`queue_cc` coalesces per control, and `queue_momentary_cc` queued the press straight into that table.
+When a second press of the same button landed in the round that was draining the first press's release,
+the 127 replaced the pending 0:
+
+```
+round 1  press -> B0 24 7F
+round 2  press -> B0 24 7F     the release for round 1 is gone
+round 3  idle  -> B0 24 00
+```
+
+MainStage therefore saw one button held across two presses. A momentary-mapped action - Next Patch, say
+- fired once for two taps.
+
+A press that arrives while its control still holds an unflushed value now goes to `pendingPresses`, and
+`drain_momentary_queue()` re-offers it the round after, so the wire carries `127, 0, 127, 0`. A re-offered
+press can be deferred again; both lists are swapped out before they are drained, so neither is iterated
+while it is being appended to.
+
+The release drain must stay AHEAD of the press drain in that function. With the order reversed, the
+re-offered press takes the round the release needed and the same overwrite returns one round later - the
+harness asserts the wire sequence, so it catches that, and catches a press that is dropped rather than
+deferred.
+
+Found by review. It needs two presses of one button within about one inbound-frame round, which is a
+fast double-tap - rare enough that no capture shows it.

@@ -515,6 +515,8 @@ pendingDelta = {} -- control name -> accumulated SIGNED relative delta, for CC_T
 pendingCCOrder = {} -- insertion order of pendingCC's/pendingDelta's keys, for a deterministic batch
 pendingReleases = {} -- controls whose 127 press already went out; queue their 0 release the NEXT
 	-- round (see queue_momentary_cc())
+pendingPresses = {} -- presses that arrived while the same control still had an unflushed value, so
+	-- they wait a round rather than overwriting it (see queue_momentary_cc())
 -- Absolute 0-127 tracked value per encoder wired to a CC, PER BANK: zone 1 in bank 'a' and zone 5 in
 -- bank 'b' are the same knob but different parameters, so they must not share a gauge - switching bank
 -- would make the popup's ring jump to the other bank's position. Read through encoder_value(), which
@@ -1043,9 +1045,35 @@ end
 -- that heartbeat keeps inbound SL frames arriving even with no further user input), before handling
 -- that frame's own event. Simpler than threading a delay through the batching path, and 'shortly
 -- after' is all momentary behaviour needs.
+--
+-- A press that arrives while this control still has an unflushed value WAITS. queue_cc coalesces per
+-- control, so queuing 127 on top of a release's 0 replaced it: MainStage saw 127, 127, 0 for two
+-- presses - one held button, so a momentary action fired once. The press goes to pendingPresses and
+-- drain_momentary_queue() re-offers it a round later, which gives MainStage 127, 0, 127, 0.
 function queue_momentary_cc(control)
+	if pendingCC[control] ~= nil then
+		pendingPresses[#pendingPresses + 1] = control
+		return
+	end
 	queue_cc(control, 127)
 	pendingReleases[#pendingReleases + 1] = control
+end
+
+-- Runs at the START of every round (controller_midi_in), before that round's own frame is handled:
+-- first the release owed for the previous round's press, then any press that had to wait for one. A
+-- press re-offered here may have to wait again - the release queued a line above owns this round - so
+-- both lists are swapped out before they are drained, never iterated while being appended to.
+function drain_momentary_queue()
+	if #pendingReleases > 0 then
+		local releases = pendingReleases
+		pendingReleases = {}
+		for i = 1, #releases do queue_cc(releases[i], 0) end
+	end
+	if #pendingPresses > 0 then
+		local presses = pendingPresses
+		pendingPresses = {}
+		for i = 1, #presses do queue_momentary_cc(presses[i]) end
+	end
 end
 
 function build_cc_message(control, value)
@@ -3548,6 +3576,7 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	pendingDelta = {}
 	pendingCCOrder = {}
 	pendingReleases = {}
+	pendingPresses = {}
 	encoderValueBank = {
 		a = { [EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
 			[EID_JOYSTICK] = 64, [EID_B] = 64 },
@@ -3917,12 +3946,7 @@ function controller_midi_in(midiEvent, portName)
 		-- Release any momentary CC presses queued LAST round before handling THIS frame, so a button
 		-- press on this frame queues its own release for the round after, not this one - see
 		-- queue_momentary_cc's comment for why the release can't just follow the press directly.
-		if #pendingReleases > 0 then
-			for i = 1, #pendingReleases do
-				queue_cc(pendingReleases[i], 0)
-			end
-			pendingReleases = {}
-		end
+		drain_momentary_queue()
 
 		handle_sl_frame(midiEvent)
 
