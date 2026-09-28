@@ -1280,6 +1280,12 @@ end
 -- truncation in pixels, with its own '...' for anything that doesn't fit on screen, regardless of
 -- how many characters were sent. This is a transport limit only, computed from the query builder
 -- itself (not hand-counted) so it stays correct if either message's shape ever changes.
+--
+-- 43 characters is ACCEPTED, not a defect to fix. A long concert plus set name reaches the cap on real
+-- rigs - 'Joseph key2 - 2. Jacob & Sons / Joseph's Coat' is 45 and loses its last two characters, which
+-- the log reports as a `clamping` line - and Jeroen confirmed on 2026-09-28 that this is fine. Do not
+-- widen the cap or shorten the context bar's separator to chase it; the cap is derived from the flush
+-- budget and cannot be raised without moving FLUSH_BUDGET, which is hardware-measured.
 TEXT_STRING_CAP = FLUSH_BUDGET - #msg_identification_query() - WRITE_TEXT_OVERHEAD
 
 function msg_system(func)
