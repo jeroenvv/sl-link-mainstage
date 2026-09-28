@@ -521,12 +521,18 @@ pendingPresses = {} -- presses that arrived while the same control still had an 
 -- bank 'b' are the same knob but different parameters, so they must not share a gauge - switching bank
 -- would make the popup's ring jump to the other bank's position. Read through encoder_value(), which
 -- resolves the active bank. See the Encoder bank section.
-encoderValueBank = {
-	a = { [EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
-		[EID_JOYSTICK] = 64, [EID_B] = 64 },
-	b = { [EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
-		[EID_JOYSTICK] = 64, [EID_B] = 64 },
-}
+-- Built by a function, not written out twice: controller_initialize needs the same fresh table and the
+-- two copies would drift.
+function fresh_encoder_values()
+	return {
+		a = { [EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
+			[EID_JOYSTICK] = 64, [EID_B] = 64 },
+		b = { [EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
+			[EID_JOYSTICK] = 64, [EID_B] = 64 },
+	}
+end
+
+encoderValueBank = fresh_encoder_values()
 
 -- Safe mid-scale starting point for masterVolume: not 0, and not 100 where a single click could
 -- slam the audio board to full output. See
@@ -3585,6 +3591,64 @@ end
 
 -- MARK: - MainStage callbacks
 
+-- Returns every piece of per-session state to its declared default. MainStage re-initialises the
+-- script mid-session, and it is not guaranteed to re-run the chunk, so a value left here from the
+-- previous incarnation survives into the next one - a stale popupActive is enough to leave the script
+-- believing a panel is on screen that is not.
+--
+-- DELIBERATELY NOT RESET: masterVolume/masterMuted/masterVolumeRead track the device, and the previous
+-- incarnation's values are closer to the truth than the seed would be. timerTicks and flushCounter are
+-- monotonic diagnostics, and timerTicks additionally gates controller_finalize's logout
+-- (LOGOUT_ON_QUIT_MIN_TICKS), so resetting it would change a hardware-tuned behaviour.
+function reset_session_state()
+	state = STATE_IDLE
+	instanceID = derive_instance_start(instanceTag)
+	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
+	identifyResendsLeft = MAX_IDENTIFY_RESENDS
+	identifyFallback = false
+	logoutTicksLeft = 0
+
+	pendingMessages = {}
+	pendingCC, pendingDelta, pendingCCOrder = {}, {}, {}
+	pendingReleases, pendingPresses = {}, {}
+	pendingProgram, pendingBank = nil, nil
+
+	encoderValueBank = fresh_encoder_values()
+	encoderBank = 'a'
+
+	displayMode = 'zoom' -- see the displayMode declaration above for why
+	patchName, setName, currentConcert = '', '', ''
+	activeSetIndex, activePatchIndex = 0, 0
+	cursorIndex, scrollOffset = 0, 0
+	listRows = {}
+	lastPaintedPatch, lastPaintTick = nil, -1
+	queuedDisplayOps, displaySettleTicks = 0, 0
+	displayFlushReady, mvolFlushReady, slFlushReady = true, true, true
+	mvolFastWritesThisTick = 0
+
+	popupActive, popupPreviousMode = false, nil
+	popupEid, popupControlName, popupCcNumber = nil, nil, nil
+	popupValue, popupMax = 0, 127
+	popupFeedbackActive, popupModeIsFeedback = false, nil
+	popupFeedbackName, popupValueString = nil, nil
+	popupLastActivityIdleTick, popupValueLastPaintTick, popupValueDirty = 0, -1, false
+
+	configScroll, configPreviousMode = 0, nil
+	browsePending, browseLastActivityIdleTick = false, 0
+
+	mvolSettlePending, awaitingSettleRead, mvolLastSettleReadTick = false, false, nil
+	mvolLastActivityIdleTick = 0
+
+	idleTicks = 0
+	framesSinceTick, watchdogDiagLastFrames = 0, 0
+	framesSinceQueryReply, activeMsSinceQueryReply = 0, 0
+	recoveryCooldownMs, recoveryAttempts, recoveryGivenUp = 0, 0, false
+
+	midiOutFeedback = {}
+	forget_led_state()
+	invalidate_all()
+end
+
 function controller_initialize(applicationName, deviceNewlyDetected)
 	settriggertimer(KEEPALIVE_MS)
 	-- This is the very first arm for a fresh script instance - nothing was outstanding before it, and
@@ -3593,28 +3657,7 @@ function controller_initialize(applicationName, deviceNewlyDetected)
 	-- on top of it.
 	timerPending = true
 	timerArmedInterval = KEEPALIVE_MS
-	state = STATE_IDLE
-	instanceID = derive_instance_start(instanceTag)
-	reidentifyRetriesLeft = MAX_SAME_ID_RETRIES
-	pendingMessages = {}
-	pendingCC = {}
-	pendingDelta = {}
-	pendingCCOrder = {}
-	pendingReleases = {}
-	pendingPresses = {}
-	encoderValueBank = {
-		a = { [EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
-			[EID_JOYSTICK] = 64, [EID_B] = 64 },
-		b = { [EID_ZONE1] = 64, [EID_ZONE2] = 64, [EID_ZONE3] = 64, [EID_ZONE4] = 64,
-			[EID_JOYSTICK] = 64, [EID_B] = 64 },
-	}
-	encoderBank = 'a'
-	displayMode = 'zoom' -- see the displayMode declaration above for why
-	patchName, setName, currentConcert = '', '', ''
-	activeSetIndex, activePatchIndex = 0, 0
-	cursorIndex, scrollOffset = 0, 0
-	listRows = {}
-	invalidate_all()
+	reset_session_state()
 
 	if applicationName ~= nil and applicationName ~= '' then
 		APP_NAME = applicationName
