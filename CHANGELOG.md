@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-09-28
+
 ### Fixed
 
 - A MainStage-driven re-initialise now returns every per-session value to its default. It reset only
