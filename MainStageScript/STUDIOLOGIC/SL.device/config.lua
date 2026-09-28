@@ -845,9 +845,6 @@ function queue_message(msg, regionId)
 	table.insert(pendingMessages, msg)
 end
 
--- Removes a single pending queue entry by regionId, without touching drawn[] - unlike
--- drop_queued_display() below, which drops every display message. Used when a region must be
--- forced back to the tail instead of coalescing at its old position - see draw_popup_knob.
 -- Drops every queued Identification Request. They carry no regionId (they must never coalesce), so
 -- drop_queued_region cannot reach them - see handle_identification_approved for why they must go.
 function drop_queued_identification_requests()
@@ -861,6 +858,9 @@ function drop_queued_identification_requests()
 	pendingMessages = keep
 end
 
+-- Removes a single pending queue entry by regionId, without touching drawn[] - unlike
+-- drop_queued_display() below, which drops every display message. Used when a region must be forced
+-- back to the tail instead of coalescing at its old position - see draw_popup_knob.
 function drop_queued_region(regionId)
 	for i = 1, #pendingMessages do
 		if pendingMessages[i].regionId == regionId then
@@ -2022,16 +2022,11 @@ function paint_popup_feedback()
 	end
 end
 
--- Drains the mute ring LEDs, once per timer tick from controller_timer_trigger. NOT driven from the
--- popup paint: the mute is pressed on the paired push button, which neither opens nor repaints the
--- popup, and the popup dismisses after ~2s anyway - the LED is a persistent indicator, so it has to
--- track the feedback rather than the popup. Not queued from controller_midi_out either, which must
--- never queue. Lit = unmuted, matching the A ring.
--- Last HOME lamp state sent; nil means 'unknown, send it'. Same memo/clear discipline as
--- encoderMuteLedSent - see flush_mute_leds.
+-- Last lamp state sent per button; nil means 'unknown, send it'. Same memo/clear discipline as
+-- encoderMuteLedSent - see flush_mode_led, which is the only writer of all three.
 homeLedSent = nil
--- Same for the GLOBAL lamp; nil means 'unknown, send it'.
 globalLedSent = nil
+dawLedSent = nil
 
 -- HOME lamp mirrors the screen: lit in the patch list, dark in zoom. Drained on the tick and
 -- ACTIVE-only for the same reasons as flush_mute_leds. During a popup it follows the mode the popup
@@ -2067,6 +2062,9 @@ function flush_mode_led()
 	end
 end
 
+-- Drains the mute ring LEDs on the timer tick, NOT from the popup paint: the mute is pressed on the
+-- paired push button, which never opens or repaints the popup, so the LED must track the feedback
+-- rather than the popup. Lit = unmuted, matching the A ring.
 function flush_mute_leds()
 	-- ACTIVE only. An LED write before the app is selected is discarded by the SL88 anyway, and
 	-- queueing one during identification competes with the retry for the per-tick permit and delays
@@ -2322,11 +2320,13 @@ function draw_list_row(i, row, isCursor)
 	end
 
 	local isActive = row.isPatch and row.setIndex == activeSetIndex and row.patchIndex == activePatchIndex
-	local state = ROW_PATCH
-	if isActive then state = ROW_ACTIVE
-	elseif not row.isPatch then state = ROW_HEADER
+	-- rowState, not state: `state` is the session state machine's global, and shadowing it here reads
+	-- like a bug even though the local is contained.
+	local rowState = ROW_PATCH
+	if isActive then rowState = ROW_ACTIVE
+	elseif not row.isPatch then rowState = ROW_HEADER
 	end
-	local c = ROW_COLORS[state]
+	local c = ROW_COLORS[rowState]
 	local marker = isCursor and '> ' or '  '
 	local indent = row.isPatch and '  ' or ''
 	draw_text(id, marker .. indent .. row.label, ROW_X, y, maxw, ALIGN_LEFT, SIZE_SMALL,
@@ -4071,12 +4071,6 @@ function patch_field(entry, field)
 	return nil
 end
 
--- ARGUMENT HIERARCHY SHIFT: MainStage reuses this same callback for selections in Edit mode that
--- are NOT a patch - selecting a SET or the CONCERT there shifts the argument hierarchy up one
--- level, the selected thing arriving as patchname and its PARENT arriving as setname:
---   select a set:      patchname="2. Jacob & Sons / Joseph's Coat"  setname='Joseph key2'
---                       (setname is actually the CONCERT)
---   select the concert: patchname='Joseph key2'                    setname=''
 -- Reverse of CC_MAP (CC number -> CC_MAP key), built once at load so controller_midi_out - which
 -- fires constantly, thousands of times per idle session - never scans CC_MAP per call. See
 -- docs/config-lua-history.md#controller_midi_out-reports-real-parameter-values-with-a-screen-control-2026-09-17.
@@ -4164,8 +4158,13 @@ function controller_midi_out(midiEvent, name, valueString, color)
 	return nil
 end
 
--- controller_select_patch below trusts patchname/setname/concertname UNCONDITIONALLY - this is a
--- deliberate product decision (the user wants the selected value shown in the patch slot regardless
+-- ARGUMENT HIERARCHY SHIFT: MainStage reuses this callback for Edit-mode selections that are NOT a
+-- patch. Selecting a set or the concert shifts the arguments up one level - the selected thing arrives
+-- as patchname and its PARENT as setname, so setname can actually be the concert, and for a concert
+-- selection setname is empty.
+--
+-- controller_select_patch below trusts patchname/setname/concertname UNCONDITIONALLY despite that -
+-- a deliberate product decision (the user wants the selected value shown in the patch slot regardless
 -- of hierarchy level), not an oversight. Do NOT reintroduce a 'refuse non-patch selections' guard
 -- without checking with Jeroen first - see docs/config-lua-history.md#rejected-approaches.
 function controller_select_patch(programchangeNumber, patchname, setname, concertname,
