@@ -2319,9 +2319,7 @@ function draw_list_row(i, row, isCursor)
 	end
 
 	local isActive = row.isPatch and row.setIndex == activeSetIndex and row.patchIndex == activePatchIndex
-	-- rowState, not state: `state` is the session state machine's global, and shadowing it here reads
-	-- like a bug even though the local is contained.
-	local rowState = ROW_PATCH
+	local rowState = ROW_PATCH -- not `state`: that is the session state machine's global
 	if isActive then rowState = ROW_ACTIVE
 	elseif not row.isPatch then rowState = ROW_HEADER
 	end
@@ -2785,9 +2783,8 @@ end
 -- supersedes a stale queued region in place, so nothing needs to be thrown away first. Do not
 -- reintroduce a "drop everything, then re-queue" step here; it starves rows under rapid patch
 -- changes (see queue_message's coalescing comment).
--- Paints whatever mode is showing. A content change can land while displayMode=='popup' or 'config',
--- and must redraw THAT mode's content rather than the list/zoom underneath it. Memoization makes a
--- config repaint a no-op unless the scroll moved.
+-- Paints whatever mode is showing. A content change can land while a popup or the config screen is up,
+-- and must redraw THAT mode rather than the list/zoom underneath it.
 function paint_current_mode()
 	if displayMode == 'popup' then
 		paint_popup_screen()
@@ -2801,20 +2798,16 @@ function paint_current_mode()
 end
 
 -- Runs `paint` and adds the trailing sacrificial redraw only if it queued something real - the rule
--- every painting entry point shares. See queue_sacrificial_redraw() for why the trailing duplicate is
--- needed and why an all-memoized no-op must not get one.
+-- every painting entry point shares. See queue_sacrificial_redraw().
 function paint_with_sacrificial(paint)
 	local before = queuedDisplayOps
 	paint()
-	-- Captured BEFORE the redraw is queued: the sacrificial duplicate carries no regionId and so does
-	-- not count, but the answer must not depend on that.
-	local queued = queuedDisplayOps > before
+	local queued = queuedDisplayOps > before -- captured before the redraw, which must not count
 	if queued then queue_sacrificial_redraw() end
 	return queued
 end
 
--- Returns true if it queued anything real, so a caller can decide whether to pull the next tick
--- forward. Most callers ignore it.
+-- Returns true if it queued anything real, so a caller can pull the next tick forward. Most ignore it.
 function update_screen()
 	local queued = paint_with_sacrificial(paint_current_mode)
 	lastPaintedPatch = patchName
@@ -2953,10 +2946,7 @@ function set_display_mode(mode)
 	-- after the LAST one.
 	queue_message(msg_clear_screen(0, 0, 0))
 	queue_message(msg_clear_screen(0, 0, 0))
-	-- Dispatches on displayMode, assigned from `mode` above. Partly redundant with the full-screen
-	-- erase, but each name draw erases its own band anyway. The trailing sacrificial redraw matters as
-	-- much here as on the other paths: without it the LAST message of a mode switch (zpos in zoom, the
-	-- last visible row in list) meets the "final flush is silently dropped" finding.
+	-- Partly redundant with the Clear Screen above, but each name draw erases its own band anyway.
 	paint_with_sacrificial(paint_current_mode)
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
@@ -3591,15 +3581,12 @@ end
 
 -- MARK: - MainStage callbacks
 
--- Returns every piece of per-session state to its declared default. MainStage re-initialises the
--- script mid-session, and it is not guaranteed to re-run the chunk, so a value left here from the
--- previous incarnation survives into the next one - a stale popupActive is enough to leave the script
--- believing a panel is on screen that is not.
+-- Returns every per-session global to its declared default. MainStage re-initialises the script
+-- mid-session and need not re-run the chunk, so anything missed here survives into the next incarnation.
 --
--- DELIBERATELY NOT RESET: masterVolume/masterMuted/masterVolumeRead track the device, and the previous
--- incarnation's values are closer to the truth than the seed would be. timerTicks and flushCounter are
--- monotonic diagnostics, and timerTicks additionally gates controller_finalize's logout
--- (LOGOUT_ON_QUIT_MIN_TICKS), so resetting it would change a hardware-tuned behaviour.
+-- DELIBERATELY NOT RESET: masterVolume/masterMuted/masterVolumeRead track the device, so the previous
+-- values beat the seed. timerTicks gates controller_finalize's logout (LOGOUT_ON_QUIT_MIN_TICKS), and
+-- it and flushCounter are monotonic diagnostics.
 function reset_session_state()
 	state = STATE_IDLE
 	instanceID = derive_instance_start(instanceTag)
