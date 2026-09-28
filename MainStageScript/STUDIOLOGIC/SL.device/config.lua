@@ -1046,10 +1046,9 @@ end
 -- that frame's own event. Simpler than threading a delay through the batching path, and 'shortly
 -- after' is all momentary behaviour needs.
 --
--- A press that arrives while this control still has an unflushed value WAITS. queue_cc coalesces per
--- control, so queuing 127 on top of a release's 0 replaced it: MainStage saw 127, 127, 0 for two
--- presses - one held button, so a momentary action fired once. The press goes to pendingPresses and
--- drain_momentary_queue() re-offers it a round later, which gives MainStage 127, 0, 127, 0.
+-- A press whose control still holds an unflushed value WAITS: queuing 127 over a pending release's 0
+-- would replace it and the button would read as held. See
+-- docs/config-lua-history.md#a-repeated-press-overwrote-its-own-release-2026-09-28.
 function queue_momentary_cc(control)
 	if pendingCC[control] ~= nil then
 		pendingPresses[#pendingPresses + 1] = control
@@ -1059,10 +1058,8 @@ function queue_momentary_cc(control)
 	pendingReleases[#pendingReleases + 1] = control
 end
 
--- Runs at the START of every round (controller_midi_in), before that round's own frame is handled:
--- first the release owed for the previous round's press, then any press that had to wait for one. A
--- press re-offered here may have to wait again - the release queued a line above owns this round - so
--- both lists are swapped out before they are drained, never iterated while being appended to.
+-- Releases FIRST, then deferred presses - the reverse order reintroduces the overwrite. Both lists are
+-- swapped out before draining because a re-offered press can append to them again.
 function drain_momentary_queue()
 	if #pendingReleases > 0 then
 		local releases = pendingReleases
@@ -1152,22 +1149,17 @@ function sl_header()
 end
 
 -- ASCII-clamps to the SLMK2 font range and 0x00-terminates, per the spec's text field encoding.
--- The upper bound is 0x7F, not 0x80: 0x80 has its MSB set, which is illegal in a MIDI data byte and
--- drops the whole message. A UTF-8 dash, curly quote or ellipsis is E2 80 xx, so the byte does reach
--- here from an ordinary patch name - see docs/config-lua-history.md#the-0x80-passthrough-2026-09-28.
+-- Upper bound 0x7F, not 0x80: 0x80 has its MSB set, illegal in a MIDI data byte, and the SL88 drops the
+-- whole message. See docs/config-lua-history.md#the-0x80-passthrough-2026-09-28.
 function append_text(msg, text, maxLength)
 	if text ~= nil then
-		-- Fold BEFORE the length clamp, so a folded name spends its budget on characters that will
-		-- actually render: 'Café' is 5 bytes as UTF-8 and 4 after folding. This is the one choke point
-		-- every text field passes through, so no caller can bypass it - see ASCII_FOLD.
+		-- Fold before the clamp is computed, or an expanding fold gets cut - see ASCII_FOLD. This is the
+		-- one choke point every text field passes through.
 		text = fold_ascii(text)
 		local limit = math.min(#text, maxLength or 32)
 		for i = 1, limit do
 			local b = string.byte(text, i)
-			-- Structural guard, not a reachable case with `limit` derived from this same string: it makes
-			-- the function total whatever limit says, so a future edit that derives limit from a
-			-- DIFFERENT string cannot turn this into a nil comparison that aborts the caller.
-			if b == nil then break end
+			if b == nil then break end -- unreachable today; keeps a short string from aborting the caller
 			if b < 0x20 or b >= 0x80 then b = 0x20 end
 			table.insert(msg, b)
 		end
@@ -1175,14 +1167,10 @@ function append_text(msg, text, maxLength)
 	table.insert(msg, 0x00)
 end
 
--- Non-ASCII text the host can hand us, folded to the closest ASCII form. A SysEx payload carries
--- 7-bit bytes only, so NOTHING above 0x7F can be sent at all - the choice is a transliteration or a
--- run of spaces, never the real glyph. Without this table every byte of a multi-byte character
--- becomes its own space, so a Dutch 'een' with two accented e's read as four blanks.
---
--- Keys are literal UTF-8, which is why they are legible; the codepoint follows in a comment where the
--- character is not obvious. One line per base letter so the groups can be checked by eye.
--- See docs/config-lua-history.md#accented-characters-are-folded-not-blanked-2026-09-28.
+-- Non-ASCII text folded to the closest ASCII form. The wire is 7-bit, so the real glyph can never be
+-- sent - without this table each byte of a multi-byte character became its own space. Keys are literal
+-- UTF-8, one line per base letter, so the groups can be checked by eye. See
+-- docs/config-lua-history.md#accented-characters-are-folded-not-blanked-2026-09-28.
 ASCII_FOLD = {
 	['à'] = 'a', ['á'] = 'a', ['â'] = 'a', ['ã'] = 'a', ['ä'] = 'a', ['å'] = 'a',
 	['À'] = 'A', ['Á'] = 'A', ['Â'] = 'A', ['Ã'] = 'A', ['Ä'] = 'A', ['Å'] = 'A',
@@ -1197,24 +1185,21 @@ ASCII_FOLD = {
 	['ç'] = 'c', ['Ç'] = 'C', ['ñ'] = 'n', ['Ñ'] = 'N', ['ý'] = 'y', ['ÿ'] = 'y', ['Ý'] = 'Y',
 	['ß'] = 'ss', ['æ'] = 'ae', ['Æ'] = 'AE', ['œ'] = 'oe', ['Œ'] = 'OE',
 
-	-- Typographic punctuation. These are the characters whose middle UTF-8 byte is 0x80 (E2 80 xx),
-	-- so before append_text's clamp was corrected they put an illegal byte on the wire - see there.
+	-- Typographic punctuation - the E2 80 xx characters, whose middle byte is the illegal 0x80.
 	['–'] = '-', ['—'] = '-', ['‑'] = '-', -- U+2013 en dash, U+2014 em dash, U+2011 non-breaking hyphen
 	['‘'] = "'", ['’'] = "'", ['‚'] = ',', -- U+2018/2019 curly single quotes, U+201A low quote
 	['“'] = '"', ['”'] = '"', ['„'] = '"', -- U+201C/201D curly double quotes, U+201E low double
 	['…'] = '...', ['•'] = '-', ['·'] = '-', -- U+2026 ellipsis, U+2022 bullet, U+00B7 middle dot
 
-	-- Symbols with a conventional ASCII spelling. § is the SECTION sign, so it folds to 'S' for
-	-- section - agreed with Jeroen 2026-09-28.
+	-- Symbols with a conventional spelling. § is the section sign, hence 'S'.
 	['§'] = 'S', ['°'] = 'deg', ['×'] = 'x', ['÷'] = '/', ['±'] = '+/-',
 	['©'] = '(c)', ['®'] = '(r)', ['™'] = 'TM', ['€'] = 'EUR', ['£'] = 'GBP', ['¥'] = 'JPY',
 	['½'] = '1/2', ['¼'] = '1/4', ['¾'] = '3/4', ['«'] = '<<', ['»'] = '>>',
 	['\xE3\x8F\x88'] = 'dB', -- U+33C8 SQUARE DB, the unit MainStage's own valueString reports
 }
 
--- Any UTF-8 multi-byte sequence: a lead byte plus its continuation bytes. gsub with a table leaves a
--- match that is not a key untouched, so an unlisted character falls through to the per-byte clamp in
--- append_text (spaces) or the drop in sanitize_value_string, exactly as before this table existed.
+-- Any UTF-8 multi-byte sequence. gsub with a table leaves an unlisted match untouched, so it falls
+-- through to the per-byte clamp or drop as before.
 UTF8_SEQUENCE = '[\xC2-\xF4][\x80-\xBF]*'
 
 function fold_ascii(s)
@@ -1222,9 +1207,8 @@ function fold_ascii(s)
 	return (s:gsub(UTF8_SEQUENCE, ASCII_FOLD))
 end
 
--- Substitutes known unit glyphs, then DROPS any remaining byte outside 0x20-0x7F (rather than
--- letting append_text's own per-byte clamp turn a multi-byte glyph into a run of spaces). Same upper
--- bound as append_text, and for the same reason - see there.
+-- Folds via ASCII_FOLD, then DROPS any remaining byte outside 0x20-0x7F (rather than letting
+-- append_text's own per-byte clamp turn a multi-byte glyph into a run of spaces).
 function sanitize_value_string(s)
 	if s == nil then return nil end
 	s = fold_ascii(s)
@@ -1281,11 +1265,8 @@ end
 -- how many characters were sent. This is a transport limit only, computed from the query builder
 -- itself (not hand-counted) so it stays correct if either message's shape ever changes.
 --
--- 43 characters is ACCEPTED, not a defect to fix. A long concert plus set name reaches the cap on real
--- rigs - 'Joseph key2 - 2. Jacob & Sons / Joseph's Coat' is 45 and loses its last two characters, which
--- the log reports as a `clamping` line - and Jeroen confirmed on 2026-09-28 that this is fine. Do not
--- widen the cap or shorten the context bar's separator to chase it; the cap is derived from the flush
--- budget and cannot be raised without moving FLUSH_BUDGET, which is hardware-measured.
+-- 43 is ACCEPTED, not a defect: a long concert plus set name reaches it and loses its tail (Jeroen,
+-- 2026-09-28). It cannot be raised without FLUSH_BUDGET, which is hardware-measured.
 TEXT_STRING_CAP = FLUSH_BUDGET - #msg_identification_query() - WRITE_TEXT_OVERHEAD
 
 function msg_system(func)
@@ -3267,11 +3248,9 @@ function is_our_sl_frame(e)
 		and e[5] == SL_HOST_ID and e[6] == instanceID
 end
 
--- A frame that passed is_our_sl_frame() is addressed to us, but its payload can still be short: the
--- header ends at e[6], so e[7] onwards may be absent. An arithmetic or comparison against a missing
--- byte raises a Lua error, and that error aborts controller_midi_in BEFORE rearm_timer() - the one
--- call that keeps the session clock running (see the SESSION CLOCK note above rearm_timer). So every
--- branch below reads its payload only after a guard has proved it is there.
+-- is_our_sl_frame() proves only the header, so e[7] onwards may be absent. Guard before reading a
+-- payload byte: an error here aborts controller_midi_in before rearm_timer() and costs the session
+-- clock a tick. See docs/config-lua-history.md#a-truncated-frame-stalled-the-session-clock-2026-09-28.
 function handle_sl_frame(e)
 	local itemType = e[7]
 	local func = e[8]
