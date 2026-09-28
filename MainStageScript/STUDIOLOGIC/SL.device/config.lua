@@ -870,16 +870,6 @@ function drop_queued_region(regionId)
 	end
 end
 
--- Queues `count` fresh messages from `builder()`, one call per copy, all with regionId nil so
--- PER-REGION COALESCING (queue_message's own comment above) never collapses them back into one -
--- that would defeat the whole point of repeating a one-shot write. `builder` is called once per
--- copy (not shared) to mirror set_display_mode's double-Clear-Screen idiom.
-function queue_repeated(builder, count)
-	for i = 1, count do
-		queue_message(builder())
-	end
-end
-
 function has_pending()
 	return #pendingMessages > 0
 end
@@ -1679,14 +1669,13 @@ POPUP_PAD = 10 -- inset for the label/value text, so neither touches the panel's
 -- reaches the SL88; see draw_popup_title.
 POPUP_TEXT_MAX_CHARS = 19
 
--- Conservative UPPER bounds on glyph width for MIXED TEXT, used by the harness to assert that a line
--- fits the box it is drawn in. Derived from measurements, not the font: 43 characters fill a 304px box
--- at SIZE_SMALL (7.07px each) and roughly 26 at SIZE_MEDIUM (11.7px each), so these round up.
+-- Conservative UPPER bound on SIZE_MEDIUM glyph width for MIXED TEXT, used by the harness to assert a
+-- line fits its box. Measured, not from the font: ~26 characters fill a 304px box at medium (11.7px
+-- each), and 43 at small (7.07px), so this rounds up.
 --
 -- NOT applicable to digits, which are narrower: three digits fit the 36px ring hole at SIZE_MEDIUM on
--- hardware, where these bounds predict 39px. Do not use them to "prove" a numeric field overflows -
--- that mistake is what briefly shrank the in-ring value.
-CHAR_W_SMALL = 8
+-- hardware, where this bound predicts 39px. Do not use it to "prove" a numeric field overflows - that
+-- mistake is what briefly shrank the in-ring value.
 CHAR_W_MEDIUM = 13
 
 POPUP_CONTENT_X = POPUP_X + POPUP_PAD
@@ -2455,14 +2444,6 @@ function move_cursor_to_edge(last)
 	cursorIndex = target
 	clamp_scroll()
 	return true
-end
-
-function concert_patch_count()
-	local n = 0
-	for i = 1, #listRows do
-		if listRows[i].isPatch then n = n + 1 end
-	end
-	return n
 end
 
 -- The ACTIVE patch's 1-based ordinal position among patches in its OWN set (activeSetIndex), and
