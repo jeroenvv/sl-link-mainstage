@@ -1908,12 +1908,18 @@ end
 -- nil` means either the very first paint or draw_popup_knob() just invalidated it for an icon
 -- change; either way that must win over the throttle immediately, or the value stays blank/stale
 -- until the throttle next allows a repaint.
+-- Draws popupValue in whichever mode is showing, and marks the throttle spent. The single writer of
+-- popupValueLastPaintTick/popupValueDirty, shared with flush_popup_value_if_due().
+function paint_popup_value_now()
+	popupValueLastPaintTick = timerTicks
+	popupValueDirty = false
+	if popupFeedbackActive then draw_popup_feedback_value(popupValueString) else draw_popup_value(popupValue) end
+end
+
 function queue_popup_value()
 	local forced = drawn['popupValue'] == nil
 	if forced or timerTicks - popupValueLastPaintTick >= POPUP_VALUE_THROTTLE_TICKS then
-		popupValueLastPaintTick = timerTicks
-		popupValueDirty = false
-		if popupFeedbackActive then draw_popup_feedback_value(popupValueString) else draw_popup_value(popupValue) end
+		paint_popup_value_now()
 	else
 		popupValueDirty = true
 	end
@@ -1925,9 +1931,7 @@ end
 function flush_popup_value_if_due()
 	if not popupActive or not popupValueDirty then return end
 	if timerTicks - popupValueLastPaintTick < POPUP_VALUE_THROTTLE_TICKS then return end
-	popupValueLastPaintTick = timerTicks
-	popupValueDirty = false
-	if popupFeedbackActive then draw_popup_feedback_value(popupValueString) else draw_popup_value(popupValue) end
+	paint_popup_value_now()
 end
 
 -- CC-mapped encoder (eid, in ENCODER_CC's domain) -> the BID of its own paired push button, for the
@@ -2775,29 +2779,43 @@ end
 -- supersedes a stale queued region in place, so nothing needs to be thrown away first. Do not
 -- reintroduce a "drop everything, then re-queue" step here; it starves rows under rapid patch
 -- changes (see queue_message's coalescing comment).
-function update_screen()
-	-- 3-way dispatch, matching paint_screen's - a content change (patch/set change from MainStage) can
-	-- land while displayMode=='popup' and must redraw the popup's own content, not incorrectly paint
-	-- list/zoom underneath a mode that's still supposed to be showing.
-	local before = queuedDisplayOps
+-- Paints whatever mode is showing. A content change can land while displayMode=='popup' or 'config',
+-- and must redraw THAT mode's content rather than the list/zoom underneath it. Memoization makes a
+-- config repaint a no-op unless the scroll moved.
+function paint_current_mode()
 	if displayMode == 'popup' then
 		paint_popup_screen()
 	elseif displayMode == 'zoom' then
 		paint_zoom_screen()
 	elseif displayMode == 'config' then
-		-- Content-independent, so memoization makes this a no-op unless the scroll moved - a patch
-		-- change from MainStage must not repaint the list underneath the config screen.
 		paint_config_screen()
 	else
 		paint_list_screen()
 	end
-	if queuedDisplayOps > before then
-		queue_sacrificial_redraw()
-	end
+end
+
+-- Runs `paint` and adds the trailing sacrificial redraw only if it queued something real - the rule
+-- every painting entry point shares. See queue_sacrificial_redraw() for why the trailing duplicate is
+-- needed and why an all-memoized no-op must not get one.
+function paint_with_sacrificial(paint)
+	local before = queuedDisplayOps
+	paint()
+	-- Captured BEFORE the redraw is queued: the sacrificial duplicate carries no regionId and so does
+	-- not count, but the answer must not depend on that.
+	local queued = queuedDisplayOps > before
+	if queued then queue_sacrificial_redraw() end
+	return queued
+end
+
+-- Returns true if it queued anything real, so a caller can decide whether to pull the next tick
+-- forward. Most callers ignore it.
+function update_screen()
+	local queued = paint_with_sacrificial(paint_current_mode)
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
 	slog('update queued (' .. #pendingMessages .. ' msgs) mode=' .. displayMode ..
 		' "' .. patchName .. '"')
+	return queued
 end
 
 -- Drops display messages still sitting in the queue. Used only where the queue's content is
@@ -2893,24 +2911,7 @@ function paint_screen()
 	-- docs/config-lua-history.md#the-clear-screen-ban-and-its-lift for what this ban was protecting
 	-- against.
 
-	-- 3-way dispatch: if an ordinary content-driven repaint lands while a popup happens to be showing
-	-- (e.g. a patch change arriving mid-popup), this must redraw the POPUP's own content again, not
-	-- incorrectly repaint list/zoom underneath a mode that's still supposed to be showing.
-	local before = queuedDisplayOps
-	if displayMode == 'popup' then
-		paint_popup_screen()
-	elseif displayMode == 'zoom' then
-		paint_zoom_screen()
-	elseif displayMode == 'config' then
-		paint_config_screen()
-	else
-		paint_list_screen()
-	end
-
-	-- Trailing sacrificial redraw - see queue_sacrificial_redraw()'s comment.
-	if queuedDisplayOps > before then
-		queue_sacrificial_redraw()
-	end
+	paint_with_sacrificial(paint_current_mode)
 
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
@@ -2946,23 +2947,11 @@ function set_display_mode(mode)
 	-- after the LAST one.
 	queue_message(msg_clear_screen(0, 0, 0))
 	queue_message(msg_clear_screen(0, 0, 0))
-	local before = queuedDisplayOps
-	if mode == 'popup' then
-		paint_popup_screen()
-	elseif mode == 'zoom' then
-		paint_zoom_screen() -- redundant with the full-screen erase above, but each name draw erases its own band anyway
-	elseif mode == 'config' then
-		paint_config_screen()
-	else
-		paint_list_screen()
-	end
-	-- MUST end with the same trailing sacrificial redraw paint_screen/ update_screen use - see
-	-- queue_sacrificial_redraw()'s comment; without it the LAST message of a mode switch (zpos in
-	-- zoom, or the last visible row in list) is exposed to the same "final flush is silently dropped"
-	-- finding. Same gate: only queue it if real content was queued.
-	if queuedDisplayOps > before then
-		queue_sacrificial_redraw()
-	end
+	-- Dispatches on displayMode, assigned from `mode` above. Partly redundant with the full-screen
+	-- erase, but each name draw erases its own band anyway. The trailing sacrificial redraw matters as
+	-- much here as on the other paths: without it the LAST message of a mode switch (zpos in zoom, the
+	-- last visible row in list) meets the "final flush is silently dropped" finding.
+	paint_with_sacrificial(paint_current_mode)
 	lastPaintedPatch = patchName
 	lastPaintTick = idleTicks
 	-- Always has real content queued here (Clear Screen plus a guaranteed-non-empty repaint, since
@@ -2981,12 +2970,10 @@ end
 function enter_popup_mode()
 	displayMode = 'popup'
 	drop_queued_display()
-	local before = queuedDisplayOps
-	draw_popup_erase()
-	paint_popup_screen()
-	if queuedDisplayOps > before then
-		queue_sacrificial_redraw()
-	end
+	paint_with_sacrificial(function()
+		draw_popup_erase()
+		paint_popup_screen()
+	end)
 	request_quick_rearm()
 end
 
@@ -3107,6 +3094,14 @@ function check_mvol_settle()
 	end
 end
 
+-- Forgets every lamp/ring memo, so the next tick re-establishes them for this session rather than
+-- trusting a memo from before the SL88 confirmed us - the same reasoning as invalidate_all() for the
+-- display. See docs/config-lua-history.md#startup-led-discarded-before-login-confirmation-2026-09-16.
+function forget_led_state()
+	encoderMuteLedSent, encoderRingSent = {}, {}
+	homeLedSent, globalLedSent, dawLedSent = nil, nil, nil
+end
+
 -- Shared entry point for every transition into STATE_ACTIVE (login confirmation/recall, restart,
 -- and the ID_QUERY self-heal path - see handle_sl_frame). Idempotent: returns false and does
 -- nothing if already active, so a self-heal reaffirmation never requeues the volume read. Returns
@@ -3122,10 +3117,7 @@ function enter_active_session()
 	recoveryAttempts = 0
 	queue_master_volume_read()
 	set_master_mute(masterMuted) -- establish the LED for this session; the READ reply may correct it
-	-- Forget what the mute rings were last sent, so the next tick re-establishes them for this
-	-- session rather than trusting a memo from before the SL88 confirmed us - same reasoning as
-	-- invalidate_all() for the display. See docs/config-lua-history.md#startup-led-discarded-before-login-confirmation-2026-09-16.
-	encoderMuteLedSent, encoderRingSent, homeLedSent, globalLedSent, dawLedSent = {}, {}, nil, nil, nil
+	forget_led_state()
 	return true
 end
 
@@ -3144,9 +3136,9 @@ function handle_login()
 		queue_master_volume_read()
 		set_master_mute(masterMuted)
 	end
-	-- And the mute rings, for the same reason: enter_active_session's own clear does not run when we
-	-- were already ACTIVE, so a ring set before this confirmation was discarded and never re-sent.
-	encoderMuteLedSent, encoderRingSent, homeLedSent, globalLedSent, dawLedSent = {}, {}, nil, nil, nil
+	-- And the lamps, for the same reason: enter_active_session's own clear does not run when we were
+	-- already ACTIVE, so a ring set before this confirmation was discarded and never re-sent.
+	forget_led_state()
 end
 
 function handle_standby()
@@ -4242,9 +4234,7 @@ function controller_select_patch(programchangeNumber, patchname, setname, concer
 	-- Draw whenever MainStage says the patch changed, without waiting to be sure we are logged in: a
 	-- LOGIN CONFIRMATION only arrives on a *fresh* login, and the keyboard harmlessly ignores drawing
 	-- we are not entitled to do. The ID_QUERY branch repaints again once the session is confirmed.
-	local opsBefore = queuedDisplayOps
-	update_screen()
-	if queuedDisplayOps > opsBefore then
+	if update_screen() then
 		-- See request_quick_rearm's comment and docs/config-lua-history.md#quick-rearm-2026-08-21 - this
 		-- is the exact call site the multi-second patch-change delay was measured against.
 		request_quick_rearm()
