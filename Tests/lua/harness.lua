@@ -6176,6 +6176,68 @@ do
 		fold_ascii('Hello, World! 123 - ok') == 'Hello, World! 123 - ok')
 end
 
+-- MARK: - 95. A re-initialise returns every piece of per-session state to its default
+--
+-- MainStage re-initialises the script mid-session and is not guaranteed to re-run the chunk, so state
+-- left by the previous incarnation can survive into the next one. controller_initialize used to reset
+-- a subset: a stale popupActive left the script believing a panel was on screen, and stale
+-- midiOutFeedback described the previous concert. Asserted by DIRTYING each field first, so the check
+-- fails if reset_session_state stops covering one.
+do
+	local savedTicks = timerTicks
+
+	-- Dirty everything the reset is responsible for.
+	state = STATE_ACTIVE
+	displayMode, popupActive, popupPreviousMode = 'config', true, 'list'
+	popupEid, popupControlName, popupValue, popupMax = EID_ZONE1, 'ENC 9', 99, 100
+	popupFeedbackActive, popupModeIsFeedback, popupValueDirty = true, true, true
+	configScroll, configPreviousMode = 7, 'zoom'
+	browsePending, cursorIndex, scrollOffset = true, 42, 17
+	patchName, setName, currentConcert = 'stale', 'stale', 'stale'
+	listRows = { { label = 'x', isPatch = true, setIndex = 0, patchIndex = 0 } }
+	midiOutFeedback = { [20] = { name = 'Old Concert Knob', value = 5 } }
+	pendingMessages = { msg_system(SYS_DEVICE_NOTIFICATION) }
+	pendingCC, pendingCCOrder, pendingPresses = { X = 1 }, { 'X' }, { 'X' }
+	pendingProgram, pendingBank = 5, 1
+	recoveryAttempts, recoveryGivenUp, idleTicks = 3, true, 88
+	encoderBank = 'b'
+	set_encoder_value(EID_ZONE1, 120)
+	homeLedSent, dawLedSent = true, true
+	drawn['zname'] = { 'stale' }
+
+	controller_initialize('MainStage', false)
+
+	check('re-init clears popupActive', popupActive == false)
+	check('re-init clears popupPreviousMode', popupPreviousMode == nil)
+	check('re-init clears the popup content fields',
+		popupEid == nil and popupControlName == nil and popupFeedbackActive == false
+			and popupModeIsFeedback == nil and popupValueDirty == false)
+	check('re-init returns displayMode to zoom', displayMode == 'zoom')
+	check('re-init clears the config screen state', configScroll == 0 and configPreviousMode == nil)
+	check('re-init clears a pending browse', browsePending == false)
+	check('re-init clears the cursor and scroll', cursorIndex == 0 and scrollOffset == 0)
+	check('re-init clears the patch model', patchName == '' and setName == '' and currentConcert == ''
+		and #listRows == 0)
+	check('re-init clears MainStage feedback from the previous concert', next(midiOutFeedback) == nil)
+	check('re-init empties every outbound queue',
+		#pendingMessages == 0 and next(pendingCC) == nil and #pendingCCOrder == 0 and #pendingPresses == 0)
+	check('re-init clears a pending program change', pendingProgram == nil and pendingBank == nil)
+	check('re-init clears the recovery watchdog', recoveryAttempts == 0 and recoveryGivenUp == false)
+	check('re-init returns to encoder bank a', encoderBank == 'a')
+	check('re-init reseeds the encoder values', encoder_value(EID_ZONE1) == 64)
+	check('re-init forgets the lamp memos', homeLedSent == nil and dawLedSent == nil)
+	check('re-init invalidates the display memo', drawn['zname'] == nil)
+
+	-- Deliberately NOT reset - see reset_session_state's comment. timerTicks gates
+	-- controller_finalize's logout, so resetting it would change a hardware-tuned behaviour.
+	check('re-init leaves timerTicks alone', timerTicks == savedTicks)
+
+	-- The fresh encoder table must not alias the previous one, or a re-init would write through to it.
+	local firstRef = encoderValueBank
+	controller_initialize('MainStage', false)
+	check('re-init builds a fresh encoder table rather than reusing it', encoderValueBank ~= firstRef)
+end
+
 -- MARK: - Summary
 
 realPrint('')
