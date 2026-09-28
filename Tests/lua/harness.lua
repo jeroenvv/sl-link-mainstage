@@ -4525,10 +4525,15 @@ do
 	-- E2 80 xx, so it arrives here from MainStage's own formatting.
 	check('sanitize_value_string drops 0x80 itself',
 		sanitize_value_string('A\x80B') == 'AB')
-	check('sanitize_value_string drops every byte of an en dash',
-		sanitize_value_string('-6,0 \xE2\x80\x93 inf') == '-6,0  inf')
-	check('sanitize_value_string DROPS a stray non-ASCII byte rather than replacing it with a space',
-		sanitize_value_string('A\xC3\xA9B') == 'AB') -- Ã© (2 UTF-8 bytes, no substitution rule) - dropped, not spaced
+	-- An en dash and an accented letter are both in ASCII_FOLD now, so they TRANSLITERATE rather than
+	-- vanish - the drop is what happens only to a character the table does not list (section 94, and
+	-- the assertion below). These two checks asserted the drop before that table existed.
+	check('sanitize_value_string folds an en dash to a hyphen',
+		sanitize_value_string('-6,0 \xE2\x80\x93 inf') == '-6,0 - inf')
+	check('sanitize_value_string folds an accented letter to its base letter',
+		sanitize_value_string('A\xC3\xA9B') == 'AeB') -- é, 2 UTF-8 bytes, folded not dropped
+	check('sanitize_value_string still drops a character with no ASCII form',
+		sanitize_value_string('A\xE4\xB8\xADB') == 'AB') -- 中, no sensible transliteration
 	check('sanitize_value_string is nil-safe', sanitize_value_string(nil) == nil)
 	check('sanitize_value_string leaves plain ASCII untouched',
 		sanitize_value_string('Hello, World! 123') == 'Hello, World! 123')
@@ -6123,6 +6128,66 @@ do
 	pendingCC, pendingCCOrder, pendingDelta = savedCC, savedOrder, savedDelta
 	pendingReleases, pendingPresses = savedReleases, savedPresses
 	set_encoder_value(EID_ZONE1, savedZone1)
+end
+
+-- MARK: - 94. Accented characters fold to ASCII rather than becoming blanks
+--
+-- A SysEx payload carries 7-bit bytes only, so nothing above 0x7F can be sent at all. The per-byte
+-- clamp in append_text turned every byte of a multi-byte character into its own space, so a Dutch
+-- 'een' spelled with two accented e's reached the panel as four blanks and '§1' as two. ASCII_FOLD
+-- transliterates instead. See docs/config-lua-history.md#accented-characters-are-folded-not-blanked-2026-09-28.
+do
+	-- What actually reaches the wire, as a string, for one text field.
+	local function wire(s, maxLength)
+		local m = {}
+		append_text(m, s, maxLength or 43)
+		local out = {}
+		for i = 1, #m - 1 do out[#out + 1] = string.char(m[i]) end -- drop the 0x00 terminator
+		return table.concat(out)
+	end
+
+	check("two accented e's fold to 'ee', not four blanks", wire('\xC3\xA9\xC3\xA9n') == 'een')
+	check('a single accent folds to its base letter', wire('Caf\xC3\xA9 Orchestra') == 'Cafe Orchestra')
+	check('the paragraph sign folds rather than blanking', wire('\xC2\xA71 Intro') == 'S1 Intro')
+	check('an en dash folds to a hyphen', wire('Lead \xE2\x80\x93 Bright') == 'Lead - Bright')
+	check('a curly apostrophe folds to a straight one', wire('Jacob\xE2\x80\x99s Coat') == "Jacob's Coat")
+	check('an umlaut folds to its base letter', wire('Str\xC3\xB6mung') == 'Stromung')
+	-- Multi-character expansions: the replacement is not required to be one byte.
+	check('sharp s expands to two letters', wire('Wei\xC3\x9F') == 'Weiss')
+	check('an ellipsis expands to three full stops', wire('More\xE2\x80\xA6') == 'More...')
+
+	-- THE INVARIANT, over input the table does not list at all: a byte above 0x7F is illegal on the
+	-- wire whatever it came from, so the clamp must still catch everything the fold leaves behind.
+	for _, exotic in ipairs({ '\xE4\xB8\xAD\xE6\x96\x87', '\xF0\x9F\x8E\xB9', '\xCE\xB1\xCE\xB2', '\xD0\x94\xD0\xBE' }) do
+		local bytes = {}
+		append_text(bytes, 'A' .. exotic .. 'B', 43)
+		local illegal = nil
+		for i = 1, #bytes do
+			if bytes[i] > 0x7F then illegal = i end
+		end
+		check('an unlisted non-ASCII character leaves no byte above 0x7F on the wire', illegal == nil)
+	end
+
+	-- Folding runs BEFORE the length clamp is computed. For a SHRINKING fold the two orders happen to
+	-- agree, so they are only told apart by a replacement that is LONGER than what it replaces: with
+	-- the clamp computed first, the degree sign's two bytes cap the read at two and 'deg' is cut to
+	-- 'de'. Asserted with an expanding fold for exactly that reason - a shrinking one proves nothing
+	-- here.
+	check('the length clamp is computed from the FOLDED text, so an expanding fold is not cut',
+		wire('12\xC2\xB0', 43) == '12deg')
+
+	-- sanitize_value_string shares the table: it used to DROP a non-ASCII byte, losing the character
+	-- entirely, and still substitutes the dB unit it was written for.
+	check('sanitize_value_string folds an accent instead of dropping it',
+		sanitize_value_string('Caf\xC3\xA9') == 'Cafe')
+	check('sanitize_value_string still substitutes the dB unit',
+		sanitize_value_string('+0,0 \xE3\x8F\x88') == '+0,0 dB')
+	check('sanitize_value_string still drops a character the table does not list',
+		sanitize_value_string('A\xE4\xB8\xADB') == 'AB')
+
+	check('fold_ascii is nil-safe, like sanitize_value_string', fold_ascii(nil) == nil)
+	check('fold_ascii leaves plain ASCII byte-for-byte untouched',
+		fold_ascii('Hello, World! 123 - ok') == 'Hello, World! 123 - ok')
 end
 
 -- MARK: - Summary

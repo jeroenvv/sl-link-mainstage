@@ -3358,3 +3358,30 @@ three guards fails exactly its own pair of checks.
 
 Found by review. No hardware capture shows a short frame from a healthy SL88, so treat this as
 defence, not as a fix for an observed fault.
+
+## Accented characters are folded, not blanked (2026-09-28)
+
+A SysEx payload carries 7-bit bytes only. Nothing above 0x7F can be sent at all, so the SL88 can never
+be given the real glyph for `é` or `§` - the choice is a transliteration or a run of blanks. This is a
+protocol limit, not a font limit.
+
+`append_text` clamped each byte independently, and a multi-byte character therefore became one blank
+PER BYTE: the Dutch `een` spelled with two accented e's arrived as four blanks, `§1` as two.
+
+`ASCII_FOLD` now maps the Latin-1 letters to their base letter, the typographic dash and quote family
+to their ASCII forms, and a short list of symbols to a conventional spelling. `fold_ascii()` applies it
+in `append_text`, the one choke point every text field passes through, so no caller can bypass it;
+`sanitize_value_string` shares the table. A character the table does not list is untouched by the fold
+and still meets the per-byte clamp, exactly as before.
+
+`§` has no conventional ASCII form. It folds to `S` - a deliberate pick rather than a standard, and a
+one-entry change if another form reads better.
+
+**Fold before computing the length clamp.** For a shrinking fold the two orders agree, which makes this
+easy to get wrong and not notice. They differ only on a replacement LONGER than what it replaces -
+`°` to `deg` - where a clamp computed from the raw text cuts it to `de`. The harness asserts that case
+for exactly this reason; a shrinking fold proves nothing about the order.
+
+`append_text` also gained a `break` on a missing byte. It is unreachable while `limit` comes from the
+same string, but without it the wrong order did not fail a check - it raised, aborting the harness at
+section 16 and hiding every section after it.

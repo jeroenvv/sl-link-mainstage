@@ -1157,9 +1157,17 @@ end
 -- here from an ordinary patch name - see docs/config-lua-history.md#the-0x80-passthrough-2026-09-28.
 function append_text(msg, text, maxLength)
 	if text ~= nil then
+		-- Fold BEFORE the length clamp, so a folded name spends its budget on characters that will
+		-- actually render: 'Café' is 5 bytes as UTF-8 and 4 after folding. This is the one choke point
+		-- every text field passes through, so no caller can bypass it - see ASCII_FOLD.
+		text = fold_ascii(text)
 		local limit = math.min(#text, maxLength or 32)
 		for i = 1, limit do
 			local b = string.byte(text, i)
+			-- Structural guard, not a reachable case with `limit` derived from this same string: it makes
+			-- the function total whatever limit says, so a future edit that derives limit from a
+			-- DIFFERENT string cannot turn this into a nil comparison that aborts the caller.
+			if b == nil then break end
 			if b < 0x20 or b >= 0x80 then b = 0x20 end
 			table.insert(msg, b)
 		end
@@ -1167,18 +1175,59 @@ function append_text(msg, text, maxLength)
 	table.insert(msg, 0x00)
 end
 
--- Known non-ASCII units MainStage's locale-formatted valueString can contain, substituted before
--- the ASCII strip below runs - see docs/config-lua-history.md#controller_midi_out-reports-real-parameter-values-with-a-screen-control-2026-09-17.
-UNIT_SUBSTITUTIONS = { ['\xE3\x8F\x88'] = 'dB' } -- U+33C8 SQUARE DB, 3 UTF-8 bytes
+-- Non-ASCII text the host can hand us, folded to the closest ASCII form. A SysEx payload carries
+-- 7-bit bytes only, so NOTHING above 0x7F can be sent at all - the choice is a transliteration or a
+-- run of spaces, never the real glyph. Without this table every byte of a multi-byte character
+-- becomes its own space, so a Dutch 'een' with two accented e's read as four blanks.
+--
+-- Keys are literal UTF-8, which is why they are legible; the codepoint follows in a comment where the
+-- character is not obvious. One line per base letter so the groups can be checked by eye.
+-- See docs/config-lua-history.md#accented-characters-are-folded-not-blanked-2026-09-28.
+ASCII_FOLD = {
+	['à'] = 'a', ['á'] = 'a', ['â'] = 'a', ['ã'] = 'a', ['ä'] = 'a', ['å'] = 'a',
+	['À'] = 'A', ['Á'] = 'A', ['Â'] = 'A', ['Ã'] = 'A', ['Ä'] = 'A', ['Å'] = 'A',
+	['è'] = 'e', ['é'] = 'e', ['ê'] = 'e', ['ë'] = 'e',
+	['È'] = 'E', ['É'] = 'E', ['Ê'] = 'E', ['Ë'] = 'E',
+	['ì'] = 'i', ['í'] = 'i', ['î'] = 'i', ['ï'] = 'i',
+	['Ì'] = 'I', ['Í'] = 'I', ['Î'] = 'I', ['Ï'] = 'I',
+	['ò'] = 'o', ['ó'] = 'o', ['ô'] = 'o', ['õ'] = 'o', ['ö'] = 'o', ['ø'] = 'o',
+	['Ò'] = 'O', ['Ó'] = 'O', ['Ô'] = 'O', ['Õ'] = 'O', ['Ö'] = 'O', ['Ø'] = 'O',
+	['ù'] = 'u', ['ú'] = 'u', ['û'] = 'u', ['ü'] = 'u',
+	['Ù'] = 'U', ['Ú'] = 'U', ['Û'] = 'U', ['Ü'] = 'U',
+	['ç'] = 'c', ['Ç'] = 'C', ['ñ'] = 'n', ['Ñ'] = 'N', ['ý'] = 'y', ['ÿ'] = 'y', ['Ý'] = 'Y',
+	['ß'] = 'ss', ['æ'] = 'ae', ['Æ'] = 'AE', ['œ'] = 'oe', ['Œ'] = 'OE',
+
+	-- Typographic punctuation. These are the characters whose middle UTF-8 byte is 0x80 (E2 80 xx),
+	-- so before append_text's clamp was corrected they put an illegal byte on the wire - see there.
+	['–'] = '-', ['—'] = '-', ['‑'] = '-', -- U+2013 en dash, U+2014 em dash, U+2011 non-breaking hyphen
+	['‘'] = "'", ['’'] = "'", ['‚'] = ',', -- U+2018/2019 curly single quotes, U+201A low quote
+	['“'] = '"', ['”'] = '"', ['„'] = '"', -- U+201C/201D curly double quotes, U+201E low double
+	['…'] = '...', ['•'] = '-', ['·'] = '-', -- U+2026 ellipsis, U+2022 bullet, U+00B7 middle dot
+
+	-- Symbols with a conventional ASCII spelling. § has none, so it folds to 'S' - a deliberate pick,
+	-- not a standard: change this one entry if another form reads better on the panel.
+	['§'] = 'S', ['°'] = 'deg', ['×'] = 'x', ['÷'] = '/', ['±'] = '+/-',
+	['©'] = '(c)', ['®'] = '(r)', ['™'] = 'TM', ['€'] = 'EUR', ['£'] = 'GBP', ['¥'] = 'JPY',
+	['½'] = '1/2', ['¼'] = '1/4', ['¾'] = '3/4', ['«'] = '<<', ['»'] = '>>',
+	['\xE3\x8F\x88'] = 'dB', -- U+33C8 SQUARE DB, the unit MainStage's own valueString reports
+}
+
+-- Any UTF-8 multi-byte sequence: a lead byte plus its continuation bytes. gsub with a table leaves a
+-- match that is not a key untouched, so an unlisted character falls through to the per-byte clamp in
+-- append_text (spaces) or the drop in sanitize_value_string, exactly as before this table existed.
+UTF8_SEQUENCE = '[\xC2-\xF4][\x80-\xBF]*'
+
+function fold_ascii(s)
+	if s == nil then return nil end
+	return (s:gsub(UTF8_SEQUENCE, ASCII_FOLD))
+end
 
 -- Substitutes known unit glyphs, then DROPS any remaining byte outside 0x20-0x7F (rather than
 -- letting append_text's own per-byte clamp turn a multi-byte glyph into a run of spaces). Same upper
 -- bound as append_text, and for the same reason - see there.
 function sanitize_value_string(s)
 	if s == nil then return nil end
-	for glyph, ascii in pairs(UNIT_SUBSTITUTIONS) do
-		s = s:gsub(glyph, ascii)
-	end
+	s = fold_ascii(s)
 	local out = {}
 	for i = 1, #s do
 		local b = string.byte(s, i)
