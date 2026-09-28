@@ -3374,8 +3374,7 @@ in `append_text`, the one choke point every text field passes through, so no cal
 `sanitize_value_string` shares the table. A character the table does not list is untouched by the fold
 and still meets the per-byte clamp, exactly as before.
 
-`§` has no conventional ASCII form. It folds to `S` - a deliberate pick rather than a standard, and a
-one-entry change if another form reads better.
+`§` is the section sign, so it folds to `S` for section - confirmed with Jeroen.
 
 **Fold before computing the length clamp.** For a shrinking fold the two orders agree, which makes this
 easy to get wrong and not notice. They differ only on a replacement LONGER than what it replaces -

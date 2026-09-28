@@ -1204,8 +1204,8 @@ ASCII_FOLD = {
 	['“'] = '"', ['”'] = '"', ['„'] = '"', -- U+201C/201D curly double quotes, U+201E low double
 	['…'] = '...', ['•'] = '-', ['·'] = '-', -- U+2026 ellipsis, U+2022 bullet, U+00B7 middle dot
 
-	-- Symbols with a conventional ASCII spelling. § has none, so it folds to 'S' - a deliberate pick,
-	-- not a standard: change this one entry if another form reads better on the panel.
+	-- Symbols with a conventional ASCII spelling. § is the SECTION sign, so it folds to 'S' for
+	-- section - agreed with Jeroen 2026-09-28.
 	['§'] = 'S', ['°'] = 'deg', ['×'] = 'x', ['÷'] = '/', ['±'] = '+/-',
 	['©'] = '(c)', ['®'] = '(r)', ['™'] = 'TM', ['€'] = 'EUR', ['£'] = 'GBP', ['¥'] = 'JPY',
 	['½'] = '1/2', ['¼'] = '1/4', ['¾'] = '3/4', ['«'] = '<<', ['»'] = '>>',
