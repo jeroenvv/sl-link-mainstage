@@ -6056,7 +6056,29 @@ end
 -- Driven through controller_midi_in, not handle_sl_frame: the point is that the WHOLE callback
 -- completes and re-arms, which a direct handle_sl_frame call cannot show.
 do
+	-- This section drives WHOLE callbacks, so it disturbs far more than the three globals the clock
+	-- assertions read: the complete encoder frame below opens a popup, which moves displayMode, queues
+	-- ten display messages and advances the zone-1 encoder value. Save every one of them. The suite is
+	-- one long file over shared globals, so a section that leaks state makes whatever is appended after
+	-- it fail for a reason that has nothing to do with the code under test - this section is currently
+	-- last, which is not a guarantee worth relying on.
 	local savedState, savedArmed, savedPending = state, armed, timerPending
+	local savedFrames, savedQueryFrames = framesSinceTick, framesSinceQueryReply
+	local savedIdle, savedInterval = idleTicks, timerArmedInterval
+	local savedMode, savedPopupActive, savedPrevMode = displayMode, popupActive, popupPreviousMode
+	-- Every field show_popup() writes, not just the three the popup sections happen to read.
+	local savedPopup = { eid = popupEid, name = popupControlName, cc = popupCcNumber,
+		value = popupValue, max = popupMax, feedback = popupFeedbackActive,
+		modeIsFeedback = popupModeIsFeedback, feedbackName = popupFeedbackName,
+		valueString = popupValueString, activity = popupLastActivityIdleTick,
+		lastPaint = popupValueLastPaintTick, dirty = popupValueDirty }
+	local savedQueue, savedDrawn, savedOps = pendingMessages, drawn, queuedDisplayOps
+	local savedCC, savedOrder, savedDelta = pendingCC, pendingCCOrder, pendingDelta
+	-- controller_midi_in drains the momentary lists, so this section CONSUMES whatever an earlier
+	-- section left in them.
+	local savedReleases, savedPresses = pendingReleases, pendingPresses
+	-- encoderValueBank is mutated one FIELD deep, so holding the table reference restores nothing.
+	local savedZone1 = encoder_value(EID_ZONE1)
 
 	-- Header only, then header plus each item type that reads a payload byte. 0x42 is an item type
 	-- nothing handles - it must reach the log, not the error handler.
@@ -6089,6 +6111,18 @@ do
 		ok and out ~= nil and out.midi ~= nil and out.midi[1] == CC_STATUS and out.midi[2] == cc and out.midi[3] == 3)
 
 	state, armed, timerPending = savedState, savedArmed, savedPending
+	framesSinceTick, framesSinceQueryReply = savedFrames, savedQueryFrames
+	idleTicks, timerArmedInterval = savedIdle, savedInterval
+	displayMode, popupActive, popupPreviousMode = savedMode, savedPopupActive, savedPrevMode
+	popupEid, popupControlName, popupCcNumber = savedPopup.eid, savedPopup.name, savedPopup.cc
+	popupValue, popupMax, popupFeedbackActive = savedPopup.value, savedPopup.max, savedPopup.feedback
+	popupModeIsFeedback, popupFeedbackName = savedPopup.modeIsFeedback, savedPopup.feedbackName
+	popupValueString, popupLastActivityIdleTick = savedPopup.valueString, savedPopup.activity
+	popupValueLastPaintTick, popupValueDirty = savedPopup.lastPaint, savedPopup.dirty
+	pendingMessages, drawn, queuedDisplayOps = savedQueue, savedDrawn, savedOps
+	pendingCC, pendingCCOrder, pendingDelta = savedCC, savedOrder, savedDelta
+	pendingReleases, pendingPresses = savedReleases, savedPresses
+	set_encoder_value(EID_ZONE1, savedZone1)
 end
 
 -- MARK: - Summary
